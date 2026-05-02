@@ -1,0 +1,484 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "service-config.schema.json",
+  "title": "ZED Agent Service Configuration",
+  "description": "Normalized configuration schema for ZED Agent multi-service release automation (v1.0).",
+  "type": "object",
+  "required": [
+    "$schema",
+    "version",
+    "service",
+    "serviceTreeIds",
+    "ado",
+    "kusto",
+    "commitExcel",
+    "sharepoint",
+    "notifications",
+    "safefly",
+    "operational",
+    "stepGates"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Pointer to this schema file for editor validation."
+    },
+    "version": {
+      "type": "string",
+      "description": "Schema version. Currently '1.0'.",
+      "enum": ["1.0"]
+    },
+
+    "service": {
+      "type": "object",
+      "description": "Identity metadata for the service being released.",
+      "required": ["name", "displayName"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Short canonical service name (e.g. 'Prot', 'MAB').",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human-readable service name (e.g. 'Protection Service').",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Brief description of the service release purpose."
+        }
+      }
+    },
+
+    "serviceTreeIds": {
+      "type": "object",
+      "description": "Service Tree GUIDs used by SafeFly and EV2.",
+      "required": ["safefly", "ev2"],
+      "additionalProperties": true,
+      "properties": {
+        "safefly": {
+          "type": "string",
+          "description": "Service Tree GUID for SafeFly registration.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "ev2": {
+          "type": "object",
+          "description": "Service Tree GUIDs keyed by EV2 environment (Prod, Fairfax, Mooncake, etc.).",
+          "required": ["Prod"],
+          "additionalProperties": true,
+          "properties": {
+            "Prod": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "Fairfax": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "Mooncake": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            }
+          }
+        }
+      }
+    },
+
+    "ado": {
+      "type": "object",
+      "description": "Azure DevOps coordinates for the source repository.",
+      "required": ["organization", "project", "repository", "branchPrefix", "baseBranch"],
+      "additionalProperties": true,
+      "properties": {
+        "organization": {
+          "type": "string",
+          "description": "ADO organization name.",
+          "minLength": 1
+        },
+        "project": {
+          "type": "string",
+          "description": "ADO project name.",
+          "minLength": 1
+        },
+        "repository": {
+          "type": "string",
+          "description": "ADO repository name.",
+          "minLength": 1
+        },
+        "branchPrefix": {
+          "type": "string",
+          "description": "Prefix for official release branches (e.g. 'official/bdp-').",
+          "minLength": 1
+        },
+        "baseBranch": {
+          "type": "string",
+          "description": "Base branch from which release branches are cut.",
+          "minLength": 1
+        }
+      }
+    },
+
+    "kusto": {
+      "type": "object",
+      "description": "Kusto query configuration for BVT and canary monitoring.",
+      "required": ["bvt", "canary"],
+      "additionalProperties": true,
+      "properties": {
+        "bvt": {
+          "type": "object",
+          "description": "BVT (Build Verification Test) Kusto query settings.",
+          "required": ["cluster", "database", "queryFile"],
+          "additionalProperties": true,
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Kusto cluster URL.",
+              "format": "uri"
+            },
+            "database": {
+              "type": "string",
+              "description": "Kusto database name.",
+              "minLength": 1
+            },
+            "queryFile": {
+              "type": "string",
+              "description": "Filename of the KQL query template.",
+              "minLength": 1
+            },
+            "queryVariables": {
+              "type": "object",
+              "description": "Key-value pairs substituted into the KQL query template.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "canary": {
+          "type": "object",
+          "description": "Canary health monitoring Kusto query settings.",
+          "required": ["cluster", "database", "serviceFilter"],
+          "additionalProperties": true,
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Kusto cluster URL.",
+              "format": "uri"
+            },
+            "database": {
+              "type": "string",
+              "description": "Kusto database name.",
+              "minLength": 1
+            },
+            "serviceFilter": {
+              "type": "string",
+              "description": "KQL where-clause fragment to filter by service.",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+
+    "commitExcel": {
+      "type": "object",
+      "description": "Settings for the commit-collection Excel sheet.",
+      "required": ["sheetNameTemplate", "sharePointFolder", "excludeAuthors"],
+      "additionalProperties": true,
+      "properties": {
+        "sheetNameTemplate": {
+          "type": "string",
+          "description": "Template for the Excel sheet tab name. Supports {{YYMM}} placeholder.",
+          "minLength": 1
+        },
+        "sharePointFolder": {
+          "type": "string",
+          "description": "SharePoint document library path for uploading the Excel file.",
+          "minLength": 1
+        },
+        "excludeAuthors": {
+          "type": "array",
+          "description": "Git author names to exclude from commit collection.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "sharepoint": {
+      "type": "object",
+      "description": "SharePoint site configuration for commit Excel uploads.",
+      "required": ["sitePath"],
+      "additionalProperties": true,
+      "properties": {
+        "sitePath": {
+          "type": "string",
+          "description": "SharePoint site path for Graph API (e.g., '/teams/AzureBackupDataPlane').",
+          "minLength": 1
+        }
+      }
+    },
+
+    "notifications": {
+      "type": "object",
+      "description": "Email and Teams notification configuration.",
+      "required": ["groups", "routing"],
+      "additionalProperties": true,
+      "properties": {
+        "groups": {
+          "type": "object",
+          "description": "Named recipient groups referenced by routing rules.",
+          "required": ["permanent", "releaseOwner", "teams"],
+          "additionalProperties": true,
+          "properties": {
+            "permanent": {
+              "type": "array",
+              "description": "Always-notified email addresses.",
+              "items": { "type": "string" }
+            },
+            "cc": {
+              "type": "array",
+              "description": "CC-line email addresses.",
+              "items": { "type": "string" }
+            },
+            "releaseOwner": {
+              "type": "array",
+              "description": "Release owner email addresses.",
+              "items": { "type": "string" }
+            },
+            "teams": {
+              "type": "array",
+              "description": "Teams channel names for notifications.",
+              "items": { "type": "string" }
+            },
+            "owner": {
+              "type": "array",
+              "description": "Release owner email(s). Populated at runtime from release.json.",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "routing": {
+          "type": "object",
+          "description": "Maps pipeline events to notification groups.",
+          "required": ["reminder", "production-rollout"],
+          "additionalProperties": true,
+          "properties": {
+            "reminder":               { "$ref": "#/definitions/routingRule" },
+            "build-status":           { "$ref": "#/definitions/routingRule" },
+            "commit-request":         { "$ref": "#/definitions/routingRule" },
+            "canary-status":          { "$ref": "#/definitions/routingRule" },
+            "bvt-check":              { "$ref": "#/definitions/routingRule" },
+            "rollback-status":        { "$ref": "#/definitions/routingRule" },
+            "rollforward-status":     { "$ref": "#/definitions/routingRule" },
+            "create-r2d":             { "$ref": "#/definitions/routingRule" },
+            "production-rollout":     { "$ref": "#/definitions/routingRule" },
+            "ev2-stage-progress":     { "$ref": "#/definitions/routingRule" },
+            "ev2-promotion-reminder": { "$ref": "#/definitions/routingRule" },
+            "timeout-alert":          { "$ref": "#/definitions/routingRule" }
+          }
+        }
+      }
+    },
+
+    "safefly": {
+      "type": "object",
+      "description": "SafeFly change-request configuration.",
+      "required": ["titleTemplate", "descriptionTemplate", "tags"],
+      "additionalProperties": true,
+      "properties": {
+        "titleTemplate": {
+          "type": "string",
+          "description": "Template for SafeFly CR title. Supports {serviceName}, {serviceDisplayName}, {month}, {yy} placeholders.",
+          "minLength": 1
+        },
+        "descriptionTemplate": {
+          "type": "string",
+          "description": "Template for SafeFly CR description. Supports {serviceName}, {releaseId} placeholders.",
+          "minLength": 1
+        },
+        "tags": {
+          "type": "array",
+          "description": "Tags applied to the SafeFly change request.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "additionalNotifiers": {
+          "type": "array",
+          "description": "Extra email addresses to notify on SafeFly CR events.",
+          "items": { "type": "string" }
+        },
+        "genevaMdmLink": {
+          "type": "string",
+          "description": "Link to Geneva MDM monitors dashboard.",
+          "format": "uri"
+        }
+      }
+    },
+
+    "operational": {
+      "type": "object",
+      "description": "Timeouts, polling intervals, and operational parameters.",
+      "required": [
+        "buildTimeoutMinutes",
+        "bvtWaitHours",
+        "bvtQueryTimeoutMinutes",
+        "excelCompletionTimeoutHours",
+        "canaryBakeTimeHours",
+        "reminderBeforeCutDays",
+        "canaryRegions",
+        "watcherPollIntervalSeconds",
+        "watcherTestModePollIntervalSeconds",
+        "watcherMaxRetries",
+        "watcherTaskPrefix"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "buildTimeoutMinutes": {
+          "type": "integer",
+          "description": "Maximum minutes to wait for a build to complete.",
+          "minimum": 1
+        },
+        "bvtWaitHours": {
+          "type": "integer",
+          "description": "Hours to wait before running BVT queries after deployment.",
+          "minimum": 1
+        },
+        "bvtQueryTimeoutMinutes": {
+          "type": "integer",
+          "description": "Maximum minutes for a BVT Kusto query to return results.",
+          "minimum": 1
+        },
+        "excelCompletionTimeoutHours": {
+          "type": "integer",
+          "description": "Maximum hours to wait for commit Excel completion.",
+          "minimum": 1
+        },
+        "canaryBakeTimeHours": {
+          "type": "integer",
+          "description": "Hours to bake in canary before progressing.",
+          "minimum": 1
+        },
+        "reminderBeforeCutDays": {
+          "type": "integer",
+          "description": "Days before branch cut date to send the reminder.",
+          "minimum": 0
+        },
+        "canaryRegions": {
+          "type": "array",
+          "description": "EV2 canary region codes for initial deployment.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "watcherPollIntervalSeconds": {
+          "type": "integer",
+          "description": "Seconds between watcher poll cycles in production mode.",
+          "minimum": 60
+        },
+        "watcherTestModePollIntervalSeconds": {
+          "type": "integer",
+          "description": "Seconds between watcher poll cycles in test mode.",
+          "minimum": 60
+        },
+        "watcherMaxRetries": {
+          "type": "integer",
+          "description": "Maximum consecutive retries for transient watcher failures.",
+          "minimum": 0
+        },
+        "watcherTaskPrefix": {
+          "type": "string",
+          "description": "Prefix for watcher scheduled-task names.",
+          "minLength": 1
+        },
+        "regionMappingRepo": {
+          "type": "string",
+          "description": "ADO repository containing AzureServiceConfig.json for region mapping.",
+          "default": "Mgmt-RecoverySvcs-DeploymentExtn"
+        },
+        "regionMappingPath": {
+          "type": "string",
+          "description": "File path within the region mapping repo.",
+          "default": "src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json"
+        },
+        "regionMappingBranch": {
+          "type": "string",
+          "description": "Branch to read region mapping from.",
+          "default": "develop"
+        }
+      }
+    },
+
+    "stepGates": {
+      "type": "object",
+      "description": "Per-step approval gates. true = owner must approve before next step. false = auto-advance.",
+      "required": [
+        "1-send-reminder",
+        "2-cut-branch",
+        "3-wait-build",
+        "4-collect-commits",
+        "5-deploy-canary",
+        "6-bvt-check",
+        "7-rollback",
+        "8-post-rollback-bvt",
+        "9-post-rollback-signoff",
+        "10-roll-forward",
+        "11-post-rollforward-bvt",
+        "12-post-rollforward-signoff",
+        "13-create-r2d",
+        "14-crb-review",
+        "15-production-rollout",
+        "16-merge-back"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "_comment": {
+          "type": "string",
+          "description": "Human-readable comment explaining the stepGates section."
+        },
+        "1-send-reminder":             { "type": "boolean" },
+        "2-cut-branch":                { "type": "boolean" },
+        "3-wait-build":                { "type": "boolean" },
+        "4-collect-commits":           { "type": "boolean" },
+        "5-deploy-canary":             { "type": "boolean" },
+        "6-bvt-check":                 { "type": "boolean" },
+        "7-rollback":                  { "type": "boolean" },
+        "8-post-rollback-bvt":         { "type": "boolean" },
+        "9-post-rollback-signoff":     { "type": "boolean" },
+        "10-roll-forward":             { "type": "boolean" },
+        "11-post-rollforward-bvt":     { "type": "boolean" },
+        "12-post-rollforward-signoff": { "type": "boolean" },
+        "13-create-r2d":               { "type": "boolean" },
+        "14-crb-review":               { "type": "boolean" },
+        "15-production-rollout":       { "type": "boolean" },
+        "16-merge-back":               { "type": "boolean" }
+      }
+    }
+  },
+
+  "definitions": {
+    "routingRule": {
+      "type": "object",
+      "description": "A notification routing rule mapping an event to recipient groups.",
+      "additionalProperties": true,
+      "properties": {
+        "emailGroups": {
+          "type": "array",
+          "description": "Names of groups (from notifications.groups) to email.",
+          "items": { "type": "string" }
+        },
+        "teamsGroups": {
+          "type": "array",
+          "description": "Names of groups (from notifications.groups) to notify via Teams.",
+          "items": { "type": "string" }
+        },
+        "ccGroups": {
+          "type": "array",
+          "description": "Names of groups (from notifications.groups) to CC on email.",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

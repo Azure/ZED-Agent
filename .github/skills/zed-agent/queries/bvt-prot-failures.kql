@@ -1,0 +1,38 @@
+// BVT Failure Analysis Query
+// Cluster: CONFIG[kusto.bvt.cluster]
+// Database: CONFIG[kusto.bvt.database]
+//
+// Placeholders (replaced by ZED Agent at runtime):
+//   {{PIPELINE_TRIGGER_TIME}}  — ISO 8601 UTC timestamp from state.json
+//                                 e.g. 2026-04-15T10:30:00Z
+//
+// Two substitution points: both `ago(1d)` lines below become
+//   datetime({{PIPELINE_TRIGGER_TIME}})
+// The agent reads pipelineTriggerTimestamps.<stepN> from state.json
+// and substitutes before executing via Kusto MCP.
+
+BvtDailyTestRunData
+| extend TimeStamp = todatetime(DateString)
+| where TimeStamp >= datetime({{PIPELINE_TRIGGER_TIME}})
+| where TimeStamp <= now()
+| where (dayofweek(TimeStamp) > time(0.00:00:00) and dayofweek(TimeStamp) < time(6.00:00:00))
+| where Result == false and Analysis != "" and Environment != "BVTD3"
+| where IssueCategory !contains "test"
+| where ResponsibleTeam =~ "{{RESPONSIBLE_TEAM}}"
+| project TimeStamp, WorkLoadType, Environment, TestCaseName,
+          IssueCategory = trim("\\s", IssueCategory), ResponsibleTeam,
+          CanBeCaughtInInnerLoop, RepairItem, Analysis,
+          lowerWorkLoadType = tolower(WorkLoadType)
+| sort by TimeStamp asc
+| join kind=leftouter (
+    BVTRawData
+    | extend TimeStamp = todatetime(Date)
+    | where TimeStamp >= datetime({{PIPELINE_TRIGGER_TIME}})
+    | where TimeStamp <= now()
+    | where (dayofweek(TimeStamp) > time(0.00:00:00) and dayofweek(TimeStamp) < time(6.00:00:00))
+    | extend WorkLoadType = iff(WorkLoadType == "MABAgentCentralMgmt", "MAB", WorkLoadType)
+    | project TimeStamp, lowerWorkLoadType = tolower(WorkLoadType), FrontLiners
+) on TimeStamp, lowerWorkLoadType
+| project TimeStamp, WorkLoadType, Environment, TestCaseName,
+          IssueCategory = trim("\\s", IssueCategory), ResponsibleTeam,
+          CanBeCaughtInInnerLoop, FrontLiners, RepairItem, Analysis

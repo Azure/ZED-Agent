@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f0f0f0}.header{background:#d13438;color:white;padding:16px;text-align:center}.error-box{background:#fde7e9;border:1px solid #d13438;border-radius:4px;padding:12px;margin:12px 0}</style></head>
+<body>
+<div class="header"><h2>❌ Release Step Failed — {{releaseId}}</h2></div>
+<p>Hi {{releaseOwnerName}},</p>
+<p>A <strong>blocking failure</strong> occurred in the BDP release pipeline. The release is <strong>halted</strong> and requires your attention.</p>
+<table>
+<tr><th>Release</th><td>{{releaseId}}</td></tr>
+<tr><th>Step</th><td>Step {{stepNumber}} — {{stepName}}</td></tr>
+<tr><th>Failed At</th><td>{{failedAt}}</td></tr>
+<tr><th>Branch</th><td>{{branchName}}</td></tr>
+</table>
+<div class="error-box"><strong>Error:</strong> {{errorDetail}}</div>
+<p><strong>Next steps:</strong></p>
+<ul>
+<li>Investigate the failure using the details above</li>
+<li>Run <code>ack retry</code> to retry the failed step</li>
+<li>Run <code>ack skip</code> to skip and move on</li>
+</ul>
+<p>Thanks,<br>Release Orchestrator</p>
+</body>
+</html>

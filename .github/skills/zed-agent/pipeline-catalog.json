@@ -1,0 +1,59 @@
+{
+  "_comment": "Fill in pipeline IDs and templateParameters here directly, and/or run `@ZedAgent setup-service` — it reads this file first and only prompts for empty/missing entries. templateParameters is a free-form key-value map: the agent passes whatever keys you provide verbatim to ADO. Use {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}} as runtime placeholders — the agent substitutes these per release. The _examples block at the bottom shows expected entry shape; delete it once your real entries are in.",
+  "description": "Pipeline definitions for <ServiceName> release automation.",
+
+  "ev2ServiceTreeIds": {
+    "Prod":     "",
+    "Fairfax":  "",
+    "Mooncake": ""
+  },
+
+  "ev2ServiceGroups": {
+  },
+
+  "ev2CloudCoverage": {
+  },
+
+  "officialBuild": {
+    "name": "",
+    "id": 0,
+    "sourceBranch": "refs/heads/{{currentBranch}}",
+    "templateParameters": {
+    }
+  },
+
+  "canary": {
+  },
+
+  "production": {
+  },
+
+  "_examples": {
+    "_comment": "Reference shapes — REMOVE this _examples block once you've populated canary/production above.",
+    "canaryEntry": {
+      "name": "<Repo>-<Service>-Canary-SDP-<Variant>",
+      "id": 0,
+      "sourceBranch": "refs/heads/develop",
+      "templateParameters": {
+        "rolloutType": "normal",
+        "ArtifactsBranch": "{{currentBranch}}"
+      }
+    },
+    "productionEntry": {
+      "name": "<Repo>-<Service>-PROD-SDP-<Variant>",
+      "id": 0,
+      "sourceBranch": "refs/heads/develop",
+      "templateParameters": {
+        "BranchPrefix": "<repo_branch_prefix>",
+        "rolloutType": "normal",
+        "ArtifactsBranch": "{{currentBranch}}",
+        "PublicExcludestamps": "{{excludeStamps}}",
+        "PubRegions": "{{pubRegions}}",
+        "FFstamps": "{{ffStamps}}",
+        "FFRegions": "{{ffRegions}}",
+        "SdpType": "{{sdpType}}",
+        "ValidateOnlyRollOut": "{{validateOnly}}"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# Node dependencies (per-clone, installed via `npm install`)
+node_modules/
+
+# ZED runtime artifacts (per-release state, never committed in target repos)
+.zed-agent/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.bak
+*.tmp
+*.log
+Thumbs.db
+.DS_Store
+
+# PowerShell secrets dumps (defensive — should never be created here)
+*.secrets.json
+*.cred.xml

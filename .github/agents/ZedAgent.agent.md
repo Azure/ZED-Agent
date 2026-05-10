@@ -525,24 +525,72 @@ Ask for:
 - `ado.branchPrefix` — Release branch prefix (e.g., "official/bdp-"). The agent appends YYMM.
 - `ado.baseBranch` — Branch to cut releases from (e.g., "develop", "main")
 
-**Group 3 — Service Tree IDs**
+**Group 3 — Service Tree ID**
 Ask for:
-- `serviceTreeIds.safefly` — GUID for SafeFly R2D requests
-- `serviceTreeIds.ev2.Prod` — GUID for EV2 production rollouts
-- `serviceTreeIds.ev2.Fairfax` — GUID for Fairfax (if applicable, else same as Prod)
-- `serviceTreeIds.ev2.Mooncake` — GUID for Mooncake (if applicable, else same as Prod)
+- `serviceTreeIds.safefly` — Your team's Service Tree ID (36-char hyphenated GUID). The agent uses this internally wherever a Service Tree ID is required.
 
-Tell the release owner: *"You can find Service Tree IDs at https://servicetree.msftcloudes.com — search for your service name."*
+Tell the release owner: *"You can find your Service Tree ID at https://microsoftservicetree.com/home — search for your service name. If you don't know it now, type `skip` and you can fill it in later. If your service uses different service IDs for different environments, you can update them manually later in the file - ."*
+
+> **One question, multiple fields**: Persist the answer to `serviceTreeIds.safefly`, `serviceTreeIds.ev2.Prod`, `serviceTreeIds.ev2.Fairfax`, and `serviceTreeIds.ev2.Mooncake` — all four get the same GUID. Do NOT ask the release owner separately for EV2/Fairfax/Mooncake IDs.
 
 **Group 4 — Kusto Configuration**
-Ask for:
-- `kusto.bvt.cluster` — BVT Kusto cluster URL (e.g., "https://mabprod1.kusto.windows.net")
-- `kusto.bvt.database` — BVT database name
-- `kusto.bvt.queryFile` — KQL file name for BVT queries (default: keep existing or create new)
-- `kusto.bvt.queryVariables.RESPONSIBLE_TEAM` — Team filter value for BVT queries
-- `kusto.canary.cluster` — Canary monitoring Kusto cluster
-- `kusto.canary.database` — Canary monitoring database
-- `kusto.canary.serviceFilter` — KQL filter expression (e.g., "ServiceName == 'prot'")
+
+Kusto powers two things in this agent: **BVT failure analysis** (Steps 6, 8, 11) and **canary cluster-type detection** (Steps 5, 7, 10). Collect them in two phases.
+
+---
+
+**Phase 4a — BVT Kusto (schema-aware)**
+
+The agent runs a built-in BVT failure-analysis query to decide whether canary BVTs passed. The default query expects a specific schema. Walk the release owner through it before asking for cluster details:
+
+1. **Show the default query** by reading `.github/skills/zed-agent/queries/<default file>.kql` from disk and printing it verbatim in a fenced code block. If no default file exists in the repo yet, show the canonical version from the BVT Failure Analysis section of this spec.
+2. **Show the required column contract** the agent depends on for downstream logic:
+   ```
+   Required columns in result rows:
+     WorkLoadType, Environment, TestCaseName, IssueCategory,
+     FrontLiners, Analysis, CanBeCaughtInInnerLoop
+   Required placeholders in the .kql file:
+     {{PIPELINE_TRIGGER_TIME}}   (appears in main query AND join subquery)
+     {{RESPONSIBLE_TEAM}}        (replaced with kusto.bvt.queryVariables.RESPONSIBLE_TEAM at runtime)
+   Tables referenced by default query:
+     BvtDailyTestRunData (primary), BVTRawData (join — provides FrontLiners)
+   ```
+3. **Ask the schema-fit question** via `ask_user`:
+   > *"Does your team's BVT data match this schema - this query is for Azure Backup micro services."*
+   > Choices: `Yes — same schema`, `No — different schema`, `I don't know`
+4. **Branch on the answer**:
+
+   **(A) `Yes — same schema` or `I don't know`** (default path — most MAB-style teams):
+   - Persist the default `.kql` file path to `kusto.bvt.queryFile` (e.g., `MAB-BVT-FailureAnalysis.kql`). If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version into it now.
+   - Ask only the **3 simple fields** (one at a time, persist after each):
+     - `kusto.bvt.cluster` — BVT cluster URL (e.g., `https://mabprod1.kusto.windows.net`)
+     - `kusto.bvt.database` — BVT database name
+     - `kusto.bvt.queryVariables.RESPONSIBLE_TEAM` — value used by the agent to filter rows attributable to your team (e.g., `Prot`, `MABS`)
+   - Note to release owner: *"If results look wrong later, you can edit `.github/skills/zed-agent/queries/{queryFile}` directly — the agent re-reads it on every run."*
+
+   **(B) `No — different schema`**:
+   - Persist `kusto.bvt.cluster` and `kusto.bvt.database` first (always required).
+   - Ask the release owner how they want to provide their query, via `ask_user`:
+     > *"How do you want to provide your team's BVT query?"*
+     > Choices: `Paste KQL now`, `Point me at a .kql file in this repo`
+   - **If `Paste KQL now`**: collect the KQL via `ask_user` (multi-line), write it to `.github/skills/zed-agent/queries/<service-name>-bvt.kql`, and persist that path to `kusto.bvt.queryFile`.
+   - **If `Point me at a .kql file in this repo`**: ask for the relative path, validate the file exists, and persist it to `kusto.bvt.queryFile`.
+   - **Show this hard warning** before continuing:
+     > ⚠️ **Schema contract**: The agent expects your query to return the columns `WorkLoadType, Environment, TestCaseName, IssueCategory, FrontLiners, Analysis, CanBeCaughtInInnerLoop`, and to contain the placeholders `{{PIPELINE_TRIGGER_TIME}}` and `{{RESPONSIBLE_TEAM}}`. If your query is missing any of these, BVT failure routing in Steps 6/8/11 will not work correctly. Edit the file and re-run `setup-service validate` once you've adjusted it.
+   - Ask `kusto.bvt.queryVariables.RESPONSIBLE_TEAM` last (the value substituted into `{{RESPONSIBLE_TEAM}}` at runtime). If their custom query doesn't use this placeholder, they can leave it empty.
+
+5. After persistence, recap to the release owner what was saved (cluster, database, query file path, team filter value).
+
+---
+
+**Phase 4b — Canary Detection Kusto**
+
+The agent uses this cluster ONLY to discover whether canary regions have SFMC vs SFRP stamps (used in Steps 5, 7, 10 to pick the right pipeline variant). The query is fixed and lives in this spec — nothing schema-flexible to ask about. Just collect the connection details:
+- `kusto.canary.cluster` — Canary-monitoring Kusto cluster URL
+- `kusto.canary.database` — Canary-monitoring database name
+- `kusto.canary.serviceFilter` — KQL `where` predicate that selects rows belonging to your service in the canary cluster (e.g., `ServiceName == 'prot'`). The agent injects this directly into the canary-detection query.
+
+> If the release owner uses the **same** Kusto cluster/database for both BVT and canary detection, the agent can still keep them as separate config keys — that's fine, just enter the same values.
 
 **Group 5 — Notifications**
 Ask for:

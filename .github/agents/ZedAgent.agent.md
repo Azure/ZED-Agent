@@ -493,6 +493,20 @@ There is only one command — `setup-service` — and only one flow. The wizard 
 
 **Always start by reading the current state of both files.** For every field below, check whether it is already populated (non-empty string, valid GUID, non-zero number, non-empty array, etc.). If populated, **skip the question** and use the existing value. If empty/null/placeholder, prompt the release owner. After each group, show what changed (carried-over vs newly-collected) and ask for confirmation before proceeding.
 
+**⚠️ Persist incrementally — write after EVERY answer.** As soon as the release owner answers a single question, the agent MUST immediately write that value to the corresponding JSON file (`service-config.json` or `pipeline-catalog.json`) on disk before asking the next question. Do **NOT** buffer answers in memory and dump them in one big write at the end of the wizard. This guarantees:
+- If the chat session is interrupted, killed, or the release owner walks away mid-wizard, no answers are lost.
+- The release owner can re-run `setup-service` and it will pick up from exactly where they left off (already-answered fields are skipped).
+- The release owner can open the file in VS Code in parallel and watch it fill in live.
+
+Implementation pattern for every prompt:
+1. Read the JSON file from disk into an object.
+2. Ask the release owner the question via `ask_user`.
+3. On receiving the answer, set the field on the in-memory object.
+4. Write the object back to disk (preserve formatting, 2-space indent, trailing newline) **before** asking the next question.
+5. Append a one-line entry to `audit.jsonl` (`{"action":"setup-service-field","field":"<dotted.path>","timestamp":"..."}`) — do NOT log the value if it is a secret.
+
+The "show what changed" confirmation at the end of a group is a *recap* of what was just persisted — it is NOT the moment of writing. Writing happens per-answer.
+
 If the release owner types `setup-service validate`, skip all prompting — go straight to the **Validation** subsection at the end.
 
 **Group 1 — Service Identity**
@@ -500,7 +514,8 @@ Ask for:
 - `service.name` — Short canonical name (e.g., "Prot", "DPM", "MABS"). Used in file names, tags, and filters.
 - `service.displayName` — Human-readable name (e.g., "Protection Service", "Data Protection Manager")
 - `service.description` — Brief description (e.g., "Azure Backup Protection monthly release")
-- `service.agentFeedbackEmail` — Email for agent feedback/issues (shown in email footers)
+
+> **Do NOT prompt for `service.agentFeedbackEmail`.** This field is hardcoded to `gwazire@microsoft.com` (the ZED agent author). Always write that exact value to `service-config.json` during the Group 1 persistence step — never ask the release owner about it, never carry over a different value already in the file, and never expose this field in `setup-service` prompts.
 
 **Group 2 — Azure DevOps**
 Ask for:
@@ -624,9 +639,14 @@ Tell the release owner: *"Pipeline IDs can be found in the ADO pipeline URL — 
 
 ### Generation
 
-After all groups are collected:
+By this point, all field values collected from the release owner have **already been written to disk incrementally** (see the Interactive Collection Flow). The Generation phase is therefore a **finalization pass**, not a bulk write. It exists to:
+- Inject any default sub-objects (like the `routing` block below) that were not asked field-by-field.
+- Run schema validation on the now-complete files.
+- Print the final summary to the release owner.
 
-1. **Generate `service-config.json`** — Write the file to `.github/skills/zed-agent/service-config.json` using the collected values. Include the default notification routing:
+If at this point a required field is still missing on disk (e.g., the release owner answered "skip" earlier), surface it during validation rather than silently writing a placeholder.
+
+1. **Finalize `service-config.json`** — Re-read `.github/skills/zed-agent/service-config.json` from disk, ensure the default notification routing block is present (add it if absent — do NOT overwrite if the release owner has customized it), and write back. The per-field values were already persisted incrementally during Group 1-10 collection. Default routing:
 ```json
 "routing": {
   "reminder":             { "emailGroups": ["permanent"], "teamsGroups": ["teams"] },
@@ -644,7 +664,7 @@ After all groups are collected:
 }
 ```
 
-2. **Generate `pipeline-catalog.json`** — Write to `.github/skills/zed-agent/pipeline-catalog.json` with collected pipeline definitions.
+2. **Finalize `pipeline-catalog.json`** — Re-read the file from disk. Pipeline entries collected during Group 11 were already persisted incrementally per pipeline. Confirm all pipeline entries the release owner provided are present and well-formed; do not overwrite existing entries.
 
 3. **Validate** — Run `Load-ServiceConfig.ps1` to verify the generated files parse and validate correctly:
 ```powershell

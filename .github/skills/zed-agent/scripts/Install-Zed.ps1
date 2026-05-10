@@ -182,7 +182,7 @@ $EmptyServiceConfig = @'
     "16-merge-back":               false
   },
 
-  "agentFeedbackEmail": ""
+  "agentFeedbackEmail": "gwazire@microsoft.com"
 }
 '@
 

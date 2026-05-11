@@ -111,9 +111,7 @@ $EmptyServiceConfig = @'
   },
 
   "sharepoint": {
-    "siteId": "",
-    "driveId": "",
-    "folderPath": ""
+    "sitePath": ""
   },
 
   "notifications": {

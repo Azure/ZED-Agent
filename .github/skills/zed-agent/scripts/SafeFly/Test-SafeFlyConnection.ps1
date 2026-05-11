@@ -23,7 +23,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # --- Load service config ---
-$cfg = & (Join-Path $PSScriptRoot '..\..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
+$cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
 
 $SafeFlyResourceId = "api://6bca76ac-6a99-4b70-bb47-23ae8bc1f0f6"
 $ServiceTreeId     = $cfg.serviceTreeIds.safefly

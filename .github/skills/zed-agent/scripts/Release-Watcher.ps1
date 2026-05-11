@@ -2,6 +2,15 @@ param([Parameter(Mandatory)][string]$ReleaseId)
 $ErrorActionPreference = 'Stop'
 $stateFile = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/state.json"
 $lockFile  = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/watcher.lock"
+$stateLock = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/state.json.lock"
+
+. (Join-Path $PSScriptRoot 'Invoke-WithStateLock.ps1')
+
+# Load service config once for watcher-tunable settings (test-mode interval, etc.)
+$cfg = $null
+try { $cfg = & (Join-Path $PSScriptRoot 'Load-ServiceConfig.ps1') } catch { $cfg = $null }
+$testModeIntervalCap = 1800
+if ($cfg -and $cfg.watcherTestModePollIntervalSeconds) { $testModeIntervalCap = [int]$cfg.watcherTestModePollIntervalSeconds }
 
 # Write lock file with PID
 @{ pid = $PID; startedAt = (Get-Date -Format 'o') } | ConvertTo-Json | Set-Content $lockFile -Encoding UTF8
@@ -48,7 +57,11 @@ while ($true) {
             $delayMin = [math]::Round(($now - $scheduled).TotalMinutes)
             if ($delayMin -gt 30 -and -not $dir.missedNotified) {
                 $dir.missedNotified = $true
-                $state | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+                Invoke-WithStateLock -LockFile $stateLock -Action {
+                    $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $latest.watcherDirective = $dir
+                    $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+                }
                 & copilot --agent=ZedAgent -p "missed schedule for release $ReleaseId region $($dir.region) scheduled at $waitField delay ${delayMin} minutes" --allow-all --autopilot --no-ask-user -s
             }
         }
@@ -136,7 +149,11 @@ while ($true) {
             }
 
             # Write updated target statuses back to state
-            $state | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+            Invoke-WithStateLock -LockFile $stateLock -Action {
+                $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                $latest.watcherDirective = $dir
+                $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+            }
             $conditionMet = $allDone
             if ($anyFailed) {
                 & copilot --agent=ZedAgent -p $dir.onFailure --allow-all --autopilot --no-ask-user -s
@@ -229,8 +246,11 @@ while ($true) {
                 $allResults += $result
             }
             # Store diagnostics in state for agent to read
-            $state.ev2Diagnostics = $allResults
-            $state | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+            Invoke-WithStateLock -LockFile $stateLock -Action {
+                $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                $latest | Add-Member -NotePropertyName 'ev2Diagnostics' -NotePropertyValue $allResults -Force
+                $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+            }
 
             $anyFailed = @($allResults | Where-Object { $_.overallStatus -match 'Failed|Error|Faulted' })
             $allCompleted = @($allResults | Where-Object { $_.overallStatus -match 'Completed|Succeeded' }).Count -eq $allResults.Count
@@ -266,6 +286,15 @@ while ($true) {
                 $conditionMet = ($resp.$($Matches[1]) -eq $Matches[2])
             } elseif ($dir.successCondition -match '^\$\.(\w+)\s*>\s*''(.+)''$') {
                 $conditionMet = ($resp.$($Matches[1]) -gt $Matches[2])
+            } else {
+                # Unrecognized successCondition shape — log and treat as not-met so polling continues
+                # rather than silently looping forever with $conditionMet always $false.
+                $auditFile = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+                @{ ts = (Get-Date -Format 'o'); event = 'invalid-success-condition'
+                   successCondition = $dir.successCondition
+                   message = "successCondition must match `$.<field> == '<value>' or `$.<field> > '<value>'" } |
+                    ConvertTo-Json -Compress | Add-Content $auditFile -Encoding UTF8
+                $conditionMet = $false
             }
             $retryCount = 0
         } catch {
@@ -284,12 +313,13 @@ while ($true) {
         & copilot --agent=ZedAgent -p $dir.onSuccess --allow-all --autopilot --no-ask-user -s
     }
     $interval = if ($dir.pollIntervalSeconds) { $dir.pollIntervalSeconds } else { 3600 }
-    # Test mode: cap poll interval at 30 minutes for faster iteration
+    # Test mode: cap poll interval for faster iteration. Cap value comes from
+    # service-config.watcherTestModePollIntervalSeconds (default 1800).
     try {
         $releaseFile = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json"
         if (Test-Path $releaseFile) {
             $release = Get-Content $releaseFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($release.testMode -eq $true) { $interval = [math]::Min($interval, 1800) }
+            if ($release.testMode -eq $true) { $interval = [math]::Min($interval, $testModeIntervalCap) }
         }
     } catch { <# Ignore — use default interval on parse failure #> }
     Start-Sleep -Seconds $interval

@@ -47,7 +47,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 # --- Load service config ---
-$cfg = & (Join-Path $PSScriptRoot '..\..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
+$cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
 
 # ── Load pipeline catalog for ServiceGroup mapping ──
 $catalogPath = Join-Path (Split-Path (Split-Path $scriptDir)) "pipeline-catalog.json"

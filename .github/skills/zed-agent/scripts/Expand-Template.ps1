@@ -18,9 +18,11 @@ function Expand-Template {
     }
     # Remove unmatched conditional blocks (undefined variables)
     $content = $content -replace '(?s)\{\{#\w+\}\}.*?\{\{/\w+\}\}', ''
-    # Replace {{variable}} placeholders with values from $Variables
+    # Replace {{variable}} placeholders with values from $Variables.
+    # Escape '$' in replacement to prevent -replace from interpreting $1/$&/etc. as regex backreferences.
     foreach ($key in $Variables.Keys) {
-        $content = $content -replace "\{\{$key\}\}", [string]$Variables[$key]
+        $replacement = ([string]$Variables[$key]) -replace '\$', '$$$$'
+        $content = $content -replace "\{\{$key\}\}", $replacement
     }
     return $content
 }

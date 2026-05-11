@@ -59,7 +59,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # --- Load service config ---
-$cfg = & (Join-Path $PSScriptRoot '..\..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
+$cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
 
 if (-not $AdoOrg)     { $AdoOrg     = $cfg.ado.organization }
 if (-not $AdoProject) { $AdoProject = $cfg.ado.project }
@@ -273,8 +273,19 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 if ($RolloutInfra -in $govClouds) {
     # ── 3a. Gov-cloud: use Edge CDP portal proxy API (REST API unreachable from CorpNet) ──
-    # Use the svcTreeId and serviceGroup extracted from the ADO logs if available
-    $querySvcTreeId = $govSvcTreeId ?? $cfg.serviceTreeIds.safefly
+    # Use the svcTreeId and serviceGroup extracted from the ADO logs if available.
+    # Fallback order: log-extracted → pipeline-catalog.ev2ServiceTreeIds → service-config.serviceTreeIds.ev2
+    # NEVER fall back to serviceTreeIds.safefly — SafeFly's GUID is unrelated to EV2's.
+    $querySvcTreeId = $govSvcTreeId
+    if (-not $querySvcTreeId -and $cfg.pipelines.ev2ServiceTreeIds) {
+        $querySvcTreeId = $cfg.pipelines.ev2ServiceTreeIds.$RolloutInfra
+    }
+    if (-not $querySvcTreeId -and $cfg.serviceTreeIds.ev2) {
+        $querySvcTreeId = $cfg.serviceTreeIds.ev2.$RolloutInfra
+    }
+    if (-not $querySvcTreeId) {
+        throw "No EV2 ServiceTreeId configured for cloud '$RolloutInfra'. Populate pipeline-catalog.json -> ev2ServiceTreeIds.$RolloutInfra or service-config.json -> serviceTreeIds.ev2.$RolloutInfra."
+    }
     $queryServiceGroup = $govServiceGroup ?? $ServiceGroup
     Write-Host "📡 Querying EV2 portal API for $RolloutInfra rollout $RolloutId..." -ForegroundColor Cyan
 
@@ -360,12 +371,17 @@ if ($RolloutInfra -in $govClouds) {
 
 # ── 4. Parse rollout response ──
 # ServiceTreeId differs per cloud (extracted from ADO logs or use defaults)
-$serviceTreeId = if ($govSvcTreeId) { $govSvcTreeId }
-                 elseif ($RolloutInfra -in $govClouds) { $cfg.serviceTreeIds.safefly }
-                 elseif ($cfg.pipelines.ev2ServiceTreeIds -and $cfg.pipelines.ev2ServiceTreeIds.PSObject.Properties[$RolloutInfra]) {
-                     $cfg.pipelines.ev2ServiceTreeIds.$RolloutInfra
-                 }
-                 else { $cfg.serviceTreeIds.safefly }
+$serviceTreeId = $null
+if ($govSvcTreeId) {
+    $serviceTreeId = $govSvcTreeId
+} elseif ($cfg.pipelines.ev2ServiceTreeIds -and $cfg.pipelines.ev2ServiceTreeIds.$RolloutInfra) {
+    $serviceTreeId = $cfg.pipelines.ev2ServiceTreeIds.$RolloutInfra
+} elseif ($cfg.serviceTreeIds.ev2 -and $cfg.serviceTreeIds.ev2.$RolloutInfra) {
+    $serviceTreeId = $cfg.serviceTreeIds.ev2.$RolloutInfra
+}
+if (-not $serviceTreeId) {
+    throw "No EV2 ServiceTreeId configured for cloud '$RolloutInfra'. Populate pipeline-catalog.json -> ev2ServiceTreeIds.$RolloutInfra or service-config.json -> serviceTreeIds.ev2.$RolloutInfra. (SafeFly's serviceTreeId is intentionally NOT used as a fallback.)"
+}
 $portalUrl = "https://ra.ev2portal.azure.net/#/rollouts/$RolloutInfra/$serviceTreeId/$ServiceGroup/$RolloutId"
 
 $result = [PSCustomObject]@{

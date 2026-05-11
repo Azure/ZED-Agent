@@ -23,6 +23,8 @@ function Send-Email {
 
     $attempt = 0; $maxRetries = 3
     while ($attempt -lt $maxRetries) {
+        $outlook = $null
+        $mail = $null
         try {
             $outlook = New-Object -ComObject Outlook.Application
             $mail = $outlook.CreateItem(0)  # 0 = olMailItem
@@ -43,6 +45,11 @@ function Send-Email {
                 return @{ success = $false; error = $_.Exception.Message; method = 'OutlookCOM' }
             }
             Start-Sleep -Seconds ([math]::Pow(2, $attempt))
+        } finally {
+            # Release COM objects to prevent Outlook process / memory growth over a long release.
+            if ($mail) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($mail); $mail = $null }
+            if ($outlook) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($outlook); $outlook = $null }
+            [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
         }
     }
 }

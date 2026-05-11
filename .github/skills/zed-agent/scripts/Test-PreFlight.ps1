@@ -34,17 +34,21 @@ function Test-PreFlight {
         }
         $canaryCount = 0
         if ($catalog.canary) {
-            $catalog.canary | ForEach-Object {
+            foreach ($prop in $catalog.canary.PSObject.Properties) {
                 $canaryCount++
-                if (-not $_.name) { $pipelineIssues += "canary pipeline at index $($canaryCount-1) has no name" }
+                $entry = $prop.Value
+                if (-not $entry.name) { $pipelineIssues += "canary pipeline '$($prop.Name)' has no name" }
+                if ($null -eq $entry.id) { $pipelineIssues += "canary pipeline '$($prop.Name)' has null ID" }
             }
         }
         if ($canaryCount -eq 0) { $pipelineIssues += "No canary pipelines defined" }
         $prodCount = 0
         if ($catalog.production) {
-            $catalog.production | ForEach-Object {
+            foreach ($prop in $catalog.production.PSObject.Properties) {
                 $prodCount++
-                if ($_.id -eq $null) { $pipelineIssues += "production pipeline '$($_.name)' has null ID" }
+                $entry = $prop.Value
+                if (-not $entry.name) { $pipelineIssues += "production pipeline '$($prop.Name)' has no name" }
+                if ($null -eq $entry.id) { $pipelineIssues += "production pipeline '$($prop.Name)' has null ID" }
             }
         }
         if ($prodCount -eq 0) { $pipelineIssues += "No production pipelines defined" }

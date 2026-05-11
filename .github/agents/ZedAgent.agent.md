@@ -583,12 +583,57 @@ The agent runs a built-in BVT failure-analysis query to decide whether canary BV
 
 ---
 
-**Phase 4b — Canary Detection Kusto**
+**Phase 4b — Canary Detection Kusto (schema-aware)**
 
-The agent uses this cluster ONLY to discover whether canary regions have SFMC vs SFRP stamps (used in Steps 5, 7, 10 to pick the right pipeline variant). The query is fixed and lives in this spec — nothing schema-flexible to ask about. Just collect the connection details:
-- `kusto.canary.cluster` — Canary-monitoring Kusto cluster URL
-- `kusto.canary.database` — Canary-monitoring database name
-- `kusto.canary.serviceFilter` — KQL `where` predicate that selects rows belonging to your service in the canary cluster (e.g., `ServiceName == 'prot'`). The agent injects this directly into the canary-detection query.
+The agent uses this cluster ONLY to discover whether canary regions have SFMC vs SFRP stamps (used in Steps 5, 7, 10 to pick the right pipeline variant). Walk the release owner through the default query before collecting connection details — the same way you did in Phase 4a.
+
+1. **Show the default canary-detection query** — print verbatim in a fenced code block:
+   ```kql
+   EventLogAllClusters
+   | where TIMESTAMP > ago(1d)
+   | where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
+   | where StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'
+   | summarize make_set(DeploymentUnit) by StampName
+   | order by StampName asc
+   ```
+2. **Show the required column contract** the agent depends on:
+   ```
+   Required columns in result rows:
+     StampName, DeploymentUnit (a set/array of deployment unit names)
+   Required placeholder in the query:
+     {{SERVICE_FILTER}}   (replaced with kusto.canary.serviceFilter at runtime,
+                           e.g., ServiceName == 'prot')
+   Tables referenced by default query:
+     EventLogAllClusters
+   Downstream parsing (Steps 5, 7, 10):
+     Each DeploymentUnit string is inspected — values containing '-sfmc' indicate
+     an SFMC cluster; values containing '-sf' (without '-sfmc') indicate SFRP.
+   ```
+3. **Ask the schema-fit question** via `ask_user`:
+   > *"Does your team's canary-monitoring data match this schema - this query is meant for Azure Backup micro services"*
+   > Choices: `Yes — same schema`, `No — different schema`, `I don't know`
+4. **Branch on the answer**:
+
+   **(A) `Yes — same schema` or `I don't know`** (default path — most MAB-style teams):
+   - Persist the default canary-detection query path to `kusto.canary.queryFile` (e.g., `Canary-DeploymentUnits.kql`). If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version above into it now. **Do NOT prompt for the filename** — use the default.
+   - Ask only the **3 simple fields** (one at a time, persist after each):
+     - `kusto.canary.cluster` — Canary-monitoring Kusto cluster URL
+     - `kusto.canary.database` — Canary-monitoring database name
+     - `kusto.canary.serviceFilter` — KQL `where` predicate that selects rows belonging to your service (e.g., `ServiceName == 'prot'`). Substituted into `{{SERVICE_FILTER}}` at runtime.
+   - Note to release owner: *"If results look wrong later, you can edit `.github/skills/zed-agent/queries/{queryFile}` directly — the agent re-reads it on every run."*
+
+   **(B) `No — different schema`**:
+   - Persist `kusto.canary.cluster` and `kusto.canary.database` first (always required).
+   - Ask the release owner how they want to provide their query, via `ask_user`:
+     > *"How do you want to provide your team's canary-detection query?"*
+     > Choices: `Paste KQL now`, `Point me at a .kql file in this repo`
+   - **If `Paste KQL now`**: collect the KQL via `ask_user` (multi-line), write it to `.github/skills/zed-agent/queries/<service-name>-canary.kql`, and persist that path to `kusto.canary.queryFile`.
+   - **If `Point me at a .kql file in this repo`**: ask for the relative path, validate the file exists, and persist it to `kusto.canary.queryFile`.
+   - **Show this hard warning** before continuing:
+     > ⚠️ **Schema contract**: The agent expects your query to return rows with `StampName` and `DeploymentUnit` columns where `DeploymentUnit` values can be parsed for `-sfmc` / `-sf` substrings to determine cluster type. If your service does NOT use SFMC/SFRP cluster types, you must also tell the agent how to map your DeploymentUnit values to pipeline variants — otherwise Steps 5, 7, 10 will not pick the right pipeline. Document the mapping in your query file's header comment, or contact the agent author.
+   - Ask `kusto.canary.serviceFilter` last (the value substituted into `{{SERVICE_FILTER}}` at runtime). If their custom query doesn't use this placeholder, they can leave it empty.
+
+5. After persistence, recap to the release owner what was saved (cluster, database, query file path, service filter value).
 
 > If the release owner uses the **same** Kusto cluster/database for both BVT and canary detection, the agent can still keep them as separate config keys — that's fine, just enter the same values.
 
@@ -596,7 +641,7 @@ The agent uses this cluster ONLY to discover whether canary regions have SFMC vs
 Ask for:
 - `notifications.groups.permanent` — Email addresses that receive ALL release notifications (array)
 - `notifications.groups.cc` — CC recipients (array)
-- `notifications.groups.releaseOwner` — Release owner's email(s) (array)
+- `notifications.groups.releaseOwner` — Distribution list of people who *could* be release owners — e.g., your team's release-owner rotation distribution list like `mab-release-owners@microsoft.com` (array). This is **NOT** the current release owner's personal email — that's auto-detected from the signed-in user during `setup`. This distribution list receives release-owner-targeted notifications (R2D created, etc.) so the whole rotation has visibility.
 - `notifications.groups.teams` — Teams chat names for notifications (array)
 - `notifications.groups.teamsExtended` — Extended Teams chats for commit requests (array, can be subset of teams)
 

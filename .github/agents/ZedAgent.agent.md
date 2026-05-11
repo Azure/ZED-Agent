@@ -420,8 +420,8 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `setup` | First-run initialization — check prerequisites, create config, collect secrets |
 | `run` | Start a new release or resume the current one |
 | `status` | Show the 16-step pipeline dashboard with progress |
-| `skip` or `skip N` | Skip the current step (or step N) |
-| `modify skip 4,5` | Skip specific steps (also supports `reorder` and `reset`) |
+| `skip` or `skip N` | Skip the current step (or step N) at runtime |
+| `modify skip 4,5` | Skip specific steps mid-release (also supports `reorder` and `reset`). For up-front skipping, the per-release `setup` command has an interactive skip prompt. |
 | `approve-bvt` | Approve BVT check results (unblocks step 6) |
 | `approve-rollback` | Approve post-rollback results (unblocks step 9) |
 | `approve-rollforward` | Approve post-roll-forward results (unblocks step 12) |
@@ -698,7 +698,15 @@ Step 15 production-rollout:       OFF
 Step 16 merge-back:               OFF
 ```
 
-Ask: *"Would you like to change any gate settings? Gates marked ON require your approval before proceeding. Step 14 (CRB Review) is always ON and cannot be disabled."*
+Explain what a gate is, then ask whether to change defaults. Use this exact phrasing:
+
+> *"A **gate** is a pause point. When a step's gate is **ON**, the pipeline stops there and waits for you to type `approve-step <N>` (or `approve`) before moving to the next step. When **OFF**, that step auto-advances with no human input.*
+>
+> *Example: Step 6 (BVT Check) gate is ON by default — after canary BVTs run, the agent shows you the results and waits. You eyeball them, then type `approve-bvt` to continue to rollback. If you turned this gate OFF, the agent would auto-proceed to Step 7 the moment BVTs pass.*
+>
+> *The recommended defaults gate the 4 human-judgment steps (6 BVT review, 9 post-rollback sign-off, 12 post-roll-forward sign-off, 14 CRB review) and let the other 12 steps auto-flow. Step 14 is always ON and cannot be turned off — CRB approval is mandatory.*
+>
+> *Would you like to change any gates? You can also adjust them later any time with `gate on <N>` / `gate off <N>`."*
 
 **Group 11 — Pipeline Catalog**
 This generates `pipeline-catalog.json`. **Critical insight:** every service's pipelines have *different* `templateParameters` keys — there is **no fixed schema**. The agent treats `templateParameters` as a **free-form, pass-through key-value object**. Whatever the release owner provides is forwarded verbatim to the ADO pipeline trigger API at runtime. Do **not** assume a fixed set of keys; do **not** reject unknown keys.
@@ -941,8 +949,49 @@ When the release owner says `setup`:
        }
        ```
     e. Write `state.json` with 16 steps all `pending`, status `not-started`
-    f. Initialize empty `audit.jsonl`
-    g. Register Task Scheduler task via `Register-WatcherTask.ps1`
+    f. **Optional step skipping (per-release)**: Ask the release owner whether any steps should be skipped for THIS release only. Use `ask_user` with two choices: `Run all 16 steps (recommended)` and `Skip some steps`.
+       - If they pick **Run all 16 steps** → continue to sub-step g. No state changes.
+       - If they pick **Skip some steps**:
+         1. Display the full 16-step table (same format as `status`):
+            ```
+            Step 1  send-reminder              ⬚ pending
+            Step 2  cut-branch                 ⬚ pending
+            Step 3  wait-build                 ⬚ pending
+            Step 4  collect-commits            ⬚ pending
+            Step 5  deploy-canary              ⬚ pending
+            Step 6  bvt-check                  ⬚ pending
+            Step 7  rollback                   ⬚ pending
+            Step 8  post-rollback-bvt          ⬚ pending
+            Step 9  post-rollback-signoff      ⬚ pending
+            Step 10 roll-forward               ⬚ pending
+            Step 11 post-rollforward-bvt       ⬚ pending
+            Step 12 post-rollforward-signoff   ⬚ pending
+            Step 13 create-r2d                 ⬚ pending
+            Step 14 crb-review                 ⬚ pending
+            Step 15 production-rollout         ⬚ pending
+            Step 16 merge-back                 ⬚ pending
+            ```
+         2. Ask via `ask_user`: *"Which step numbers should be skipped for this release? Comma-separated (e.g., `7,8,9,10,11,12,16` to skip the rollback/roll-forward cycle and merge-back). Type `none` to run everything."*
+         3. Validate the input:
+            - Each number must be in 1–16. Reject and re-ask on invalid.
+            - Refuse if the user tries to skip ALL steps (pipeline must run at least one step).
+         4. Run the **same dependency-warning logic** as `modify skip` against the Step Dependency Matrix. For each requested skip, list any downstream steps that depend on it. Examples:
+            - Skip 2 → warns Steps 3, 4, 5, 10, 13, 15, 16 (no branch, no build, no commits, no canary, no R2D, no rollout, no merge-back)
+            - Skip 5 → warns Steps 6, 7 (nothing to BVT-check or roll back)
+            - Skip 13 → warns Steps 14, 15 (no SafeFly R2D to approve or roll out)
+            - Skip 6/9/12/14 → also warn that the human-review gate for that step is bypassed entirely
+         5. Show the warnings inline and confirm via `ask_user`: *"Skip steps {list}? Downstream steps may fail without their inputs. Proceed?"* (choices: `Yes, skip these steps`, `No, let me re-pick`)
+         6. On confirm, for each chosen step number `N`, update `state.json` via `Update-ReleaseState`:
+            ```json
+            "steps": {
+              "N": { "status": "skipped", "reason": "setup-skip", "skippedAt": "<UTC ISO 8601>", "skippedBy": "<owner alias>" }
+            }
+            ```
+         7. Append one row per skipped step to `audit.jsonl`: `{"action":"setup-skip-step","step":N,"actor":"<owner alias>","timestamp":"<UTC ISO>"}`
+         8. Echo back: *"✅ Will skip Steps {list}. The other {16 - count} steps will run normally."*
+       - **Note this is per-release only** — next month's `setup` starts fresh with all 16 steps `pending`. To skip steps mid-release later, use `skip N` or `modify skip N,N,N`.
+    g. Initialize empty `audit.jsonl`
+    h. Register Task Scheduler task via `Register-WatcherTask.ps1`
 
 12. **Report status**: Display a summary table of all checks (tool, version, status), release parameters, CCOA exclusions, canary cluster mapping, and next steps. Tell the release owner to type `run` to start the release.
 
@@ -1015,6 +1064,8 @@ When the release owner says `modify`:
 - `modify skip 4,5` — Skip steps 4 and 5
 - `modify reorder 8 before 7` — Execute step 8 before step 7
 - `modify reset 3` — Reset step 3 to `pending` for re-execution
+
+> **Tip**: To skip steps **before** the release starts, the per-release `setup` command offers an interactive skip prompt (sub-step 11.f). Same persistence — both write `status: "skipped"` to `state.json`. Use `setup` for planned skips, `modify skip` for mid-release adjustments.
 
 **Behavior**:
 1. Parse the modification request

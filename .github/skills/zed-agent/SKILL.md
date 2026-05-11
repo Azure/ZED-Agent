@@ -176,7 +176,9 @@ Pipeline definitions are configured in `pipeline-catalog.json`.
 
 Rollback reuses the canary pipelines with previous production bits (no dedicated rollback pipeline).
 
-**Pipeline selection is dynamic** — the agent queries Kusto at runtime to determine which cluster types (SFMC vs SFRP) exist in each canary region, and only triggers the applicable pipelines.
+**Pipeline selection** is config-driven via `pipeline-catalog.json → canaryRouting` and `productionRouting`:
+- `mode: "static"` (default) — the agent triggers ALL pipelines under `canary.*` (or `production.*` for Step 10) in parallel. Use this when each pipeline is region-scoped.
+- `mode: "cluster-type"` — the agent queries Kusto at runtime to determine which cluster types (e.g., SFMC vs SFRP) exist in canary regions, and only triggers the matching pipelines via `clusterTypeMap`.
 
 #### Canary Pipeline IDs & Parameters
 
@@ -188,10 +190,11 @@ Each pipeline in `pipeline-catalog.json → canary` has:
 
 Pipeline IDs, names, regions, and parameter differences are all defined in `pipeline-catalog.json`.
 
-**Key parameter differences:**
+**Key parameter differences (cluster-type routing example, e.g., PROT):**
 - **SFMC** pipelines: `CanaryScript=True`, stamps include both ecy+ccy, SFMC macros (`__SFMCPostfix__`, `__UnitName__`), `CustomResourceTemplates` with SFMC templates
 - **SFRP** pipelines: `CanaryScript=false`, stamps only ecy (ccy has no SFRP), no SFMC macros, no custom templates
-- Parameter details (Resources, OverrideResourceParameters, stamps) are defined per-pipeline in `pipeline-catalog.json`
+- For region-scoped (`mode: "static"`) catalogs, parameter shape is whatever the service author defined per entry — the agent passes `templateParameters` through verbatim.
+- All parameter details (Resources, OverrideResourceParameters, stamps) are defined per-pipeline in `pipeline-catalog.json`
 
 **Dynamic substitution:** `ArtifactsBranch = "{{currentBranch}}"` → replaced at runtime with the release branch from `release.json → currentBranch`.
 
@@ -219,7 +222,7 @@ Invoke-RestMethod -Uri "https://dev.azure.com/$org/$project/_apis/build/builds?a
 # but ArtifactsBranch points to the release branch (where built bits are)
 # Pipeline details from pipeline-catalog.json
 $catalog = Get-Content "pipeline-catalog.json" -Raw | ConvertFrom-Json
-$pipeline = $catalog.canary | Where-Object { $_.name -like "*SFMC*" }
+$pipeline = $catalog.canary.'<canary-pipeline-key>'  # e.g., $catalog.canary.'SVC-SFMC' or $catalog.canary.'DM-EACAN'
 $branch = $release.currentBranch  # e.g., "releases/svc2604"
 
 $params = $pipeline.templateParameters.PSObject.Copy()
@@ -311,7 +314,7 @@ The portal at `ra.ev2portal.azure.net` proxies gov-cloud API calls through its o
 | Database | `CONFIG[kusto.canary.database]` (from service-config.json) |
 | Auth | `az account get-access-token --resource "https://kusto.kusto.windows.net"` |
 
-**Detection logic:** DeploymentUnit ending in `-sfmc` = SFMC cluster, ending in `-sf` (no 'mc') = SFRP cluster.
+**Detection logic** (only when `pipeline-catalog.json → canaryRouting.mode == "cluster-type"` or `productionRouting.mode == "cluster-type"`): the agent runs the canary deployment-units Kusto query, parses the DeploymentUnit suffix (e.g., `-sfmc`, `-sf`), and routes via the catalog's `clusterTypeMap`. For `mode == "static"` (default), no Kusto detection is performed and ALL canary/production pipelines are triggered.
 
 Used in Steps 5 (canary), 7 (rollback), 10 (roll-forward), and 15 (production rollout).
 

@@ -20,12 +20,12 @@
 .EXAMPLE
     # The agent calls this after gathering all rollout data:
     $data = @{}
-    $data["SVC-SFMC"] = @{ Prod = $prodResult; Fairfax = $ffResult }
+    $data["<canary-pipeline-key>"] = @{ Prod = $prodResult; Fairfax = $ffResult }
     Show-Ev2Dashboard -RolloutData $data
 
 .EXAMPLE
     # Auto-query from build IDs:
-    Show-Ev2Dashboard -PipelineBuilds @{ "SVC-SFMC" = "159822784"; "SVC2-SFMC" = "159830918" }
+    Show-Ev2Dashboard -PipelineBuilds @{ "<canary-pipeline-key-1>" = "159822784"; "<canary-pipeline-key-2>" = "159830918" }
 #>
 [CmdletBinding()]
 param(

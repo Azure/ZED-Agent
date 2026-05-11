@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/microsoft/ZED-Agent/.github/skills/zed-agent/pipeline-catalog.schema.json",
+  "title": "ZED Agent Pipeline Catalog",
+  "description": "Schema for pipeline-catalog.json. Declares official build, canary, production pipelines, EV2 service-group mapping, and the routing modes used by Steps 5, 7, 10 to pick which pipelines to trigger.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["officialBuild", "canary", "production", "ev2ServiceGroups", "ev2CloudCoverage"],
+  "properties": {
+    "_comment":   { "type": "string" },
+    "description":{ "type": "string" },
+
+    "ev2ServiceTreeIds": {
+      "type": "object",
+      "description": "Per-cloud Service Tree GUIDs (Prod / Fairfax / Mooncake / USNat / USSec). Same GUID may be reused across clouds.",
+      "additionalProperties": { "type": "string" }
+    },
+
+    "ev2ServiceGroups": {
+      "type": "object",
+      "description": "Map of pipeline key → EV2 ServiceGroup name (e.g., 'Microsoft.Azure.Backup.Service.Component.ACTIVE'). Used by Step 15 EV2 monitoring.",
+      "additionalProperties": { "type": "string" }
+    },
+
+    "ev2CloudCoverage": {
+      "type": "object",
+      "description": "Map of pipeline key (or infra-type variant) → array of clouds that pipeline deploys to. Drives Step 15 dashboard rows.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "enum": ["Prod", "Fairfax", "Mooncake", "USNat", "USSec"] }
+      }
+    },
+
+    "officialBuild": {
+      "type": "object",
+      "required": ["name", "id", "sourceBranch", "templateParameters"],
+      "properties": {
+        "name":         { "type": "string" },
+        "id":           { "type": "integer", "minimum": 0 },
+        "sourceBranch": { "type": "string", "description": "Typically 'refs/heads/{{currentBranch}}'." },
+        "templateParameters": {
+          "type": "object",
+          "description": "Free-form key-value map. The agent forwards every key verbatim to ADO POST /_apis/build/builds.",
+          "additionalProperties": true
+        }
+      }
+    },
+
+    "canary": {
+      "type": "object",
+      "description": "Map of canary pipeline key → entry. Keys are service-defined (e.g., 'SVC-SFMC', 'DM-EACAN').",
+      "additionalProperties": { "$ref": "#/$defs/pipelineEntry" }
+    },
+
+    "production": {
+      "type": "object",
+      "description": "Map of production pipeline key → entry. Keys are service-defined.",
+      "additionalProperties": { "$ref": "#/$defs/pipelineEntry" }
+    },
+
+    "canaryRouting": {
+      "type": "object",
+      "description": "How Steps 5 and 7 pick which canary pipelines to trigger. Optional — defaults to mode='static' if absent.",
+      "properties": {
+        "_comment": { "type": "string" },
+        "mode": {
+          "type": "string",
+          "enum": ["static", "cluster-type"],
+          "default": "static",
+          "description": "static (default): trigger ALL entries under canary.*. cluster-type: query Kusto, parse DeploymentUnit suffix, route via clusterTypeMap."
+        },
+        "clusterTypeMap": {
+          "type": "object",
+          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix (e.g., 'sfmc', 'sf') to a pipeline key that MUST exist under canary.*.",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "if":   { "properties": { "mode": { "const": "cluster-type" } } },
+      "then": { "required": ["clusterTypeMap"] }
+    },
+
+    "productionRouting": {
+      "type": "object",
+      "description": "How Step 10 (Roll-Forward — PROD pipelines targeting canary regions) picks which production pipelines to trigger. Optional — defaults to mode='static' if absent. Independent from canaryRouting because services often have asymmetric topology (e.g., 2 canary keys + 1 prod key).",
+      "properties": {
+        "_comment": { "type": "string" },
+        "mode": {
+          "type": "string",
+          "enum": ["static", "cluster-type"],
+          "default": "static",
+          "description": "static (default): trigger ALL entries under production.*. cluster-type: query Kusto (same query as Step 5), route via clusterTypeMap."
+        },
+        "clusterTypeMap": {
+          "type": "object",
+          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix to a pipeline key that MUST exist under production.*.",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "if":   { "properties": { "mode": { "const": "cluster-type" } } },
+      "then": { "required": ["clusterTypeMap"] }
+    },
+
+    "_examples": {
+      "type": "object",
+      "description": "Optional reference shapes. Delete once real entries are populated.",
+      "additionalProperties": true
+    }
+  },
+
+  "$defs": {
+    "pipelineEntry": {
+      "type": "object",
+      "required": ["name", "id", "sourceBranch", "templateParameters"],
+      "properties": {
+        "name":         { "type": "string" },
+        "id":           { "type": "integer", "minimum": 0 },
+        "sourceBranch": { "type": "string" },
+        "templateParameters": {
+          "type": "object",
+          "description": "Free-form pass-through to ADO. Reserved {{placeholders}}: {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}}.",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

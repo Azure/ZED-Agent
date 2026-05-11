@@ -224,7 +224,7 @@ if (-not $RolloutId) {
                 failedNodes      = @()
                 inProgressNodes  = @()
                 waitingNodes     = @()
-                suggestedActions = @("Pipeline $BuildId has no $RolloutInfra stage. SFMC pipelines only deploy to Prod + Fairfax.")
+                suggestedActions = @("Pipeline $BuildId has no $RolloutInfra stage. Check pipeline-catalog.json -> ev2CloudCoverage to see which clouds this pipeline key is configured to deploy to.")
                 rawResponse      = $null
             }
         }

@@ -62,7 +62,7 @@ All pipeline definitions (officialBuild, canary, production) with full template 
 
 Key IDs for quick reference (all from CONFIG[pipelines.*]):
 - **Official Build**: ID `CONFIG[pipelines.officialBuild.id]`
-- **Canary**: Pipeline IDs from `CONFIG[pipelines.canary.*.id]` (e.g., SFMC, SFRP variants)
+- **Canary**: Pipeline IDs from `CONFIG[pipelines.canary.*.id]` — keys are service-defined (e.g., region-scoped like `SVC-EACAN`, or cluster-type variants like `SVC-SFMC` / `SVC-SFRP`)
 - **Production**: Pipeline IDs from `CONFIG[pipelines.production.*.id]`
 
 When triggering pipelines, load the catalog, read the matching entry, and pass `sourceBranch` + `templateParameters` to the ADO API. The `{{currentBranch}}` placeholder in catalog entries is replaced at runtime with `release.json → currentBranch`.
@@ -74,7 +74,7 @@ Two separate clusters serve different purposes:
 | Purpose | Cluster | Database | Used By |
 |---------|---------|----------|---------|
 | **BVT analysis** | `CONFIG[kusto.bvt.cluster]` | `CONFIG[kusto.bvt.database]` | Steps 6, 8, 11 (see BVT Failure Analysis section) |
-| **Canary detection** | `CONFIG[kusto.canary.cluster]` | `CONFIG[kusto.canary.database]` | Steps 5, 7, 10 (cluster type discovery) |
+| **Canary detection** | `CONFIG[kusto.canary.cluster]` | `CONFIG[kusto.canary.database]` | Steps 5, 7, 10 (cluster type discovery — only when `pipeline-catalog.json → canaryRouting.mode == "cluster-type"` or `productionRouting.mode == "cluster-type"`) |
 
 ### Canary Detection Queries
 
@@ -86,7 +86,7 @@ EventLogAllClusters
 | summarize make_set(DeploymentUnit) by StampName
 ```
 
-**Canary deployment units** (used by Steps 5, 7, 10 to determine SFMC vs SFRP):
+**Canary deployment units** (used by Steps 5, 7, 10 only when `canaryRouting.mode == "cluster-type"` (Steps 5/7) or `productionRouting.mode == "cluster-type"` (Step 10) — for `mode == "static"` no Kusto detection is performed and ALL pipelines under the relevant block are triggered):
 ```kql
 EventLogAllClusters
 | where TIMESTAMP > ago(1d)
@@ -96,11 +96,16 @@ EventLogAllClusters
 | order by StampName asc
 ```
 
-### Cluster Type Detection
+### Canary Routing Mode
 
-Parse `DeploymentUnit` values to determine cluster type:
-- Contains `-sfmc` → **SFMC** cluster → use SFMC pipeline variant
-- Contains `-sf` (without `-sfmc`) → **SFRP** cluster → use SFRP pipeline variant
+`pipeline-catalog.json → canaryRouting` controls how Steps 5 (canary deploy) and 7 (rollback) pick which pipelines to trigger. Two modes are supported:
+
+- **`mode: "static"`** (default if `canaryRouting` is absent): Trigger EVERY entry under `canary.*` in parallel. No Kusto detection. Use this when each canary pipeline is region-scoped (one pipeline per region — e.g., DataMover with `DM-EACAN`, `DM-ECY-CCY`).
+- **`mode: "cluster-type"`**: Run the canary deployment-units Kusto query above, parse `DeploymentUnit` values to determine cluster type (`-sfmc` → SFMC, `-sf` without `-sfmc` → SFRP, etc.), then look up the corresponding pipeline key via `canaryRouting.clusterTypeMap` (e.g., `{"sfmc": "SVC-SFMC", "sf": "SVC-SFRP"}`). Use this when a single canary region hosts multiple cluster-type variants served by separate pipelines (e.g., PROT).
+
+### Production Routing Mode
+
+`pipeline-catalog.json → productionRouting` controls how Step 10 (Roll-Forward — PROD pipelines targeting canary regions) picks which production pipelines to trigger. Same `mode` semantics as `canaryRouting` but reads from `production.*` and `productionRouting.clusterTypeMap`. This is **independent** from `canaryRouting` because services often have asymmetric topology (e.g., 2 canary keys + 1 prod key). Step 15 (production rollout to public regions) iterates ALL `production.*` entries and is unaffected by `productionRouting.mode`.
 
 ## Operational Parameters
 
@@ -726,12 +731,25 @@ Special placeholders the agent reserves and substitutes at runtime (do NOT ask t
 - `{{excludeStamps}}`, `{{pubRegions}}`, `{{ffStamps}}`, `{{ffRegions}}` — replaced with CCOA / SafeFly region scope at production trigger time
 - `{{sdpType}}`, `{{validateOnly}}` — replaced based on rollout mode
 
-Ask the release owner (in this order):
+Ask the release owner (in this order — and **persist each answer to `pipeline-catalog.json` immediately** after it's collected, just like every other group; do NOT buffer until the end):
+
 - **Official Build**: pipeline name + ID, then run the chosen discovery mode for `templateParameters`
-- **Canary Pipelines**: *"How many canary pipelines does your service have? (PROT has 4: SFMC + SFRP × Prot + DT)"* — for each, collect: key (e.g., `SVC-SFMC`), name, id, then run discovery for `templateParameters`
-- **Production Pipelines**: same pattern as canary; production parameters typically include `BranchPrefix`, `SdpType`, `Pub*Stamps`, etc. — but treat these as service-specific, not required.
+
+- **Canary Routing Mode** (asked BEFORE collecting individual canary pipelines so the agent knows what to ask for):
+  > *"How are your canary pipelines split? (a) **by region/stamp** only (no sfmc/sfrp distinction); the agent triggers ALL of them every release. (b) **By cluster type** — each canary region hosts multiple cluster-type variants (e.g., SFMC + SFRP) served by separate pipelines (sfmc pipeline/sfrp pipeline); the agent queries Kusto at runtime to pick which one to trigger."*
+  - If (a): write `canaryRouting: { mode: "static" }` to `pipeline-catalog.json` immediately.
+  - If (b): write `canaryRouting: { mode: "cluster-type", clusterTypeMap: {} }`. Then ask: *"List your cluster-type suffixes and which canary pipeline key each maps to (e.g., 'sfmc' → 'SVC-SFMC', 'sf' → 'SVC-SFRP')."* — populate `clusterTypeMap` and write to disk.
+
+- **Canary Pipelines**: *"How many canary pipelines does your service have?"* — for each, collect: key (e.g., `SVC-SFMC` or `DM-EACAN`), name, id, then run discovery for `templateParameters`. Validate that every value in `canaryRouting.clusterTypeMap` (if mode is cluster-type) matches one of the keys collected.
+
+- **Production Routing Mode** (same question shape as canary, but **asked separately** because production topology can be asymmetric — e.g., 2 canary keys but only 1 production key):
+  > *"How are your production pipelines split — by region/stamp only (no sfmc/sfrp distinction) or by cluster type? (Same options as canary; pick independently.)"*
+  - Persist `productionRouting: { mode: "static" }` or `productionRouting: { mode: "cluster-type", clusterTypeMap: {…} }` to disk immediately.
+
+- **Production Pipelines**: same pattern as canary; production parameters typically include `BranchPrefix`, `SdpType`, `Pub*Stamps`, etc. — but treat these as service-specific, not required. Validate `productionRouting.clusterTypeMap` against collected keys.
+
 - **EV2 Service Groups**: for each pipeline key, the EV2 ServiceGroup name (e.g., `Microsoft.Azure.Backup.<Service>.<Component>.ACTIVE`)
-- **EV2 Cloud Coverage**: for each infrastructure type (e.g., SFMC, SFRP) — which clouds are supported (Prod, Fairfax, Mooncake, USNat, USSec)
+- **EV2 Cloud Coverage**: for each pipeline key — which clouds it deploys to (Prod, Fairfax, Mooncake, USNat, USSec)
 - **EV2 Service Tree IDs**: per cloud (Prod, Fairfax, Mooncake) — GUID
 
 Tell the release owner: *"Pipeline IDs can be found in the ADO pipeline URL — it's the number in `definitionId=XXXXXX`. The auto-fetch mode uses the same Personal Access Token / Entra auth as `setup`."*
@@ -913,9 +931,8 @@ When the release owner says `setup`:
      | where StampName startswith "ea-can" or StampName startswith "ecy" or StampName startswith "ccy"
      | summarize make_set(DeploymentUnit) by StampName
      ```
-   - Parse results to determine which canary regions have SFMC vs SFRP clusters
-   - Display the cluster type mapping to the release owner
-   - This mapping is used at runtime by Steps 5, 8, and 11 to decide which pipelines to trigger per region
+   - **If `pipeline-catalog.json → canaryRouting.mode == "cluster-type"` OR `productionRouting.mode == "cluster-type"`**: parse Kusto results to determine which canary regions have which cluster types (e.g., SFMC vs SFRP) using each routing block's `clusterTypeMap`, and display the cluster-type → pipeline-key mapping to the release owner. This mapping is used at runtime by Steps 5, 7, and 10.
+   - **If both routing modes are `"static"` (default)**: skip cluster-type parsing — Steps 5, 7, and 10 will trigger all `canary.*` / `production.*` entries unconditionally. Display: *"Routing mode is 'static' — all canary/production pipelines will be triggered every release; no Kusto-driven routing required."*
 
 9. **SafeFly API connectivity test**: Run the SafeFly pre-flight skill:
    ```powershell
@@ -1348,12 +1365,10 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 3 completed (build done). Step 4 (commit analysis) runs in parallel and is NOT a prerequisite for canary.
 **Actions**:
-1. Query Kusto (canary detection cluster: `CONFIG[kusto.canary.cluster]` / `CONFIG[kusto.canary.database]`, canary deployment units query from Domain Knowledge) to determine which canary regions have SFMC vs SFRP clusters
-2. For each cluster type found in canary regions, trigger the matching CANARY pipeline from `CONFIG[pipelines.canary.*]` in parallel:
-   - If SFMC stamps exist → trigger the SFMC canary pipeline
-   - If SFRP stamps exist → trigger the SFRP canary pipeline
-   - Same logic for all other pipeline keys defined in CONFIG[pipelines.canary.*]
-3. All applicable pipelines are triggered in **parallel**
+1. Read `pipeline-catalog.json → canaryRouting` (default `{ mode: "static" }` if absent):
+   - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `canary.*` in parallel.
+   - **`mode: "cluster-type"`** — query Kusto (canary detection cluster: `CONFIG[kusto.canary.cluster]` / `CONFIG[kusto.canary.database]`, canary deployment units query from Domain Knowledge) to determine which canary regions have which cluster types. For each cluster suffix found, look up the matching pipeline key via `canaryRouting.clusterTypeMap` and trigger that entry under `canary.*`. If a suffix has no mapping in `clusterTypeMap`, log a warning and skip it.
+2. All applicable pipelines are triggered in **parallel**
 4. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 5. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Canary deployment started"
 6. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):
@@ -1435,7 +1450,7 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 6 approved
 **Actions**:
-1. Query Kusto for canary cluster types (same as Step 5)
+1. Determine which canary pipelines to trigger using `canaryRouting` — same logic as Step 5 (`mode: "static"` → all `canary.*`; `mode: "cluster-type"` → Kusto-driven via `clusterTypeMap`)
 2. Trigger the same CANARY pipelines used in Step 5, but with `ArtifactsBranch` set to `release.json → previousBranch` (the previous release branch containing known-good production bits), in **parallel**
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step7 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Rollback started"
@@ -1465,12 +1480,10 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 9 approved
 **Actions**:
-1. Query Kusto for canary cluster types (same as Step 5)
-2. For each cluster type found, trigger the matching **PRODUCTION** pipeline from `CONFIG[pipelines.production.*]` targeting canary regions, in **parallel**:
-   - If SFMC stamps exist → trigger the SFMC production pipeline
-   - If SFRP stamps exist → trigger the SFRP production pipeline
-   - Same logic for all other pipeline keys defined in CONFIG[pipelines.production.*]
-3. This validates that the PROD pipelines work correctly before using them for public regions
+1. Read `pipeline-catalog.json → productionRouting` (default `{ mode: "static" }` if absent — **note: this is a SEPARATE block from `canaryRouting`** because services often have asymmetric canary vs production topology):
+   - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `production.*` (targeting canary regions) in parallel.
+   - **`mode: "cluster-type"`** — query Kusto (same query as Step 5) to determine which canary regions have which cluster types. For each cluster suffix found, look up the matching pipeline key via `productionRouting.clusterTypeMap` and trigger that entry under `production.*`. If a suffix has no mapping, log a warning and skip it.
+2. This validates that the PROD pipelines work correctly before using them for public regions
 4. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step10 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 5. **Capture BuildNumber**: After the PROD pipeline runs start, read the `buildNumber` from any of the triggered pipeline runs via ADO API (`GET /{project}/_apis/build/builds/{buildId}`). The format is `<BranchName>-<RunCount>` (e.g., `Release-2604-2` means branch `Release-2604`, 2nd run). Store this in `release.json → buildNumber`. This value is used later by Step 13 for the SafeFly `DeploymentDetails.DeploymentToolInputs.BuildNumber` parameter.
 6. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Roll-forward started (PROD pipelines → canary)"
@@ -1860,8 +1873,12 @@ $authFailedClouds = @()
 $pipelineKeys = $cfg.pipelines.ev2ServiceGroups.PSObject.Properties.Name  # e.g., keys from pipeline-catalog.json
 foreach ($pipeKey in $pipelineKeys) {
     $data[$pipeKey] = @{}
-    $infraType = ($pipeKey -split '-',2)[1]  # e.g., "SFMC" or "SFRP" — ev2CloudCoverage is keyed by infra type
-    $clouds = $cfg.pipelines.ev2CloudCoverage[$infraType]  # e.g., @("Prod", "Fairfax")
+    # ev2CloudCoverage is keyed by pipeline key directly (see pipeline-catalog.schema.json)
+    $clouds = $cfg.pipelines.ev2CloudCoverage.$pipeKey  # e.g., @("Prod", "Fairfax")
+    if (-not $clouds) {
+        Write-Warning "Pipeline key '$pipeKey' has no entry in ev2CloudCoverage — skipping"
+        continue
+    }
     foreach ($cloud in $clouds) {
         $result = & .\.github\skills\zed-agent\scripts\EV2\Get-Ev2RolloutStatus.ps1 `
             -RolloutId "<id>" -ServiceGroup "<sg>" -RolloutInfra $cloud

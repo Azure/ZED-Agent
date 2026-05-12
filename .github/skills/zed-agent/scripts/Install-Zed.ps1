@@ -43,6 +43,7 @@
       5. Force-add and commit:
             git add -f .github/agents/ZedAgent.agent.md
             git add -f .github/skills/zed-agent/
+            git add -f .github/skills/teams-chat/
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -264,11 +265,13 @@ if (-not $SourcePath) {
     $SourcePath = Resolve-Path (Join-Path $scriptDir '..\..\..\..') | Select-Object -ExpandProperty Path
 }
 
-$srcAgentMd  = Join-Path $SourcePath '.github\agents\ZedAgent.agent.md'
-$srcSkillDir = Join-Path $SourcePath '.github\skills\zed-agent'
+$srcAgentMd      = Join-Path $SourcePath '.github\agents\ZedAgent.agent.md'
+$srcSkillDir     = Join-Path $SourcePath '.github\skills\zed-agent'
+$srcTeamsChatDir = Join-Path $SourcePath '.github\skills\teams-chat'
 
 if (-not (Test-Path $srcAgentMd))  { throw "Source agent file not found: $srcAgentMd" }
 if (-not (Test-Path $srcSkillDir)) { throw "Source skill directory not found: $srcSkillDir" }
+if (-not (Test-Path $srcTeamsChatDir)) { throw "Source teams-chat skill not found: $srcTeamsChatDir (required dependency for Send-TeamsMessage)" }
 
 # ─── Resolve target ──────────────────────────────────────────────────────────
 if (-not (Test-Path $TargetRepoPath)) { throw "Target repo path does not exist: $TargetRepoPath" }
@@ -278,8 +281,9 @@ if (-not (Test-Path (Join-Path $TargetRepoPath '.git'))) {
     Write-Warning "Target path does not appear to be a git repository (no .git folder). Continuing anyway."
 }
 
-$tgtAgentMd  = Join-Path $TargetRepoPath '.github\agents\ZedAgent.agent.md'
-$tgtSkillDir = Join-Path $TargetRepoPath '.github\skills\zed-agent'
+$tgtAgentMd      = Join-Path $TargetRepoPath '.github\agents\ZedAgent.agent.md'
+$tgtSkillDir     = Join-Path $TargetRepoPath '.github\skills\zed-agent'
+$tgtTeamsChatDir = Join-Path $TargetRepoPath '.github\skills\teams-chat'
 
 # Files we never copy from source (runtime artifacts or live configs we'll
 # replace with embedded empty skeletons below).
@@ -340,6 +344,29 @@ Get-ChildItem -Path $srcSkillDir -Recurse -File | ForEach-Object {
     }
 }
 
+# ─── Copy teams-chat sibling skill (hard dependency for Send-TeamsMessage) ───
+if ($PSCmdlet.ShouldProcess($tgtTeamsChatDir, 'Create directory')) {
+    New-Item -Type Directory -Path $tgtTeamsChatDir -Force | Out-Null
+}
+Get-ChildItem -Path $srcTeamsChatDir -Recurse -File | ForEach-Object {
+    $rel    = $_.FullName.Substring($srcTeamsChatDir.Length).TrimStart('\','/')
+    $segs   = $rel -split '[\\/]'
+    if ($segs | Where-Object { $excludedDirs -contains $_ }) {
+        Write-Verbose "Skipping runtime dir entry: $rel"
+        return
+    }
+    $dst    = Join-Path $tgtTeamsChatDir $rel
+    $dstDir = Split-Path -Parent $dst
+    if (-not (Test-Path $dstDir)) {
+        if ($PSCmdlet.ShouldProcess($dstDir, 'Create directory')) {
+            New-Item -Type Directory -Path $dstDir -Force | Out-Null
+        }
+    }
+    if ($PSCmdlet.ShouldProcess($dst, "Copy teams-chat/$rel")) {
+        Copy-Item -Path $_.FullName -Destination $dst -Force:$Force
+    }
+}
+
 # ─── Write the empty config skeletons ────────────────────────────────────────
 foreach ($pair in @(
     @{ Path = (Join-Path $tgtSkillDir 'service-config.json');   Body = $EmptyServiceConfig;   Name = 'service-config.json' }
@@ -364,6 +391,7 @@ Write-Host ""
 Write-Host "Files placed:" -ForegroundColor White
 Write-Host "  .github/agents/ZedAgent.agent.md"
 Write-Host "  .github/skills/zed-agent/  (scripts, schema, queries, templates)"
+Write-Host "  .github/skills/teams-chat/ (CDP-based Teams messaging — auto-discovers conversation IDs)"
 Write-Host "  .github/skills/zed-agent/service-config.json    [empty]"
 Write-Host "  .github/skills/zed-agent/pipeline-catalog.json  [empty]"
 Write-Host ""
@@ -378,5 +406,6 @@ Write-Host ""
 Write-Host "Then commit (note -f because .github/ is often gitignored):" -ForegroundColor Cyan
 Write-Host "  git add -f .github/agents/ZedAgent.agent.md"
 Write-Host "  git add -f .github/skills/zed-agent/"
+Write-Host "  git add -f .github/skills/teams-chat/"
 Write-Host "  git commit -m `"feat(zed): onboard ZED Agent`""
 Write-Host ""

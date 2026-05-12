@@ -29,10 +29,11 @@ function Send-TeamsMessage {
         return @{ success = $false; error = "Either -TemplatePath or -Body must be provided" }
     }
 
-    # Load the Teams-ChatHelper from the teams-chat skill
+    # Load the Teams-ChatHelper from the bundled teams-chat sibling skill
     $helperPath = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "teams-chat\scripts\Teams-ChatHelper.ps1"
     if (-not (Test-Path $helperPath)) {
-        return @{ success = $false; error = "Teams-ChatHelper.ps1 not found at $helperPath" }
+        return @{ success = $false
+                  error = "teams-chat skill is missing at $helperPath. Re-run Install-Zed.ps1 to restore it (it's bundled with ZED)." }
     }
     . $helperPath
 

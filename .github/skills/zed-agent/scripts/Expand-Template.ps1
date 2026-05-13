@@ -1,7 +1,11 @@
 function Expand-Template {
     param(
         [Parameter(Mandatory)][string]$TemplatePath,
-        [Parameter(Mandatory)][hashtable]$Variables
+        [Parameter(Mandatory)][hashtable]$Variables,
+        # When set, leftover {{placeholder}} tokens after substitution throw an error
+        # instead of being silently sent to Teams/email. Default ON because a
+        # half-rendered message is almost always a bug, not intentional.
+        [bool]$StrictPlaceholders = $true
     )
     $content = (Get-Content -Path $TemplatePath -Raw -Encoding UTF8).TrimEnd("`r`n")
     # Handle conditional sections: {{#key}}...{{/key}}
@@ -23,6 +27,12 @@ function Expand-Template {
     foreach ($key in $Variables.Keys) {
         $replacement = ([string]$Variables[$key]) -replace '\$', '$$$$'
         $content = $content -replace "\{\{$key\}\}", $replacement
+    }
+    if ($StrictPlaceholders) {
+        $leftover = [regex]::Matches($content, '\{\{[^{}]+\}\}') | ForEach-Object { $_.Value } | Sort-Object -Unique
+        if ($leftover) {
+            throw "Expand-Template: template '$TemplatePath' has unsubstituted placeholders: $($leftover -join ', '). Add these keys to -Variables or pass -StrictPlaceholders:`$false to allow."
+        }
     }
     return $content
 }

@@ -71,8 +71,13 @@
         },
         "clusterTypeMap": {
           "type": "object",
-          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix (e.g., 'sfmc', 'sf') to a pipeline key that MUST exist under canary.*.",
-          "additionalProperties": { "type": "string" }
+          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix (e.g., 'sfmc', 'sf') to a pipeline key under canary.* (string) OR a list of pipeline keys (array of strings). Use an array when multiple canary pipelines share the same cluster type (e.g., PROT-SFMC + DT-SFMC both serve 'sfmc' workloads).",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            ]
+          }
         }
       },
       "if":   { "properties": { "mode": { "const": "cluster-type" } } },
@@ -92,8 +97,13 @@
         },
         "clusterTypeMap": {
           "type": "object",
-          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix to a pipeline key that MUST exist under production.*.",
-          "additionalProperties": { "type": "string" }
+          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix to a pipeline key under production.* (string) OR a list of pipeline keys (array of strings).",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            ]
+          }
         }
       },
       "if":   { "properties": { "mode": { "const": "cluster-type" } } },

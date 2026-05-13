@@ -16,10 +16,17 @@ Describe 'Expand-Template' {
             $result | Should -Be 'Hello Gireeraj, welcome to BDP!'
         }
 
-        It 'leaves unrecognized {{placeholders}} from missing keys unchanged' {
+        It 'throws by default when {{placeholders}} are missing from -Variables' {
             $tpl = Join-Path $TestDrive 'templates/partial.txt'
             '{{known}} and {{unknown}}' | Set-Content $tpl -Encoding UTF8
-            $result = Expand-Template -TemplatePath $tpl -Variables @{ known = 'yes' }
+            { Expand-Template -TemplatePath $tpl -Variables @{ known = 'yes' } } |
+                Should -Throw -ExpectedMessage '*unsubstituted placeholders*{{unknown}}*'
+        }
+
+        It 'leaves unrecognized {{placeholders}} unchanged when -StrictPlaceholders:$false' {
+            $tpl = Join-Path $TestDrive 'templates/partial-lenient.txt'
+            '{{known}} and {{unknown}}' | Set-Content $tpl -Encoding UTF8
+            $result = Expand-Template -TemplatePath $tpl -Variables @{ known = 'yes' } -StrictPlaceholders:$false
             $result | Should -Be 'yes and {{unknown}}'
         }
 

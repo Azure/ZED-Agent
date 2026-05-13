@@ -101,7 +101,7 @@ EventLogAllClusters
 `pipeline-catalog.json → canaryRouting` controls how Steps 5 (canary deploy) and 7 (rollback) pick which pipelines to trigger. Two modes are supported:
 
 - **`mode: "static"`** (default if `canaryRouting` is absent): Trigger EVERY entry under `canary.*` in parallel. No Kusto detection. Use this when each canary pipeline is region-scoped (one pipeline per region — e.g., DataMover with `DM-EACAN`, `DM-ECY-CCY`).
-- **`mode: "cluster-type"`**: Run the canary deployment-units Kusto query above, parse `DeploymentUnit` values to determine cluster type (`-sfmc` → SFMC, `-sf` without `-sfmc` → SFRP, etc.), then look up the corresponding pipeline key via `canaryRouting.clusterTypeMap` (e.g., `{"sfmc": "SVC-SFMC", "sf": "SVC-SFRP"}`). Use this when a single canary region hosts multiple cluster-type variants served by separate pipelines (e.g., PROT).
+- **`mode: "cluster-type"`** (opt-in — only services with split topology like PROT need this): Run the canary deployment-units Kusto query above, classify each `StampName` by its `DeploymentUnit` substrings (`-sfmc` → SFMC; `-sf` without `-sfmc` → SFRP; etc.), then look up the corresponding pipeline key(s) via `canaryRouting.clusterTypeMap` — values may be a single key (`"sfmc": "SVC-SFMC"`) or an array (`"sfmc": ["PROT-SFMC", "DT-SFMC"]`). Step 5 ALSO filters each triggered pipeline's stamp-list params (`CanaryStamps`, `CanarystampsProd`, `PublicStamps`, etc.) to only the stamps Kusto classifies as that pipeline's cluster type — this prevents SFMC stamps leaking into SFRP runs (see Step 5 cluster-type routing sub-procedure for the full algorithm). Kusto is mandatory **only in `mode: "cluster-type"`** — if the query fails there, the step halts with `failed` (no silent fallback to "trigger all"). Services on `mode: "static"` (or with no `canaryRouting` block at all) never query Kusto in Step 5.
 
 ### Production Routing Mode
 
@@ -834,12 +834,7 @@ If validation fails, list the missing/invalid fields and offer the release owner
 
 When the release owner says `setup`:
 
-1. **Check prerequisites**: Verify these tools exist and are working:
-   - `copilot` — Copilot CLI binary
-   - `pwsh` — PowerShell 7.x
-   - `az` — Azure CLI (run `az account show` to verify login)
-   - `git` — Git for Windows
-   - `ImportExcel` — PowerShell module (`Get-Module -ListAvailable ImportExcel`)
+1. **Check prerequisites**: Run `.github/skills/zed-agent/scripts/Test-PreFlight.ps1` (with the standard params: `-ConfigPath`, `-AdoOrg`, `-AdoProject`, `-KustoCluster <CONFIG[kusto.canary.cluster]>`, `-KustoDatabase <CONFIG[kusto.canary.database]>`). This is the **single source of truth** for tool checks — it verifies `copilot`, `pwsh`, `az`, `git`, `ImportExcel`, ADO connectivity, Kusto connectivity, and Mail MCP. Critically, the az check uses `az account get-access-token` (not `az account show`) so a stale MSAL/WAM cache is detected, and on failure it auto-runs the remediation cascade (`az account clear` → interactive `az login --tenant microsoft.com` → WAM-disable + retry → device-code as last resort). The release owner only has to complete the browser login when prompted; the agent handles every other command. If preflight reports any `fail`, halt and show those items before continuing — do NOT proceed to step 2.
 
 2. **CCOA region exclusion (auto-detect)**: Automatically check the CCOA (Critical Changes Only Advisory) schedule to determine which Azure regions are blocked for the current month.
    a. Use the Engineering Hub MCP tool (`es_search`) to query the CCOA schedule:
@@ -1301,7 +1296,7 @@ When the release owner says `teardown`:
 **Actions**:
 1. Fetch build result (succeeded/failed) via ADO API
 2. If **succeeded**: send email to release owner via `SendEmailWithAttachments` MCP tool with build number and duration, advance to next step
-3. If **failed**: send failure email to release owner via `SendEmailWithAttachments` MCP tool, set step → `failed`, halt for `ack`
+3. If **failed**: send failure email to release owner via `SendEmailWithAttachments` MCP tool, set step → `failed`, halt for `ack`. Release owner can issue `ack retry` to re-queue the build on the same release branch with the same `templateParameters` (Step 2's queueing logic, but Step 1's branch-creation is skipped because the branch already exists). Any other `ack` aborts the release.
 **State**: Step 3 → `completed` or `failed`
 **Next**: Proceed to Step 4
 
@@ -1351,7 +1346,15 @@ When the release owner says `teardown`:
 6. Generate `commits.xlsx` via `New-CommitExcel` (5 auto-filled columns: CommitHash, Owner, Date, Title, Comments + 3 manual columns: Impact, Validations, Rollback Friendly).
 7. Upload `.xlsx` to SharePoint via `Upload-ToSharePoint`, get sharing URL.
 8. Store URL in `release.json.commitExcelUrl`.
-9. Post `templates/commit-request-message.html` to Teams with the SharePoint link, asking the team to review and fill Impact/Validations/Rollback columns.
+9. Post `templates/commit-request-message.html` to Teams (route key `commit-request`) using `Send-TeamsMessage -TemplatePath <path> -TemplateVariables <hashtable>`. The template **requires all six** placeholders below — populate every one or the message will render with literal `{{...}}` text and a broken link:
+   - `releaseId` — from `release.json → releaseId`
+   - `commitCount` — total rows in `commits.json`
+   - `contributorCount` — distinct count of `Author` values in `commits.json`
+   - `prevBranch` — from `release.json → previousBranch`
+   - `currentBranch` — from `release.json → currentBranch`
+   - `excelUrl` — the SharePoint sharing URL stored in step 8 (`release.json → commitExcelUrl`)
+
+   Before sending, verify the rendered body contains no `{{` substring; if any remain, fix the variable map and re-render rather than sending a broken message.
 **State**: Step 4 → `waiting` (watcher active)
 **⚠️ Test Mode Override**: When `testMode` is `true`, auto-fill the manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes") for all rows. Skip the `poll-onedrive-file` watcher — mark Step 4 as `completed` immediately after upload. No Teams commit-request message (test mode suppresses Teams).
 **Watcher**: `poll-onedrive-file` — polls the uploaded Excel on SharePoint every **60 minutes** to check team progress. The watcher reads the Excel and counts how many rows have the **Impact** column filled (non-empty). Completion condition: **100% of Impact cells are filled**.
@@ -1366,12 +1369,33 @@ When the release owner says `teardown`:
 **Trigger**: Step 3 completed (build done). Step 4 (commit analysis) runs in parallel and is NOT a prerequisite for canary.
 **Actions**:
 1. Read `pipeline-catalog.json → canaryRouting` (default `{ mode: "static" }` if absent):
-   - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `canary.*` in parallel.
-   - **`mode: "cluster-type"`** — query Kusto (canary detection cluster: `CONFIG[kusto.canary.cluster]` / `CONFIG[kusto.canary.database]`, canary deployment units query from Domain Knowledge) to determine which canary regions have which cluster types. For each cluster suffix found, look up the matching pipeline key via `canaryRouting.clusterTypeMap` and trigger that entry under `canary.*`. If a suffix has no mapping in `clusterTypeMap`, log a warning and skip it.
-2. All applicable pipelines are triggered in **parallel**
-4. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
-5. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Canary deployment started"
-6. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):
+   - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `canary.*` in parallel. Pass each entry's `templateParameters` to ADO verbatim.
+   - **`mode: "cluster-type"`** — run the cluster-type routing sub-procedure below. **Kusto is mandatory in this mode: if the query fails, the step MUST halt with `failed` and notify CONFIG[notifications.groups.permanent]. Do NOT silently fall back to triggering everything — that is what caused the PROT 2026-05 mis-routing (ccy stamps sent to SFRP pipeline).**
+
+   ### Cluster-type routing sub-procedure (used by Steps 5, 7, 10)
+
+   a. **Query Kusto** at `CONFIG[kusto.canary.cluster]` / `CONFIG[kusto.canary.database]` using the canary deployment-units query from Domain Knowledge. On any token error, **invoke `.github/skills/zed-agent/scripts/Repair-AzAuth.ps1 -Tenant 'microsoft.com' -Resource <kusto.canary.cluster>`** (3-attempt cascade: interactive login → WAM-disable + retry → device-code; release owner only completes the browser prompt). Retry the Kusto query once after a successful remediation; if still failing, mark the step `failed` — do not proceed.
+
+   b. **Classify each StampName** by inspecting the `DeploymentUnit` values returned for that stamp:
+      - DeploymentUnit contains `-sfmc` → cluster type **`sfmc`**
+      - DeploymentUnit contains `-sf` but NOT `-sfmc` → cluster type **`sf`**
+      - Other → use the literal suffix per service-specific mapping (document in `clusterTypeMap` comment)
+      - A single StampName MAY have multiple DeploymentUnit rows with different cluster types (e.g., `ea-01` running both `<x>-sfmc` and `<x>-sf` units) — record ALL cluster types for that stamp.
+
+   c. **Resolve pipeline targets**: for each *unique* cluster type observed across all stamps, look it up in `canaryRouting.clusterTypeMap`. The value may be a string (one pipeline key) or an array of strings (multiple keys). Collect the union of all pipeline keys. Any cluster type with no mapping → log warning + skip (do not trigger anything for it).
+
+   d. **Filter `templateParameters` stamps per pipeline** — this is the critical step that was missing. For each pipeline key to be triggered:
+      - Determine the pipeline's cluster type (the `clusterTypeMap` entry whose value contains this key).
+      - **Identify stamp-list parameters** by inspecting each entry in that pipeline's `templateParameters`: a parameter is a stamp list if (i) its name contains the substring `stamp` (case-insensitive — covers `CanaryStamps`, `CanarystampsProd`, `PublicStamps`, `Publicstamps`, `MCstamps`, `FFstamps`, `Bleustamps`, and any future variant) AND (ii) its value parses as a PowerShell array literal (`@("ea-01","ccy-01",…)`). Parameters that don't satisfy both checks pass through unchanged.
+      - For each identified stamp-list parameter: parse the array, drop any stamp whose Kusto-classified cluster types do NOT include this pipeline's cluster type, and re-serialize. If the filtered list is empty, omit that pipeline entirely with a warning (do not trigger with empty stamps).
+      - Example: PROT-SFRP pipeline has `CanarystampsProd: @("ecy-01","ccy-01")`. Kusto says `ccy-01` runs only `-sfmc` DeploymentUnits. Filter → `CanarystampsProd: @("ecy-01")` before triggering.
+
+   e. **Log to `audit.jsonl`** before triggering: `{ event: "cluster-type-routing", kustoRows: <count>, stampClassification: { "<stamp>": ["<types>"] }, triggeredPipelines: [{ key, clusterType, filteredStamps: {...} }], skippedDueToNoMapping: [...], skippedDueToEmptyStamps: [...] }`. This makes a future PROT-2026-05-style mis-route diagnosable from the audit alone.
+
+2. Trigger all resolved pipelines in **parallel** with the filtered `templateParameters`.
+3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
+4. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Canary deployment started"
+5. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):
    ```powershell
    . .github\skills\zed-agent\scripts\Get-PipelineApprovalLinks.ps1
    $builds = @(
@@ -1399,8 +1423,8 @@ When the release owner says `teardown`:
      ```
    - If no approval links found after scan → post simpler message: "Canary pipelines triggered, check ADO for status"
    - Log `canary-approval-links-posted` event to `audit.jsonl`
-   - **If `az` CLI token is expired** (Get-PipelineApprovalLinks returns partial results): post what you have, note in message that some links may be missing
-7. Watcher polls all triggered pipeline runs every 1 hour
+   - **If `az` CLI token is expired** (Get-PipelineApprovalLinks returns partial results): post what you have, note in message that some links may be missing. If the agent is mid-step and needs a fresh token immediately, dot-source `Repair-AzAuth.ps1` (see Step 5(a)) before retrying — same 3-attempt cascade as preflight.
+6. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
 **Watcher approval detection**: On each poll cycle, the watcher also scans for new approval links (see `poll-ado-pipelines` action in `Release-Watcher.ps1`). If new links are found that haven't been posted, the watcher sends an updated Teams message to the Teams chat specified in the watcher directive's `teamsChatName` field.
 **Completion**: All triggered pipelines succeed → send email to release owner via `SendEmailWithAttachments` MCP tool: "Canary deployment completed"
@@ -1450,12 +1474,13 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 6 approved
 **Actions**:
-1. Determine which canary pipelines to trigger using `canaryRouting` — same logic as Step 5 (`mode: "static"` → all `canary.*`; `mode: "cluster-type"` → Kusto-driven via `clusterTypeMap`)
+1. Determine which canary pipelines to trigger using `canaryRouting` — **same logic as Step 5, including the cluster-type routing sub-procedure (Kusto-mandatory, stamp filtering per pipeline, audit log)**. In `cluster-type` mode the Kusto query is re-run (do NOT reuse Step 5's cached result — cluster topology may have shifted during the canary window).
 2. Trigger the same CANARY pipelines used in Step 5, but with `ArtifactsBranch` set to `release.json → previousBranch` (the previous release branch containing known-good production bits), in **parallel**
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step7 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Rollback started"
-5. Watcher polls all triggered pipeline runs every 1 hour
-**Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: 3600 }`
+5. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use `releaseId` + `releaseOwner` + the rollback build details for the template vars. Rollback pipelines have the same EV2 approval gates as forward canary, so release owners need these links.
+6. Watcher polls all triggered pipeline runs every 1 hour
+**Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
 **Completion**: All triggered pipelines succeed
 **Note**: Rollback deploys from `previousBranch` via CANARY pipelines to restore known-good bits in canary regions
 
@@ -1482,13 +1507,14 @@ When the release owner says `teardown`:
 **Actions**:
 1. Read `pipeline-catalog.json → productionRouting` (default `{ mode: "static" }` if absent — **note: this is a SEPARATE block from `canaryRouting`** because services often have asymmetric canary vs production topology):
    - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `production.*` (targeting canary regions) in parallel.
-   - **`mode: "cluster-type"`** — query Kusto (same query as Step 5) to determine which canary regions have which cluster types. For each cluster suffix found, look up the matching pipeline key via `productionRouting.clusterTypeMap` and trigger that entry under `production.*`. If a suffix has no mapping, log a warning and skip it.
-2. This validates that the PROD pipelines work correctly before using them for public regions
-4. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step10 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
-5. **Capture BuildNumber**: After the PROD pipeline runs start, read the `buildNumber` from any of the triggered pipeline runs via ADO API (`GET /{project}/_apis/build/builds/{buildId}`). The format is `<BranchName>-<RunCount>` (e.g., `Release-2604-2` means branch `Release-2604`, 2nd run). Store this in `release.json → buildNumber`. This value is used later by Step 13 for the SafeFly `DeploymentDetails.DeploymentToolInputs.BuildNumber` parameter.
-6. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Roll-forward started (PROD pipelines → canary)"
+   - **`mode: "cluster-type"`** — apply the **cluster-type routing sub-procedure defined in Step 5** against the `production.*` entries and `productionRouting.clusterTypeMap`. Kusto is mandatory; on query failure halt with `failed`. Filter every stamp-list parameter per pipeline as in Step 5(d) (stamp-list = any param name containing `stamp` case-insensitive whose value parses as a PowerShell array literal). Log the full classification + filtered stamp map to `audit.jsonl`.
+2. This validates that the PROD pipelines work correctly before using them for public regions.
+3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step10 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
+4. **Capture BuildNumber**: After the PROD pipeline runs start, read the `buildNumber` from **any** of the triggered pipeline runs via ADO API (`GET /{project}/_apis/build/builds/{buildId}`) — all PROD pipelines build from the same release branch so `buildNumber` is identical across runs. The format is `<BranchName>-<RunCount>` (e.g., `Release-2604-2` means branch `Release-2604`, 2nd run). Store this in `release.json → buildNumber`. This value is used later by Step 13 for the SafeFly `DeploymentDetails.DeploymentToolInputs.BuildNumber` parameter.
+5. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Roll-forward started (PROD pipelines → canary)"
+6. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use the PROD pipeline build details for the template vars; PROD pipelines have EV2 approval gates just like canary.
 7. Watcher polls all triggered pipeline runs every 1 hour
-**Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: 3600 }`
+**Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
 **Completion**: All triggered pipelines succeed
 **Note**: Uses the same release bits as Step 5 (canary) but deploys via the PROD pipeline path
 

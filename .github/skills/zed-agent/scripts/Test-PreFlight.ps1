@@ -132,11 +132,25 @@ function Test-PreFlight {
 
     # ── 4. Prerequisites (tools) ──
     # az CLI
+    #
+    # Shared remediation helper — dot-sources Repair-AzAuth.ps1 so the cascade logic
+    # lives in exactly one place. Same script is invoked by in-flight steps (5/7/10)
+    # when they hit a token error mid-run.
+    $repairScript = Join-Path $PSScriptRoot 'Repair-AzAuth.ps1'
+    $invokeAzAuthRemediation = {
+        param([string]$tenant, [string]$resource)
+        if ($resource) {
+            & $repairScript -Tenant $tenant -Resource $resource
+        } else {
+            & $repairScript -Tenant $tenant
+        }
+    }
+
     try {
         $azVer = az version 2>$null | ConvertFrom-Json
         $azLoggedIn = az account show --query user.name -o tsv 2>$null
 
-        # Inline helper so we can re-run the same validation after AutoFix without duplicating logic.
+        # Inline helper so we can re-run the same validation without duplicating logic.
         $validateAzToken = {
             param([string]$signedInUser)
             $probe = az account get-access-token --query expiresOn -o tsv 2>&1
@@ -148,35 +162,15 @@ function Test-PreFlight {
 
         if (-not $azLoggedIn -or -not (& $validateAzToken $azLoggedIn).ok) {
             $initialErr = if ($azLoggedIn) { (& $validateAzToken $azLoggedIn).error } else { "Not logged in" }
+            Write-Host "[Auto-remediate] az CLI not usable ($initialErr). Starting full remediation cascade against tenant '$Tenant'..." -ForegroundColor Yellow
 
-            Write-Host "[Auto-remediate] az CLI not usable ($initialErr). Clearing MSAL cache and re-authenticating against tenant '$Tenant'..." -ForegroundColor Yellow
-            az account clear 2>&1 | Out-Null
+            $remediation = & $invokeAzAuthRemediation $Tenant $null
 
-            # Try interactive (browser/WAM) login first — device-code flow is blocked by
-            # Conditional Access in many tenants, so it must not be the first attempt.
-            Write-Host "[Auto-remediate] Attempt 1: az login --tenant $Tenant (interactive browser). Complete sign-in in the browser window." -ForegroundColor Yellow
-            az login --tenant $Tenant | Out-Host
-            $loginExit = $LASTEXITCODE
-            $azLoggedIn = az account show --query user.name -o tsv 2>$null
-
-            # Fall back to device code only if the interactive flow failed (e.g., no browser available on the box).
-            if ($loginExit -ne 0 -or -not $azLoggedIn) {
-                Write-Host "[Auto-remediate] Attempt 1 failed (exit $loginExit). Falling back to: az login --tenant $Tenant --use-device-code" -ForegroundColor Yellow
-                Write-Host "[Auto-remediate] Note: device-code flow is blocked by Conditional Access in some tenants; if this also fails, contact your tenant admin." -ForegroundColor Yellow
-                az login --tenant $Tenant --use-device-code | Out-Host
-                $loginExit = $LASTEXITCODE
-                $azLoggedIn = az account show --query user.name -o tsv 2>$null
-            }
-
-            if ($loginExit -eq 0 -and $azLoggedIn) {
-                $recheck = & $validateAzToken $azLoggedIn
-                if ($recheck.ok) {
-                    $checks += @{ name = "Azure CLI"; status = "pass"; detail = "[Auto-remediated] $($recheck.detail)" }
-                } else {
-                    $checks += @{ name = "Azure CLI"; status = "fail"; detail = "[Auto-remediate] Login succeeded but token still invalid. Error: $($recheck.error)" }
-                }
+            if ($remediation.ok) {
+                $recheck = & $validateAzToken $remediation.user
+                $checks += @{ name = "Azure CLI"; status = "pass"; detail = "[Auto-remediated] $($recheck.detail)" }
             } else {
-                $checks += @{ name = "Azure CLI"; status = "fail"; detail = "[Auto-remediate] az login failed after both interactive and device-code attempts (last exit $loginExit). Original error: $initialErr. Contact your tenant admin if Conditional Access is blocking sign-in." }
+                $checks += @{ name = "Azure CLI"; status = "fail"; detail = "[Auto-remediate] All 3 attempts (interactive / WAM-disabled / device-code) failed. Original error: $initialErr. Last error: $($remediation.lastError). Contact your tenant admin if Conditional Access is blocking sign-in." }
             }
         } else {
             $ok = & $validateAzToken $azLoggedIn
@@ -253,15 +247,32 @@ function Test-PreFlight {
             # Resource must match the actual cluster so the token's audience is correct;
             # a hardcoded generic resource yields tokens the cluster rejects with 401.
             $kustoTokenRaw = az account get-access-token --resource $kustoCluster --query accessToken -o tsv 2>&1
-            if ($LASTEXITCODE -eq 0 -and $kustoTokenRaw) {
+            $kustoTokenAcquired = ($LASTEXITCODE -eq 0 -and $kustoTokenRaw)
+
+            # If the token acquisition fails — most commonly the WAM-broker-can't-issue-custom-resource-tokens
+            # bug — invoke the shared remediation cascade (clear cache → login → disable WAM → device code).
+            if (-not $kustoTokenAcquired) {
+                $initialKustoErr = ($kustoTokenRaw | Out-String).Trim()
+                Write-Host "[Auto-remediate] Kusto token acquisition failed for $kustoCluster. Triggering auth remediation (likely WAM broker bug)..." -ForegroundColor Yellow
+                $remediation = & $invokeAzAuthRemediation $Tenant $kustoCluster
+                if ($remediation.ok) {
+                    Write-Host "[Auto-remediated] Auth fixed. Re-acquiring Kusto token..." -ForegroundColor Green
+                    $kustoTokenRaw = az account get-access-token --resource $kustoCluster --query accessToken -o tsv 2>&1
+                    $kustoTokenAcquired = ($LASTEXITCODE -eq 0 -and $kustoTokenRaw)
+                    if (-not $kustoTokenAcquired) {
+                        $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "[Auto-remediate] Auth remediation succeeded but Kusto token still unavailable. Initial: $initialKustoErr. Latest: $(($kustoTokenRaw | Out-String).Trim())." }
+                    }
+                } else {
+                    $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "[Auto-remediate] Cannot get Kusto token for $kustoCluster after full remediation cascade. Initial error: $initialKustoErr. Last error: $($remediation.lastError)." }
+                }
+            }
+
+            if ($kustoTokenAcquired) {
                 $kustoToken = ($kustoTokenRaw | Out-String).Trim()
                 $kustoHeaders = @{ Authorization = "Bearer $kustoToken"; 'Content-Type' = 'application/json' }
                 $testBody = @{ db = $kustoDb; csl = ".show database ['$kustoDb'] schema | take 1" } | ConvertTo-Json
                 $kustoResp = Invoke-RestMethod -Uri "$kustoCluster/v1/rest/query" -Method Post -Headers $kustoHeaders -Body $testBody -TimeoutSec 15 -ErrorAction Stop
                 $checks += @{ name = "Kusto connectivity"; status = "pass"; detail = "Connected to $kustoCluster / $kustoDb" }
-            } else {
-                $errMsg = ($kustoTokenRaw | Out-String).Trim()
-                $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "Cannot get Kusto token for $kustoCluster. Run: az account clear; az login --tenant microsoft.com. Error: $errMsg" }
             }
         } catch {
             $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "Kusto query failed: $($_.Exception.Message.Substring(0, [Math]::Min(120, $_.Exception.Message.Length)))" }

@@ -137,7 +137,7 @@ All emails are sent via the **Mail MCP tool** (`SendEmailWithAttachments`), whic
 
 **Email delivery method**: Use the `SendEmailWithAttachments` MCP tool for all emails. Render HTML body via `Expand-Template` first, then pass the rendered HTML string to the tool's `body` parameter with `contentType: "HTML"`.
 
-**Fallback**: If the Mail MCP tool is unavailable (auth failure, network issue), fall back to `Send-Email.ps1` (Outlook COM). Log a warning: "⚠️ Mail MCP unavailable, falling back to Outlook COM."
+**No fallback.** Mail MCP is the only supported email transport. If the `SendEmailWithAttachments` tool is unavailable (the `mail` MCP server is not registered in `~/.copilot/mcp-config.json`, the `agency` CLI is missing from `PATH`, Graph auth failed, or the network is down), the agent must **halt the current step with `failed`**, surface the actual MCP error, and tell the release owner: *"Mail MCP is required. Run `setup` to (re-)verify and register the `mail` MCP server before continuing."* Do NOT attempt to send via Outlook COM, SMTP, mailto:, or any other channel.
 
 | Event | To | CC |
 |-------|----|----|
@@ -223,7 +223,6 @@ All scripts are at `.github/skills/zed-agent/scripts/`. Dot-source to load funct
 . ".github/skills/zed-agent/scripts/Update-ReleaseState.ps1"
 . ".github/skills/zed-agent/scripts/Expand-Template.ps1"
 . ".github/skills/zed-agent/scripts/Send-TeamsMessage.ps1"
-. ".github/skills/zed-agent/scripts/Send-Email.ps1"        # Fallback only — primary email is via Mail MCP tool
 . ".github/skills/zed-agent/scripts/New-CommitExcel.ps1"
 . ".github/skills/zed-agent/scripts/Upload-ToSharePoint.ps1"
 . ".github/skills/zed-agent/scripts/Register-WatcherTask.ps1"
@@ -937,7 +936,22 @@ When the release owner says `setup`:
    - Show approved lease count: *"Found {N} approved lease(s)"*
    - This validates the release owner's identity has permission to create SafeFly requests
 
-10. **Email send test**: Use the `SendEmailWithAttachments` Mail MCP tool to send a test email to the release owner's email (from `release.json → releaseOwner.email`). Subject: `[Setup] CONFIG[service.name] Release Agent — Email Test`. Body: `ZED agent email test — if you received this, Mail MCP is working. ✅` with `contentType: "Text"`. Display the result: ✅ if the MCP tool returns successfully, ❌ if it errors. If Mail MCP fails, fall back to `Test-PreFlight -SendTestEmail "<release owner email>"` (Outlook COM) and note: "⚠️ Mail MCP unavailable, used Outlook COM fallback". Tell the release owner to check their inbox for "[Setup] CONFIG[service.name] Release Agent — Email Test".
+10. **Mail MCP verification + test send** (the agent's only email transport — there is no fallback):
+    a. **Check that the `mail` MCP server is registered**: read `~/.copilot/mcp-config.json` (path: `${env:USERPROFILE}\.copilot\mcp-config.json` on Windows, `$HOME/.copilot/mcp-config.json` elsewhere). Parse the JSON and confirm `mcpServers.mail` exists and points to the `agency mcp mail` server. If absent or malformed, halt setup and tell the release owner:
+       > ❌ **Mail MCP server is not registered.** Edit `${env:USERPROFILE}\.copilot\mcp-config.json` and add the following entry under `mcpServers` (alongside any existing entries):
+       > ```json
+       > "mail": {
+       >   "command": "agency",
+       >   "args": ["mcp", "mail"]
+       > }
+       > ```
+       > Prerequisites: the `agency` CLI must be on `PATH` (this is the internal Microsoft tool that hosts MCP servers including `mail`, `ado`, `kusto`, etc.). Verify with `agency --version`. After editing the file, **restart the Copilot CLI session** and re-run `setup`. Do NOT proceed.
+       After confirming the entry exists, also verify the `SendEmailWithAttachments` tool is exposed in the current session's tool list — if the JSON is correct but the tool still isn't listed, the Copilot CLI session was started before the config edit; tell the release owner to restart the session.
+    b. **Live send test**: Invoke `SendEmailWithAttachments` to send to `release.json → releaseOwner.email`. Subject: `[Setup] CONFIG[service.name] Release Agent — Email Test`. Body: `ZED agent email test — if you received this, Mail MCP is working. ✅`. `contentType: "Text"`. No attachments.
+    c. **Interpret result**:
+       - Tool returns success → display ✅ *"Mail MCP verified. Test mail sent to {email} — check inbox for `[Setup] CONFIG[service.name] Release Agent — Email Test`."*
+       - Tool returns an auth error → halt setup. Tell the release owner: *"❌ Mail MCP authenticated but Graph rejected the send. Verify your Microsoft 365 account is licensed for Exchange Online and that any Conditional Access policies permit Graph `Mail.Send`. The `agency` CLI uses your signed-in identity — running `agency login` (or restarting it) may refresh the token. Re-run `setup` after fixing."*
+       - Tool returns any other error → halt setup, surface the full error message verbatim, instruct the release owner to fix the Mail MCP installation and re-run `setup`.
 
 11. **Release initialization**: Set up the release for the current month.
     a. Auto-detect release ID from current date (format: `YYYY-MM`, e.g., `2026-04`)

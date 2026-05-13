@@ -9,7 +9,6 @@ This directory contains PowerShell skill scripts for the **ZED Agent** — an ag
 | `Update-ReleaseState.ps1` | Read/write `state.json` with `.bak` safety and audit logging | 40 |
 | `Expand-Template.ps1` | Mustache-style `{{variable}}` template rendering with conditional blocks | 25 |
 | `Send-TeamsMessage.ps1` | Send HTML messages to Teams chats via CDP + Skype token (replaces Power Automate webhooks) | 115 |
-| `Send-Email.ps1` | Send email via Outlook COM with HTML templates | 45 |
 | `New-CommitExcel.ps1` | Generate `.xlsx` commit detail spreadsheet via ImportExcel | 50 |
 | `Upload-ToSharePoint.ps1` | Upload files to SharePoint/OneDrive via Graph API | 40 |
 | `Register-WatcherTask.ps1` | Register/unregister Windows Task Scheduler task for restart recovery | 30 |
@@ -132,7 +131,7 @@ The `templates/reminder-email.html` template requires these variables (computed 
 
 ### Setup Prechecks
 
-**Test email:** During `setup`, `Test-PreFlight -SendTestEmail <email>` sends `templates/setup-test-email.html` to the release owner to verify Outlook COM works end-to-end. Template variable: `releaseOwnerName` (auto-detected from Outlook account).
+**Test email:** Email transport is Mail MCP only (no Outlook, no SMTP fallback). The agent itself invokes the `SendEmailWithAttachments` MCP tool during `setup` action 10 to verify the MCP server is registered and authenticated — `Test-PreFlight.ps1` does not probe email at all.
 
 ### Teams Notifications (CDP + Skype Token)
 

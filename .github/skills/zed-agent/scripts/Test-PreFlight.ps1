@@ -4,11 +4,12 @@ function Test-PreFlight {
         Pre-flight readiness check for ZED Agent.
         Returns a structured result with pass/warn/fail items and an overall verdict.
         When ReleaseId is provided, also validates the release-specific files (release.json, state.json).
-        When SendTestEmail is provided, sends a test email to that address as a live verification.
+        Email transport is Mail MCP (Graph) only — preflight does not probe Outlook because Outlook
+        is not used. The actual Mail MCP test send happens during `setup` action 10 (the agent itself
+        invokes the MCP tool — a PowerShell script cannot).
     #>
     param(
         [string]$ReleaseId,
-        [string]$SendTestEmail,
         [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\service-config.json'),
         # Tenant used for auto-remediation login. Defaults to microsoft.com.
         [string]$Tenant = 'microsoft.com'
@@ -204,38 +205,8 @@ function Test-PreFlight {
         $checks += @{ name = "ImportExcel module"; status = "warn"; detail = "Not installed. Step 4 (commit Excel) will fail. Install: Install-Module ImportExcel" }
     }
 
-    # Outlook COM (email transport)
-    try {
-        $olApp = New-Object -ComObject Outlook.Application
-        $ns = $olApp.GetNamespace("MAPI")
-        $acct = $ns.Accounts | Select-Object -First 1
-        if ($acct) {
-            $checks += @{ name = "Outlook COM (email)"; status = "pass"; detail = "Account: $($acct.SmtpAddress)" }
-
-            # Send test email if requested (during setup)
-            if ($SendTestEmail) {
-                try {
-                    . "$PSScriptRoot\Send-Email.ps1"
-                    $templatePath = Join-Path (Split-Path $PSScriptRoot -Parent) "templates\setup-test-email.html"
-                    $releaseOwnerName = az ad signed-in-user show --query displayName -o tsv 2>$null
-                    if (-not $releaseOwnerName) { $releaseOwnerName = $acct.SmtpAddress -replace '@.*', '' }
-                    $result = Send-Email -To $SendTestEmail -Subject "[Setup] ZED Agent — Email Test" `
-                        -BodyHtmlPath $templatePath -Variables @{ releaseOwnerName = $releaseOwnerName }
-                    if ($result.success) {
-                        $checks += @{ name = "Test email send"; status = "pass"; detail = "Test email sent to $SendTestEmail" }
-                    } else {
-                        $checks += @{ name = "Test email send"; status = "fail"; detail = "Send failed: $($result.error)" }
-                    }
-                } catch {
-                    $checks += @{ name = "Test email send"; status = "fail"; detail = "Send error: $($_.Exception.Message)" }
-                }
-            }
-        } else {
-            $checks += @{ name = "Outlook COM (email)"; status = "fail"; detail = "Outlook COM available but no email account configured. Open Outlook and set up your account." }
-        }
-    } catch {
-        $checks += @{ name = "Outlook COM (email)"; status = "fail"; detail = "Cannot create Outlook COM object. Ensure Outlook is installed and has been opened at least once." }
-    }
+    # Email transport: Mail MCP only (no preflight probe — see header).
+    # The agent runs the live Mail MCP test send in setup action 10.
 
     # ── 4b. Kusto connectivity ──
     $kustoCluster = $cfg.kusto.canary.cluster
@@ -294,7 +265,7 @@ function Test-PreFlight {
     # ── 5. Skill scripts ──
     $requiredScripts = @(
         "Update-ReleaseState.ps1", "Expand-Template.ps1", "Send-TeamsMessage.ps1",
-        "Send-Email.ps1", "New-CommitExcel.ps1", "Upload-ToSharePoint.ps1",
+        "New-CommitExcel.ps1", "Upload-ToSharePoint.ps1",
         "Register-WatcherTask.ps1", "Release-Watcher.ps1", "Get-RegionMapping.ps1",
         "SafeFly\New-SafeFlyRequest.ps1", "SafeFly\Get-SafeFlyApproval.ps1",
         "SafeFly\Get-SafeFlyLeases.ps1", "SafeFly\Test-SafeFlyConnection.ps1",

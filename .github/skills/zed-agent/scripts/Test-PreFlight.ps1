@@ -9,7 +9,9 @@ function Test-PreFlight {
     param(
         [string]$ReleaseId,
         [string]$SendTestEmail,
-        [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\service-config.json')
+        [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\service-config.json'),
+        # Tenant used for auto-remediation login. Defaults to microsoft.com.
+        [string]$Tenant = 'microsoft.com'
     )
 
     $ErrorActionPreference = 'Stop'
@@ -133,13 +135,55 @@ function Test-PreFlight {
     try {
         $azVer = az version 2>$null | ConvertFrom-Json
         $azLoggedIn = az account show --query user.name -o tsv 2>$null
-        if ($azLoggedIn) {
-            $checks += @{ name = "Azure CLI"; status = "pass"; detail = "Logged in as $azLoggedIn" }
+
+        # Inline helper so we can re-run the same validation after AutoFix without duplicating logic.
+        $validateAzToken = {
+            param([string]$signedInUser)
+            $probe = az account get-access-token --query expiresOn -o tsv 2>&1
+            if ($LASTEXITCODE -eq 0 -and $probe) {
+                return @{ ok = $true; detail = "Logged in as $signedInUser (token valid until $probe)" }
+            }
+            return @{ ok = $false; error = ($probe | Out-String).Trim() }
+        }
+
+        if (-not $azLoggedIn -or -not (& $validateAzToken $azLoggedIn).ok) {
+            $initialErr = if ($azLoggedIn) { (& $validateAzToken $azLoggedIn).error } else { "Not logged in" }
+
+            Write-Host "[Auto-remediate] az CLI not usable ($initialErr). Clearing MSAL cache and re-authenticating against tenant '$Tenant'..." -ForegroundColor Yellow
+            az account clear 2>&1 | Out-Null
+
+            # Try interactive (browser/WAM) login first — device-code flow is blocked by
+            # Conditional Access in many tenants, so it must not be the first attempt.
+            Write-Host "[Auto-remediate] Attempt 1: az login --tenant $Tenant (interactive browser). Complete sign-in in the browser window." -ForegroundColor Yellow
+            az login --tenant $Tenant | Out-Host
+            $loginExit = $LASTEXITCODE
+            $azLoggedIn = az account show --query user.name -o tsv 2>$null
+
+            # Fall back to device code only if the interactive flow failed (e.g., no browser available on the box).
+            if ($loginExit -ne 0 -or -not $azLoggedIn) {
+                Write-Host "[Auto-remediate] Attempt 1 failed (exit $loginExit). Falling back to: az login --tenant $Tenant --use-device-code" -ForegroundColor Yellow
+                Write-Host "[Auto-remediate] Note: device-code flow is blocked by Conditional Access in some tenants; if this also fails, contact your tenant admin." -ForegroundColor Yellow
+                az login --tenant $Tenant --use-device-code | Out-Host
+                $loginExit = $LASTEXITCODE
+                $azLoggedIn = az account show --query user.name -o tsv 2>$null
+            }
+
+            if ($loginExit -eq 0 -and $azLoggedIn) {
+                $recheck = & $validateAzToken $azLoggedIn
+                if ($recheck.ok) {
+                    $checks += @{ name = "Azure CLI"; status = "pass"; detail = "[Auto-remediated] $($recheck.detail)" }
+                } else {
+                    $checks += @{ name = "Azure CLI"; status = "fail"; detail = "[Auto-remediate] Login succeeded but token still invalid. Error: $($recheck.error)" }
+                }
+            } else {
+                $checks += @{ name = "Azure CLI"; status = "fail"; detail = "[Auto-remediate] az login failed after both interactive and device-code attempts (last exit $loginExit). Original error: $initialErr. Contact your tenant admin if Conditional Access is blocking sign-in." }
+            }
         } else {
-            $checks += @{ name = "Azure CLI"; status = "fail"; detail = "Installed but not logged in. Run: az login" }
+            $ok = & $validateAzToken $azLoggedIn
+            $checks += @{ name = "Azure CLI"; status = "pass"; detail = $ok.detail }
         }
     } catch {
-        $checks += @{ name = "Azure CLI"; status = "fail"; detail = "Not found or not working" }
+        $checks += @{ name = "Azure CLI"; status = "fail"; detail = "Not found or not working: $($_.Exception.Message)" }
     }
 
     # git
@@ -202,18 +246,26 @@ function Test-PreFlight {
     # ── 4b. Kusto connectivity ──
     $kustoCluster = $cfg.kusto.canary.cluster
     $kustoDb = $cfg.kusto.canary.database
-    try {
-        $kustoToken = az account get-access-token --resource "https://kusto.kusto.windows.net" --query accessToken -o tsv 2>$null
-        if ($kustoToken) {
-            $kustoHeaders = @{ Authorization = "Bearer $kustoToken"; 'Content-Type' = 'application/json' }
-            $testBody = @{ db = $kustoDb; csl = ".show database ['$kustoDb'] schema | take 1" } | ConvertTo-Json
-            $kustoResp = Invoke-RestMethod -Uri "$kustoCluster/v1/rest/query" -Method Post -Headers $kustoHeaders -Body $testBody -TimeoutSec 15 -ErrorAction Stop
-            $checks += @{ name = "Kusto connectivity"; status = "pass"; detail = "Connected to $kustoCluster / $kustoDb" }
-        } else {
-            $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "Cannot get Kusto token. Run: az login" }
+    if ([string]::IsNullOrWhiteSpace($kustoCluster) -or [string]::IsNullOrWhiteSpace($kustoDb)) {
+        $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "kusto.canary.cluster or kusto.canary.database not set in service-config.json. Populate both before running pre-flight." }
+    } else {
+        try {
+            # Resource must match the actual cluster so the token's audience is correct;
+            # a hardcoded generic resource yields tokens the cluster rejects with 401.
+            $kustoTokenRaw = az account get-access-token --resource $kustoCluster --query accessToken -o tsv 2>&1
+            if ($LASTEXITCODE -eq 0 -and $kustoTokenRaw) {
+                $kustoToken = ($kustoTokenRaw | Out-String).Trim()
+                $kustoHeaders = @{ Authorization = "Bearer $kustoToken"; 'Content-Type' = 'application/json' }
+                $testBody = @{ db = $kustoDb; csl = ".show database ['$kustoDb'] schema | take 1" } | ConvertTo-Json
+                $kustoResp = Invoke-RestMethod -Uri "$kustoCluster/v1/rest/query" -Method Post -Headers $kustoHeaders -Body $testBody -TimeoutSec 15 -ErrorAction Stop
+                $checks += @{ name = "Kusto connectivity"; status = "pass"; detail = "Connected to $kustoCluster / $kustoDb" }
+            } else {
+                $errMsg = ($kustoTokenRaw | Out-String).Trim()
+                $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "Cannot get Kusto token for $kustoCluster. Run: az account clear; az login --tenant microsoft.com. Error: $errMsg" }
+            }
+        } catch {
+            $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "Kusto query failed: $($_.Exception.Message.Substring(0, [Math]::Min(120, $_.Exception.Message.Length)))" }
         }
-    } catch {
-        $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "Kusto query failed: $($_.Exception.Message.Substring(0, [Math]::Min(80, $_.Exception.Message.Length)))" }
     }
 
     # ── 4c. EV2 API connectivity ──

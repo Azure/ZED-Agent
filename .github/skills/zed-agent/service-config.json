@@ -60,18 +60,10 @@
       "teamsExtended": []
     },
     "routing": {
-      "reminder":               { "emailGroups": ["permanent"], "teamsGroups": ["teams"] },
-      "build-status":           { "emailGroups": ["owner"] },
-      "commit-request":         { "teamsGroups": ["teamsExtended"] },
-      "canary-status":          { "emailGroups": ["permanent"] },
-      "bvt-check":              {},
-      "rollback-status":        { "emailGroups": ["permanent"] },
-      "rollforward-status":     { "emailGroups": ["permanent"] },
-      "create-r2d":             { "emailGroups": ["releaseOwner"], "ccGroups": ["cc"] },
-      "production-rollout":     { "emailGroups": ["permanent"] },
-      "ev2-stage-progress":     { "emailGroups": ["permanent", "owner"] },
-      "ev2-promotion-reminder": { "emailGroups": ["owner"] },
-      "timeout-alert":          { "emailGroups": ["releaseOwner"] }
+      "reminder":           { "emailGroups": ["permanent"],                       "teamsGroups": ["teams"] },
+      "commit-request":     {                                                      "teamsGroups": ["teamsExtended"] },
+      "create-r2d":         { "emailGroups": ["releaseOwner"], "ccGroups": ["cc"] },
+      "ev2-stage-progress": { "emailGroups": ["permanent", "cc", "releaseOwner"], "includeOwner": true }
     }
   },
 
@@ -84,7 +76,7 @@
   },
 
   "operational": {
-    "buildTimeoutMinutes": 300,
+    "buildTimeoutMinutes": 360,
     "bvtWaitHours": 24,
     "bvtQueryTimeoutMinutes": 120,
     "excelCompletionTimeoutHours": 48,

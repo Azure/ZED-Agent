@@ -160,7 +160,7 @@
         "canary": {
           "type": "object",
           "description": "Canary health monitoring Kusto query settings.",
-          "required": ["cluster", "database", "serviceFilter"],
+          "required": ["cluster", "database", "serviceFilter", "queryFile"],
           "additionalProperties": true,
           "properties": {
             "cluster": {
@@ -177,6 +177,17 @@
               "type": "string",
               "description": "KQL where-clause fragment to filter by service.",
               "minLength": 1
+            },
+            "queryFile": {
+              "type": "string",
+              "description": "Filename (relative to .github/skills/zed-agent/queries/) of the canary cluster-type detection KQL query. Required when canaryRouting.mode='cluster-type'.",
+              "minLength": 1
+            },
+            "stampPrefixFilter": {
+              "type": "array",
+              "description": "KQL `where`-clause fragment (as a list of stamp-name prefixes) narrowing `StampName` to your service's canary stamps. Service-specific — values are illustrative only; supply whatever prefixes your service uses.",
+              "examples": [["ea-can", "ecy", "ccy"], ["cn-can", "use-can"]],
+              "items": { "type": "string", "minLength": 1 }
             }
           }
         }
@@ -253,31 +264,23 @@
               "description": "Teams channel names for notifications.",
               "items": { "type": "string" }
             },
-            "owner": {
+            "teamsExtended": {
               "type": "array",
-              "description": "Release owner email(s). Populated at runtime from release.json.",
+              "description": "Extended Teams channel names (used for commit-request and similar broader broadcasts).",
               "items": { "type": "string" }
             }
           }
         },
         "routing": {
           "type": "object",
-          "description": "Maps pipeline events to notification groups.",
-          "required": ["reminder", "production-rollout"],
-          "additionalProperties": true,
+          "description": "Maps notification event keys to recipient groups. The four default broadcast events (reminder, commit-request, create-r2d, ev2-stage-progress) are required. Owners can ALSO add entries for any other event key (e.g., 'step-3-completed', 'step-6-waiting-approval', 'canary-status', 'rollback-status', 'rollforward-status', 'production-rollout') to broadcast that event to chosen groups. Events with no entry default to owner-only. SAFETY RAIL: failures, halts, agent-judgment updates, the generic 'step-transition' marker, and any 'step-<N>-failed' key are ALWAYS owner-only regardless of what's in this block — they cannot be broadcast (enforced in Resolve-NotificationRecipients.ps1).",
+          "required": ["reminder", "commit-request", "create-r2d", "ev2-stage-progress"],
+          "additionalProperties": { "$ref": "#/definitions/routingRule" },
           "properties": {
             "reminder":               { "$ref": "#/definitions/routingRule" },
-            "build-status":           { "$ref": "#/definitions/routingRule" },
             "commit-request":         { "$ref": "#/definitions/routingRule" },
-            "canary-status":          { "$ref": "#/definitions/routingRule" },
-            "bvt-check":              { "$ref": "#/definitions/routingRule" },
-            "rollback-status":        { "$ref": "#/definitions/routingRule" },
-            "rollforward-status":     { "$ref": "#/definitions/routingRule" },
             "create-r2d":             { "$ref": "#/definitions/routingRule" },
-            "production-rollout":     { "$ref": "#/definitions/routingRule" },
-            "ev2-stage-progress":     { "$ref": "#/definitions/routingRule" },
-            "ev2-promotion-reminder": { "$ref": "#/definitions/routingRule" },
-            "timeout-alert":          { "$ref": "#/definitions/routingRule" }
+            "ev2-stage-progress":     { "$ref": "#/definitions/routingRule" }
           }
         }
       }
@@ -338,7 +341,7 @@
       "properties": {
         "buildTimeoutMinutes": {
           "type": "integer",
-          "description": "Maximum minutes to wait for a build to complete.",
+          "description": "Maximum minutes to wait for a build to complete. Default 360 (6 hours).",
           "minimum": 1
         },
         "bvtWaitHours": {
@@ -460,23 +463,36 @@
   "definitions": {
     "routingRule": {
       "type": "object",
-      "description": "A notification routing rule mapping an event to recipient groups.",
-      "additionalProperties": true,
+      "description": "A notification routing rule mapping an event to recipient groups. Used for the four default broadcast events AND any custom event keys (e.g., 'step-3-completed', 'canary-status') that owners add to notifications.routing.",
+      "additionalProperties": false,
       "properties": {
         "emailGroups": {
           "type": "array",
-          "description": "Names of groups (from notifications.groups) to email.",
-          "items": { "type": "string" }
+          "description": "Names of groups (from notifications.groups) to email. Each item must match a key under notifications.groups.",
+          "items": {
+            "type": "string",
+            "enum": ["permanent", "cc", "releaseOwner", "teams", "teamsExtended"]
+          }
         },
         "teamsGroups": {
           "type": "array",
           "description": "Names of groups (from notifications.groups) to notify via Teams.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string",
+            "enum": ["permanent", "cc", "releaseOwner", "teams", "teamsExtended"]
+          }
         },
         "ccGroups": {
           "type": "array",
           "description": "Names of groups (from notifications.groups) to CC on email.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string",
+            "enum": ["permanent", "cc", "releaseOwner", "teams", "teamsExtended"]
+          }
+        },
+        "includeOwner": {
+          "type": "boolean",
+          "description": "If true, the release owner's email is always added to the To-line in addition to the resolved emailGroups."
         }
       }
     }

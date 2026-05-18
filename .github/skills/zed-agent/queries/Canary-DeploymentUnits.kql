@@ -1,0 +1,16 @@
+// Canary cluster-type detection — used by Steps 5, 7, 10 when
+// canaryRouting.mode == "cluster-type" (Steps 5/7) or
+// productionRouting.mode == "cluster-type" (Step 10).
+//
+// Placeholders (substituted at runtime by the agent / Release-Watcher):
+//   {{SERVICE_FILTER}}      → CONFIG[kusto.canary.serviceFilter]
+//   {{STAMP_PREFIX_FILTER}} → CONFIG[kusto.canary.stampPrefixFilter]
+//
+// Required columns in result rows: StampName, DeploymentUnit
+// Response parsing: ALWAYS use $resp.Tables[0].Rows.
+EventLogAllClusters
+| where TIMESTAMP > ago(1d)
+| where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
+| where {{STAMP_PREFIX_FILTER}}
+| summarize make_set(DeploymentUnit) by StampName
+| order by StampName asc

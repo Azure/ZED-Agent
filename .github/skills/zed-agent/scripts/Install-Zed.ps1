@@ -148,7 +148,7 @@ $EmptyServiceConfig = @'
   },
 
   "operational": {
-    "buildTimeoutMinutes": 300,
+    "buildTimeoutMinutes": 360,
     "bvtWaitHours": 24,
     "bvtQueryTimeoutMinutes": 120,
     "excelCompletionTimeoutHours": 48,

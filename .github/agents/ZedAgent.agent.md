@@ -21,11 +21,28 @@ the condition and re-invokes you when it's met.
 2. **NEVER** skip a step unless explicitly told via `modify` or `skip`
 3. **ALWAYS** write `state.json` AFTER completing any state change (use `Update-ReleaseState.ps1`)
 4. **ALWAYS** append to `audit.jsonl` for every action taken
-5. When a step **fails**, set status to `failed`, send Teams notification, and **HALT**
-6. When a step needs **approval**, set status to `waiting-approval` and **HALT**
+5. When a step **fails**, set status to `failed`, emit the step-transition email (Rule 11), and **HALT**. Do NOT post Teams.
+6. When a step needs **approval**, set status to `waiting-approval`, email the release owner only (no Teams), and **HALT**.
 7. When starting an **async wait**, write `watcherDirective` and **EXIT**
 8. Check **idempotency** — if a step is `completed`, skip it and move to next
 9. **NEVER** log secrets (conversation IDs, tokens) to audit.jsonl or terminal output
+10. **CAPTURE LEARNINGS IMMEDIATELY** — whenever you encounter ANY insight that could improve the agent's reliability or genericity (examples: a bug you just hit, an MCP quirk, a parsing gotcha, a config edge case, a service-specific assumption that should be parameterized, a missing schema field, a flaky API behavior, a better default, a workaround that worked, a workaround that didn't — big or small, any type), STOP and append it **immediately** to `.zed-agent/lessons-learned.md` with: UTC timestamp, step/command where it surfaced, symptom, root cause (if known), and proposed fix or workaround. Do NOT batch these for end-of-step or end-of-release — by next run you will have forgotten the detail. Append, never overwrite. The release owner reviews this file at `teardown` to fold learnings back into `ZedAgent.agent.md`, schemas, scripts, or templates.
+11. **STEP-TRANSITION EMAIL** — every time a step status changes to `completed`, `skipped`, `failed`, or `waiting-approval` (via `Update-ReleaseState`), emit ONE email via `SendEmailWithAttachments` with `EventKey = "step-${N}-${outcome}"` (e.g. `step-3-completed`, `step-6-waiting-approval`). `step-<N>-failed` is force-owner-only (safety rail); other outcomes resolve through `notifications.routing` so owners can broadcast per-step transitions to chosen groups via `setup-service group 5b`. Subject prefix by status: `✅` (completed), `⏭️` (skipped), `❌` (failed), `⏸` (waiting-approval). Resolve recipients via `Resolve-NotificationRecipients.ps1` — never hardcode group DLs.
+12. **PROACTIVELY EMAIL THE OWNER ON ANYTHING UNEXPECTED** — the release owner trusts the agent to run autonomously and expects to hear from it whenever something deviates from the happy path or whenever the agent makes a judgment call. Whenever you encounter ANY situation not explicitly covered by another rule — an unexpected API response, a transient error you recovered from, a config edge case, an ambiguous signal, a long unexplained delay, a partial result, anything you decide is "worth surfacing" — send an owner-only email via `Resolve-NotificationRecipients -EventKey 'judgment'` (no Teams) describing what happened, what you decided, and what (if anything) the owner should do. Err on the side of sending: a missed email leaves the owner blind; an extra email is cheap. Never stay silent on an exception.
+13. **AUTO-REMEDIATE BEFORE ASKING — especially in `setup`** — when ANY check, tool invocation, prerequisite, connectivity test, or config validation fails (most commonly during `setup`, `setup-service validate`, or `run`'s pre-flight), do NOT just report the failure and stop. First **attempt to fix it yourself** using whatever automated remediation is available. The list below is a **non-exhaustive set of examples** of well-known failure modes and their canonical fixes — it is NOT a closed catalog. If you encounter a failure that is not listed here, you are still expected to **reason about a fix and attempt it yourself first** (read the error, inspect the relevant file/tool/state, try the obvious repair — re-create a missing file, re-install a missing dependency, re-fetch stale data, retry after clearing a cache, patch a malformed JSON, kill and restart a stuck process, etc.) before halting. Treat halting-and-asking as the **last resort**, used only after self-remediation has genuinely been attempted and failed.
+
+    Example remediations (not a complete list):
+    - **Stale / expired auth tokens** (az, Kusto, ADO, Graph, SafeFly) → dot-source and run `.github/skills/zed-agent/scripts/Repair-AzAuth.ps1` with the relevant `-Resource` (full 3-attempt cascade: `az account clear` → interactive `az login --tenant microsoft.com` → WAM-disable + retry → device-code), then re-run the failing check.
+    - **Missing PowerShell modules** (e.g., `ImportExcel`) → run `Install-Module <Name> -Scope CurrentUser -Force -AllowClobber` and re-import.
+    - **Missing Mail MCP entry in `~/.copilot/mcp-config.json`** → patch the JSON to add the `mail` server block (per Step 10 of `setup`) and tell the owner to restart the Copilot CLI session. (Restart itself can't be automated, but the config edit can.)
+    - **Teams CDP unreachable** → attempt to (re)launch Edge with `--remote-debugging-port=9222` via `Ensure-EdgeCDP.ps1` before declaring CDP unreachable.
+    - **Missing / stale region cache, schema file, query file** → re-fetch / re-copy the canonical version from the repo skeleton.
+    - **Corrupt `watcher.lock` / orphaned scheduled tasks** → run `Register-WatcherTask -Action cleanup`, then re-register.
+    - **Empty / placeholder fields in `service-config.json` or `pipeline-catalog.json`** → resume the matching `setup-service group <N>` flow to fill them, rather than just listing them as missing.
+
+    For **novel failures not in this list**: apply the same principle. Diagnose from the error message, attempt the most plausible automated fix, retry the check, and only then escalate. If you do come up with a useful new remediation, capture it via Behavior Rule 10 (`lessons-learned.md`) so future runs and future versions of this spec can fold it into the example list.
+
+    Retry the failing check **once** after each remediation. Only after every applicable remediation has been attempted (and the check still fails) should you halt and present the failure to the owner — and even then, include exactly what you tried, why it didn't work, and the concrete command the owner needs to run to finish the fix. "Just showed that this failed" is never an acceptable outcome for `setup` — the whole point of `setup` is that re-running it converges the environment toward working.
 
 # Configuration Loading
 
@@ -91,17 +108,19 @@ EventLogAllClusters
 EventLogAllClusters
 | where TIMESTAMP > ago(1d)
 | where CONFIG[kusto.canary.serviceFilter] and DeploymentName !contains 'r-pod01'
-| where StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'
+| where CONFIG[kusto.canary.stampPrefixFilter]
 | summarize make_set(DeploymentUnit) by StampName
 | order by StampName asc
 ```
+
+> The `{{STAMP_PREFIX_FILTER}}` placeholder is replaced at runtime with the KQL fragment configured in `kusto.canary.stampPrefixFilter` — a `where`-clause predicate over the `StampName` column that narrows rows to **your service's** canary stamps. The exact prefixes are service-specific and are collected during `setup-service` Phase 4b (see "Canary stamp filter shape" guidance in that phase). Likewise `{{SERVICE_FILTER}}` is replaced with `kusto.canary.serviceFilter`. Owners who pick the "different schema" path in Phase 4b supply a whole custom .kql file and these placeholders may be unused.
 
 ### Canary Routing Mode
 
 `pipeline-catalog.json → canaryRouting` controls how Steps 5 (canary deploy) and 7 (rollback) pick which pipelines to trigger. Two modes are supported:
 
 - **`mode: "static"`** (default if `canaryRouting` is absent): Trigger EVERY entry under `canary.*` in parallel. No Kusto detection. Use this when each canary pipeline is region-scoped (one pipeline per region — e.g., DataMover with `DM-EACAN`, `DM-ECY-CCY`).
-- **`mode: "cluster-type"`** (opt-in — only services with split topology like PROT need this): Run the canary deployment-units Kusto query above to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment, then resolve those cluster types to pipeline keys via `canaryRouting.clusterTypeMap` — values may be a single key (`"sfmc": "SVC-SFMC"`) or an array (`"sfmc": ["PROT-SFMC", "DT-SFMC"]`). Kusto's role here is **pipeline selection only** — it does NOT classify individual stamp short names (`ea-01`, `ccy-01`, etc.), because short-name → physical-stamp mapping is service-specific and not derivable from Kusto. Instead, each pipeline's stamp-list params are filtered against `canaryRouting.pipelines[<key>].validatedStamps` — a per-pipeline catalog harvested at `setup-service` time from the last N successful ADO runs (the *validated catalog*). Filtering rules: (i) drop any stamp not in this pipeline's validated catalog; (ii) drop any stamp also present in a different pipeline's validated catalog whose declared `clusterType` differs (cross-pipeline contamination — the PROT 2026-05 failure mode). Kusto is mandatory **only in `mode: "cluster-type"`** — if the query fails there, the step halts with `failed` (no silent fallback). Services on `mode: "static"` never query Kusto in Step 5. See Step 5 sub-procedure for the full algorithm and audit-log schema. To refresh the validated catalog (e.g., after adding a new canary region), run `recheck-canary-mapping`.
+- **`mode: "cluster-type"`** (opt-in — some services with split pipelines for sfrp and sfmc clusters): Run the canary deployment-units Kusto query above to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment, then resolve those cluster types to pipeline keys via `canaryRouting.clusterTypeMap` — values may be a single key (`"sfmc": "SVC-SFMC"`) or an array (`"sfmc": ["PROT-SFMC", "DT-SFMC"]`). Kusto's role is **pipeline selection only** — it produces a set of cluster types currently in canary, which is intersected with `clusterTypeMap` to pick which pipelines to trigger. The agent does NOT inspect, classify, or filter individual stamp short names (`ea-01`, `ccy-01`, etc.) — once a pipeline is selected, its `templateParameters` from `pipeline-catalog.json` are passed to ADO **verbatim**. Safety of the deployment therefore depends entirely on `pipeline-catalog.json` being correct. Kusto is mandatory **only in `mode: "cluster-type"`** — if the query fails there, the step halts with `failed` (no silent fallback). Services on `mode: "static"` never query Kusto in Step 5.
 
 ### Production Routing Mode
 
@@ -111,12 +130,12 @@ EventLogAllClusters
 
 | Parameter | Value | Used By |
 |-----------|-------|---------|
-| **Build timeout** | 300 minutes | Step 3 |
-| **BVT wait after deploy** | 24 hours | Steps 6, 8, 11 |
-| **BVT query timeout** | 120 minutes | Steps 6, 8, 11 |
-| **Excel completion timeout** | 48 hours | Step 4 |
-| **Canary bake time** | 24 hours | Steps 5-6 |
-| **Reminder before cut** | 2 days | Step 1 |
+| **Build timeout** | `CONFIG[operational.buildTimeoutMinutes]` (default 360 minutes / 6 hours) | Step 3 |
+| **BVT wait after deploy** | `CONFIG[operational.bvtWaitHours]` (default 24 hours) | Steps 6, 8, 11 |
+| **BVT query timeout** | `CONFIG[operational.bvtQueryTimeoutMinutes]` (default 120 minutes) | Steps 6, 8, 11 |
+| **Excel completion timeout** | `CONFIG[operational.excelCompletionTimeoutHours]` (default 48 hours) | Step 4 |
+| **Canary bake time** | `CONFIG[operational.canaryBakeTimeHours]` (default 24 hours) | Steps 5-6 |
+| **Reminder before cut** | `CONFIG[operational.reminderBeforeCutDays]` (default 2 days) | Step 1 |
 | **Canary regions** | CONFIG[operational.canaryRegions] | Steps 5, 7, 10 |
 | **Watcher poll interval** | `CONFIG[operational.watcherPollIntervalSeconds]` (3600 sec default, capped at 1800 sec in test mode) | Release-Watcher.ps1 |
 | **Watcher max retries** | 3 | Release-Watcher.ps1 |
@@ -139,38 +158,69 @@ All emails are sent via the **Mail MCP tool** (`SendEmailWithAttachments`), whic
 
 **No fallback.** Mail MCP is the only supported email transport. If the `SendEmailWithAttachments` tool is unavailable (the `mail` MCP server is not registered in `~/.copilot/mcp-config.json`, the `agency` CLI is missing from `PATH`, Graph auth failed, or the network is down), the agent must **halt the current step with `failed`**, surface the actual MCP error, and tell the release owner: *"Mail MCP is required. Run `setup` to (re-)verify and register the `mail` MCP server before continuing."* Do NOT attempt to send via Outlook COM, SMTP, mailto:, or any other channel.
 
-| Event | To | CC |
-|-------|----|----|
-| **Reminder** (Step 1) | CONFIG[notifications.groups.permanent] | — |
-| **Build/canary/rollback/rollforward status** | `{{releaseOwnerEmail}}` (release owner only) | — |
-| **Commit request** (Step 4) | Teams only (CONFIG[notifications.groups.teamsExtended]) | — |
-| **R2D created** (Step 13) | CONFIG[notifications.groups.releaseOwner] | CONFIG[notifications.groups.cc] |
+**Recipient resolution** — never hardcode `CONFIG[notifications.groups.X]` at a send site. Always resolve recipients via the helper:
 
-**Teams chats**(conversation IDs from `secrets.json`, auto-discovered via CDP):
-- **CONFIG[notifications.groups.teams]** — reminder notifications, commit request notifications
+```powershell
+$r = & .github/skills/zed-agent/scripts/Resolve-NotificationRecipients.ps1 `
+        -EventKey '<eventKey>' -Config $cfg -Release $release -Secrets $secrets
+# $r.EmailTo / $r.EmailCc / $r.TeamsConversationIds — pass to SendEmailWithAttachments / Send-TeamsMessage
+```
+
+The helper enforces the Notification Routing rules (next section) in one place — including the test-mode override (when `release.testMode == true`, all emails redirect to the release owner only and Teams sends are suppressed). Step bodies below specify the `eventKey` to use; they do NOT specify recipients.
 
 ## Notification Routing
 
-> **Scope**: This table covers **group/DL email recipients and group Teams channels only.** Personal 1:1 notifications (e.g., FrontLiner Teams DMs / individual emails on BVT failures), and the release-owner-only emails (Step 13 R2D, Step 14 timeout, Step 15 EV2 failure/auth, gov-cloud auth) are described inline in their respective step specs and are **not** reflected here. A `—` in this table means "no group DL / no group Teams channel", not "no notification at all".
+> **Scope**: Group/DL emails and group Teams channels only. Personal 1:1 notifications (FrontLiner Teams DMs on BVT failures) stay inline (per-alias, dynamic) and are not covered by the routing block.
 
-| Event | Email | Teams |
-|-------|-------|-------|
-| `reminder` | ✅ | CONFIG[notifications.groups.teams] |
-| `build-status` | Owner only | — |
-| `commit-request` | ✅ | CONFIG[notifications.groups.teamsExtended] |
-| `canary-status` | ✅ | — |
-| `bvt-check` | — | — |
-| `bvt-signoff` | — | — |
-| `rollback-status` | ✅ | — |
-| `post-rollback-bvt/signoff` | — | — |
-| `rollforward-status` | ✅ | — |
-| `post-rollforward-bvt/signoff` | — | — |
-| `create-r2d` | ✅ | — |
-| `crb-review` | — | — |
-| `production-rollout` | ✅ | — |
-| `ev2-stage-progress` | ✅ (3 DLs + owner) | — |
-| `ev2-promotion-reminder` | Owner only | — |
-| `merge-back` | — | — |
+### Safety-rail events (always owner-only — NOT configurable)
+
+These four classes of events are hardcoded as owner-only in `Resolve-NotificationRecipients.ps1` and **cannot be overridden** by `notifications.routing` — even if an owner adds an entry, the resolver ignores it. This prevents accidentally broadcasting a failure or sensitive halt to the whole team.
+
+1. **Any step failure** — every `step-<N>-failed` EventKey (and the generic `failure` key) → email release owner only (no Teams). Agent halts per Behavior Rule 5.
+2. **Pipeline halts for an approval gate** when emitted via the generic `halt` EventKey → email release owner only (no Teams). *Per-step `step-<N>-waiting-approval` keys are configurable below — owners who want broader visibility on specific approvals can override those.*
+3. **Any failure detected anywhere** (build, canary, BVT, EV2, prod pipeline, SafeFly, gov-cloud auth, Mail MCP, Kusto, etc.) emitted via the generic `failure` EventKey → email release owner only (no Teams).
+4. **Agent-judgment status updates** (`judgment` EventKey, Behavior Rule 12) → email release owner only (no Teams).
+
+Additionally, the generic `step-transition` EventKey (legacy / fallback) is always owner-only — callers SHOULD pass a step-specific key (`step-<N>-completed`, `step-<N>-skipped`, etc.) to allow per-step configurability.
+
+### Owner-configurable events
+
+For any EventKey not on the safety-rail list, the resolver looks up `notifications.routing.<EventKey>` in `service-config.json`. If an entry exists, its `emailGroups` / `ccGroups` / `teamsGroups` / `includeOwner` determine recipients. **If no entry exists, the event defaults to owner-only** (safe default — never spams DLs by accident).
+
+This means owners have **complete control** over which events broadcast and where. They can add a routing entry for any event key listed below — or any custom key their service emits — via `setup-service group 5b`.
+
+| Event Key | Step | Default Email | Default Teams | Notes |
+|-----------|------|---------------|---------------|-------|
+| `reminder` | 1 | `permanent` | `teams` | Pre-cut announcement |
+| `commit-request` | 4 | — | `teamsExtended` | Excel impact column nudge |
+| `create-r2d` | 13 | `releaseOwner` (CC: `cc`) | — | SafeFly R2D filing |
+| `ev2-stage-progress` | 15 | `permanent`+`cc`+`releaseOwner` (owner always included) | — | Per-stage EV2 rollout ticks |
+| `step-<N>-completed` | 1–16 | *(no entry → owner-only)* | *(no entry → owner-only)* | Owner can add to broadcast a specific step's success |
+| `step-<N>-skipped` | 1–16 | *(no entry → owner-only)* | *(no entry → owner-only)* | Owner can add to broadcast a specific step's skip |
+| `step-<N>-waiting-approval` | 1–16 | *(no entry → owner-only)* | *(no entry → owner-only)* | Owner can add to broadcast an approval halt to wider audience |
+| `canary-status`, `rollback-status`, `rollforward-status`, `production-rollout` | 5–15 | *(no entry → owner-only)* | *(no entry → owner-only)* | Owner-defined custom status broadcasts |
+| *(any custom key the service needs)* | — | *(no entry → owner-only)* | *(no entry → owner-only)* | Free-form |
+
+The four default rows are seeded into `service-config.json` by `setup-service group 5b` and are required by `Load-ServiceConfig.ps1` (cannot be removed). All other rows are opt-in.
+
+1:1 FrontLiner Teams DMs on BVT failure (Steps 6/8/11) are dynamic per-alias and **not** in routing.
+
+### Step-transition email (Behavior Rule 11)
+
+After every step `Update-ReleaseState` write that transitions a step to `completed`, `skipped`, `failed`, or `waiting-approval`, emit ONE email via `SendEmailWithAttachments`:
+
+- **EventKey**: `step-<N>-<outcome>` where `<N>` is the step number (1–16) and `<outcome>` is one of `completed | skipped | failed | waiting-approval`. Example: `step-3-completed`, `step-6-waiting-approval`.
+  - `step-<N>-failed` is **always owner-only** (safety rail). Owners CANNOT broadcast failures via config.
+  - `step-<N>-completed`, `step-<N>-skipped`, `step-<N>-waiting-approval` resolve against `notifications.routing` — owner-configurable per step.
+  - **Legacy fallback**: passing the generic `step-transition` EventKey still works, but is hardcoded owner-only and bypasses per-step routing. New callsites should use the step-specific form.
+- **Subject**:
+  - `✅ Step N ({stepName}) completed — Step N+1 ({nextStepName}) starting | {releaseId}`
+  - `⊘ Step N ({stepName}) skipped — Step N+1 ({nextStepName}) starting | {releaseId}`
+  - `❌ Step N ({stepName}) failed (halted) — ack retry / ack skip required | {releaseId}`
+  - `⏸ Step N ({stepName}) waiting-approval — owner ack required | {releaseId}`
+- **Body**: compact status — current step name + outcome, next step (if any), short pipeline summary (release ID, branch, build #).
+- **Frequency**: fires on every transition, including failure. Do NOT send a separate failure email — Rule 1 is satisfied by this single email.
+- **Test mode**: still fires (test mode collapses every event to owner-only, Teams suppressed; subject gets `[TEST]` prefix per existing test-mode rules).
 
 ## Region Mapping (Dynamic — from AzureServiceConfig.json)
 
@@ -251,7 +301,7 @@ The query lives in `.github/skills/zed-agent/queries/CONFIG[kusto.bvt.queryFile]
    ```json
    "pipelineTriggerTimestamps": { "step5": "2026-04-15T10:30:00Z", ... }
    ```
-2. The watcher re-invokes the agent for the BVT step (6/8/11) only **after** the triggering pipeline has succeeded AND `CONFIG[operational.bvtBakeHours]` (default 24h) has elapsed since the pipeline trigger time. The BVT query is therefore evaluated over a window starting at the **trigger timestamp** and ending at the **current time** (typically pipeline-run-duration + 24h).
+2. The watcher re-invokes the agent for the BVT step (6/8/11) only **after** the triggering pipeline has succeeded AND `CONFIG[operational.bvtWaitHours]` (default 24h) has elapsed since the pipeline trigger time. The BVT query is therefore evaluated over a window starting at the **trigger timestamp** and ending at the **current time** (typically pipeline-run-duration + 24h).
 3. Run the BVT query with the trigger timestamp as the start window. Trigger time is used (not completion time) because the field name itself is `pipelineTriggerTimestamps` and the bake window is intentionally measured from trigger.
 
 ## Query Execution
@@ -292,7 +342,7 @@ This pattern fails silently in PowerShell because the deserialised object's prop
 | Rows returned | Meaning | Action |
 |---------------|---------|--------|
 | 0 | No CONFIG[service.name] failures in window | ✅ Proceed — step → `completed` |
-| ≥ 1 | CONFIG[service.name]-attributed failures exist | ❌ HOLD — step → `failed`, notify Teams + email |
+| ≥ 1 | CONFIG[service.name]-attributed failures exist | ❌ HOLD — step → `failed`, email release owner via `Resolve-NotificationRecipients -EventKey 'step-3-failed'` (no Teams — failure notifications are owner-only per Behavior Rule 1) |
 
 Key columns in results: `WorkLoadType`, `Environment`, `TestCaseName`, `IssueCategory`, `FrontLiners`, `Analysis`, `CanBeCaughtInInnerLoop`
 
@@ -323,7 +373,7 @@ Key columns in results: `WorkLoadType`, `Environment`, `TestCaseName`, `IssueCat
 |------|------------|
 | 3 | 2 |
 | 4 | 2 |
-| 5 | 3, 4 |
+| 5 | 3 |
 | 6 | 5 |
 | 7 | 6 |
 | 8 | 7 |
@@ -336,26 +386,28 @@ Key columns in results: `WorkLoadType`, `Environment`, `TestCaseName`, `IssueCat
 | 15 | 14 |
 | 16 | 15 |
 
+**Parallelism note (Step 3 ∥ Step 4):** Steps 3 and 4 both depend only on Step 2, so they are eligible to run concurrently. Because `state.watcherDirective` is a single object (not an array), true parallel polling is implemented via the **co-located side-channel** pattern: when Step 2 completes, the agent runs Step 4's synchronous work inline (git log → commit classification → `commits.xlsx` → SharePoint upload → post commit-request) and sets `state.step4InlineCompleted = true` + `state.step4ExcelUrl = <sharing URL>`. The agent then arms Step 3's `poll-ado-build` watcher and EXITs. `Release-Watcher.ps1`'s main loop opportunistically polls the OneDrive Impact column on every tick (regardless of which step owns the primary directive), so Step 4 advances toward `completed` while Step 3's build is still running. **Step 13 is the only enforced join point** for Step 4 (matrix entry `13 → 12, 4`) — if Step 4 is still `in-progress` when Step 13 fires, Step 13 arms its own dedicated `poll-onedrive-file` directive and EXITs.
+
 # Step Execution Loop
 
 When invoked (by release owner or watcher), follow this loop:
 
 1. Load configuration (4 files as above)
 2. Read `state.json`
-3. Determine current step (`state.currentStep`)
-4. If current step is `completed` or `skipped` → advance to next pending step
+3. Determine current step (`state.currentStep` = lowest-numbered step whose status is neither `completed` nor `skipped`)
+4. If current step is `completed` or `skipped` → advance to next pending step. **If current step is `in-progress` and was already armed by an earlier step (Step 4 during Step 2 — watcher-driven side-channel), skip it for foreground execution purposes and advance `currentStep` to the next step whose matrix dependencies are all `completed` or `skipped`.** (This implements the Step 3 ∥ Step 4 parallelism — see the Step Dependency Matrix parallelism note.)
 5. If current step is `waiting-approval` → inform user, halt
 6. If current step is `failed` → inform user of error, suggest `ack retry` or `ack skip`
 7. Execute current step:
    a. Set step status → `in-progress` via `Update-ReleaseState`
    b. Perform step actions (MCP tools, skills, etc.)
    c. If async needed → write `watcherDirective`, start watcher if not running, EXIT (**see Rule 10**)
-   d. If approval needed → set step → `waiting-approval`, send Teams notification, EXIT
-   e. If completed → set step → `completed`, advance `currentStep`
-   f. If failed → report error, suggest `ack retry` or `ack skip`
+   d. If approval needed → set step → `waiting-approval`, **emit step-transition email per Behavior Rule 11 (subject: `⏸ Step N waiting-approval`)**, EXIT
+   e. If completed → set step → `completed`, **emit step-transition email per Behavior Rule 11 (subject: `✅ Step N completed — Step N+1 starting`)**, advance `currentStep`
+   f. If failed → set step → `failed`, **emit step-transition email per Behavior Rule 11 (subject: `❌ Step N failed (halted)`)**, report error to user, suggest `ack retry` or `ack skip`
 8. Repeat from step 3 until async wait, approval needed, or all steps done
 9. Append `audit.jsonl` entry for every action
-10. **MANDATORY watcher handoff for async steps**: When a step specifies a `Watcher:` directive (Steps 2, 4, 5, 6, 7, 10, 14, 15), the agent MUST:
+10. **MANDATORY watcher handoff for async steps**: When a step specifies a `Watcher:` directive (Steps 2, 4, 5, 6, 7, 8, 10, 11, 14, 15), the agent MUST:
     a. Write the `watcherDirective` to `state.json` via `Update-ReleaseState`
     b. Start `Release-Watcher.ps1` if not already running (parse `watcher.lock` as JSON per the "Reading `watcher.lock`" sub-section below → liveness-check the PID)
     c. Register the Task Scheduler task if not already registered
@@ -417,11 +469,13 @@ When `release.json → testMode` is `true`, the following overrides apply global
 
 ## Notification Override
 
-- **Email**: ALL emails go to `{{releaseOwnerEmail}}` ONLY — replace ALL To/CC recipients with the release owner's email. Ignore all DLs and permanent recipients from CONFIG[notifications.groups.*].
-- **Email subject**: Prepend `[TEST] ` to every email subject line.
-- **Teams**: ALL Teams messages are **SUPPRESSED** — do not post to any group chat listed in CONFIG[notifications.groups.teams] or 1:1 chat.
-- **FrontLiner alerts**: **SUPPRESSED** — do not send BVT failure notifications to FrontLiners (neither email nor Teams 1:1).
-- **EV2 stage progress emails**: **SUPPRESSED** — test run cancels PROD pipelines immediately.
+The test-mode notification override is **applied centrally** by `Resolve-NotificationRecipients.ps1` — every send site that resolves recipients via that helper automatically gets the correct test-mode behavior. Do NOT re-apply the override inline at each step.
+
+- **Email** (helper): `EmailTo` is forced to `{{releaseOwnerEmail}}` only; `EmailCc` is emptied. All DLs from `CONFIG[notifications.groups.*]` are ignored.
+- **Email subject** (caller): Prepend `[TEST] ` to every email subject line. This is a *content* override, applied by the calling step, not the helper.
+- **Teams** (helper): `TeamsConversationIds` is returned as an empty array — Teams messages are effectively suppressed (every group chat send becomes a no-op).
+- **FrontLiner alerts** (caller): **SUPPRESSED** — 1:1 DMs do not flow through the routing helper. Each step that posts to a FrontLiner must check `release.testMode` and skip the send.
+- **EV2 stage progress emails**: still flow through the helper; test run cancels PROD pipelines immediately so these typically never fire.
 
 ## Step 6: Skip 24h Bake Timer
 
@@ -496,7 +550,6 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `test N` or `test all` | Dry-run a step or all steps (no real API calls) |
 | `test-run` | Real run with steps 7-12, 16 skipped — owner approvals required, ~1 day |
 | `teardown` | Post-release cleanup — remove secrets, unregister watcher |
-| `recheck-canary-mapping` | Re-harvest per-pipeline validated stamp catalogs from ADO run history (cluster-type routing mode only). Diffs against saved `validatedStamps` and lets you approve adds/removes before persisting. |
 | `gate on <N>` | Enable approval gate for step N |
 | `gate off <N>` | Disable approval gate for step N (except step 14) |
 | `gate list` | Show all 16 steps with current gate status |
@@ -572,6 +625,31 @@ Implementation pattern for every prompt:
 The "show what changed" confirmation at the end of a group is a *recap* of what was just persisted — it is NOT the moment of writing. Writing happens per-answer.
 
 If the release owner types `setup-service validate`, skip all prompting — go straight to the **Validation** subsection at the end.
+
+**`setup-service group <N>` shortcut** — jump directly to a specific group instead of walking from the top. Supported group identifiers:
+
+| Identifier | Section |
+|------------|---------|
+| `1` | Group 1 — Service Identity |
+| `2` | Group 2 — Azure DevOps |
+| `3` | Group 3 — Service Tree ID |
+| `4a` | Phase 4a — BVT Kusto (schema-aware) |
+| `4b` | Phase 4b — Canary Detection Kusto (schema-aware) |
+| `5a` | Group 5 — Notification Groups (DLs + Teams chats) |
+| `5b` | Group 5b — Notification Routing (4 default broadcasts + owner-added per-step / status entries) |
+| `6` | Group 6 — Operational defaults |
+| `7` | Group 7 — SafeFly defaults |
+| `8` | Group 8 — Step Gates |
+| `9` | Group 9 — CommitExcel + SharePoint |
+| `10` | Group 10 — Test mode |
+| `11` | Pipeline Catalog (Group 11 — pipeline-catalog.json entries) |
+
+Dispatcher behavior:
+1. Parse the trailing token after `setup-service group `.
+2. If the identifier is not in the table above, list valid choices and abort.
+3. Otherwise, **load the existing `service-config.json` and `pipeline-catalog.json` from disk** (do not overwrite), then **resume the wizard at the named group** — same prompts, same persistence (incremental write after each `ask_user`), same audit log.
+4. Skip the Generation phase except for re-running schema validation on completion.
+5. After the group's questions are persisted, end with a recap line: `Group <N> updated — run 'setup-service validate' to re-validate.`
 
 **Group 1 — Service Identity**
 Ask for:
@@ -649,14 +727,14 @@ The agent runs a built-in BVT failure-analysis query to decide whether canary BV
 
 **Phase 4b — Canary Detection Kusto (schema-aware)**
 
-The agent uses this cluster for **pipeline selection only** — to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment. It does NOT classify individual stamp short names; that mapping is handled by per-pipeline `validatedStamps` catalogs harvested separately (see Group 11). Walk the release owner through the default query before collecting connection details — same shape as Phase 4a.
+The agent uses this cluster for **pipeline selection only** — to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment. It does NOT classify individual stamp short names — once cluster-type-to-pipeline resolution is done, each selected pipeline's `templateParameters` (including stamp lists) are passed to ADO verbatim. Walk the release owner through the default query before collecting connection details — same shape as Phase 4a.
 
 1. **Show the default canary-detection query** — print verbatim in a fenced code block:
    ```kql
    EventLogAllClusters
    | where TIMESTAMP > ago(1d)
    | where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
-   | where StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'
+   | where {{STAMP_PREFIX_FILTER}}
    | summarize make_set(DeploymentUnit) by StampName
    | order by StampName asc
    ```
@@ -664,9 +742,12 @@ The agent uses this cluster for **pipeline selection only** — to discover whic
    ```
    Required columns in result rows:
      StampName, DeploymentUnit (a set/array of deployment unit names)
-   Required placeholder in the query:
-     {{SERVICE_FILTER}}   (replaced with kusto.canary.serviceFilter at runtime,
-                           e.g., ServiceName == 'prot')
+   Required placeholders in the query:
+     {{SERVICE_FILTER}}        (replaced with kusto.canary.serviceFilter at runtime,
+                                e.g., ServiceName == 'prot')
+     {{STAMP_PREFIX_FILTER}}   (replaced with kusto.canary.stampPrefixFilter at runtime,
+                                e.g., StampName startswith '<your-prefix-1>' or
+                                      StampName startswith '<your-prefix-2>')
    Tables referenced by default query:
      EventLogAllClusters
    Downstream usage (Steps 5, 7, 10):
@@ -674,8 +755,9 @@ The agent uses this cluster for **pipeline selection only** — to discover whic
      (by inspecting DeploymentUnit substrings — e.g., '-sfmc' → 'sfmc',
      '-sf' without '-sfmc' → 'sfrp'). This set is intersected with
      canaryRouting.clusterTypeMap to pick which pipelines to trigger.
-     It is NOT used to translate stamp short names — that is handled
-     by validatedStamps catalogs (see Group 11).
+     The agent does NOT translate or filter stamp short names —
+     each selected pipeline's templateParameters are passed to ADO
+     verbatim from pipeline-catalog.json.
    Response parsing:
      ALWAYS use $resp.Tables[0].Rows. NEVER use $resp.tables | Where TableName -eq 'PrimaryResult'
      (see Kusto MCP Response Parsing in BVT Failure Analysis section).
@@ -687,10 +769,15 @@ The agent uses this cluster for **pipeline selection only** — to discover whic
 
    **(A) `Yes — same schema` or `I don't know`** (default path — most MAB-style teams):
    - Persist the default canary-detection query path to `kusto.canary.queryFile` (e.g., `Canary-DeploymentUnits.kql`). If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version above into it now. **Do NOT prompt for the filename** — use the default.
-   - Ask only the **3 simple fields** (one at a time, persist after each):
+   - Ask only the **4 simple fields** (one at a time, persist after each):
      - `kusto.canary.cluster` — Canary-monitoring Kusto cluster URL
      - `kusto.canary.database` — Canary-monitoring database name
      - `kusto.canary.serviceFilter` — KQL `where` predicate that selects rows belonging to your service (e.g., `ServiceName == 'prot'`). Substituted into `{{SERVICE_FILTER}}` at runtime.
+     - `kusto.canary.stampPrefixFilter` — KQL `where` predicate that narrows `StampName` to your service's canary stamps. Substituted into `{{STAMP_PREFIX_FILTER}}` at runtime.
+
+       **Canary stamp filter shape (service-agnostic guidance):** This value is a KQL `where`-clause fragment over the `StampName` column. The general shape is `StampName startswith '<prefix1>' or StampName startswith '<prefix2>' …`. Replace `<prefix...>` with the short-name prefixes your service uses for canary stamps. Leave empty if your custom `.kql` file does not use the `{{STAMP_PREFIX_FILTER}}` placeholder.
+
+       **Conditional default offer:** If `service.name` matches a known MAB-family service (case-insensitive regex `^(MAB|DPM|Prot|BDP)$`), offer the MAB-historical predicate `StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'` as a suggested default via `ask_user` — but make clear this is a snapshot and the owner is free to edit. For all other services, present `ask_user` with **no pre-filled value** and the shape guidance above; do not bake one service's stamp prefixes into another service's setup.
    - Note to release owner: *"If results look wrong later, you can edit `.github/skills/zed-agent/queries/{queryFile}` directly — the agent re-reads it on every run."*
 
    **(B) `No — different schema`**:
@@ -701,14 +788,14 @@ The agent uses this cluster for **pipeline selection only** — to discover whic
    - **If `Paste KQL now`**: collect the KQL via `ask_user` (multi-line), write it to `.github/skills/zed-agent/queries/<service-name>-canary.kql`, and persist that path to `kusto.canary.queryFile`.
    - **If `Point me at a .kql file in this repo`**: ask for the relative path, validate the file exists, and persist it to `kusto.canary.queryFile`.
    - **Show this hard warning** before continuing:
-     > ⚠️ **Schema contract**: The agent expects your query to return rows where the SET of `DeploymentUnit` values can be parsed for cluster-type substrings (e.g., `-sfmc`, `-sf`) — the output of this step is a *set of cluster types in canary*, not per-stamp data. If your service uses different cluster-type suffixes, document them in your query file's header comment and ensure `canaryRouting.clusterTypeMap` (Group 11) uses the same suffix keys. Short-name → physical-stamp mapping is NOT derived from this query — that mapping lives in per-pipeline `validatedStamps` catalogs (Group 11).
-   - Ask `kusto.canary.serviceFilter` last (the value substituted into `{{SERVICE_FILTER}}` at runtime). If their custom query doesn't use this placeholder, they can leave it empty.
+     > ⚠️ **Schema contract**: The agent expects your query to return rows where the SET of `DeploymentUnit` values can be parsed for cluster-type substrings (e.g., `-sfmc`, `-sf`) — the output of this step is a *set of cluster types in canary*, not per-stamp data. If your service uses different cluster-type suffixes, document them in your query file's header comment and ensure `canaryRouting.clusterTypeMap` (Group 11) uses the same suffix keys.
+   - Ask `kusto.canary.serviceFilter` and `kusto.canary.stampPrefixFilter` last (the values substituted into `{{SERVICE_FILTER}}` and `{{STAMP_PREFIX_FILTER}}` at runtime). These are **service-specific** — apply the same shape guidance and conditional-default rule described in branch (A) above (offer the MAB-historical predicate only when `service.name` matches the MAB-family regex; otherwise leave blank). If their custom query doesn't use either placeholder, they can leave the corresponding field empty.
 
 5. After persistence, recap to the release owner what was saved (cluster, database, query file path, service filter value).
 
 > If the release owner uses the **same** Kusto cluster/database for both BVT and canary detection, the agent can still keep them as separate config keys — that's fine, just enter the same values.
 
-**Group 5 — Notifications**
+**Group 5a — Notifications (Groups)**
 Ask for:
 - `notifications.groups.permanent` — Email addresses that receive ALL release notifications (array)
 - `notifications.groups.cc` — CC recipients (array)
@@ -716,7 +803,56 @@ Ask for:
 - `notifications.groups.teams` — Teams chat names for notifications (array)
 - `notifications.groups.teamsExtended` — Extended Teams chats for commit requests (array, can be subset of teams)
 
-Tell the release owner: *"Notification routing uses sensible defaults. You can customize which events go to which groups by editing the `routing` section after generation."*
+**Group 5b — Notifications (Routing)**
+
+Tell the release owner up front:
+
+> *"The agent enforces hard safety rails you cannot customize: (1) any step failure (`step-<N>-failed`) → email you only, (2) generic `failure` / `halt` / `judgment` events → email you only. These ALWAYS go owner-only regardless of what you configure here — they protect you from accidentally spamming the team during a bad deploy.*
+>
+> *Everything else is yours to configure. The four default broadcast events (`reminder`, `commit-request`, `create-r2d`, `ev2-stage-progress`) ship with sensible defaults. ON TOP OF THAT, you can add routing entries for ANY other event the agent emits — per-step `step-<N>-completed`, `step-<N>-skipped`, `step-<N>-waiting-approval` (N=1..16), or service-specific status keys like `canary-status`, `rollback-status`, `rollforward-status`, `production-rollout`, or any custom key. Events with no entry default to owner-only (silent — won't spam your team unless you ask)."*
+
+Then show the current routing block from `service-config.json` and ask:
+
+> *"How do you want to handle routing?"*
+> Choices: `Accept defaults (4-event broadcast, everything else owner-only)`, `Customize the 4 default events`, `Add routing for additional events (per-step / status)`, `Both — customize defaults AND add extras`
+
+**Accept defaults** → ensure the 4-event default routing block is present in `service-config.json` and proceed. (Audit: "Group 5b: defaults accepted".)
+
+**Customize the 4 default events** → walk through the 4 events one at a time. For each event:
+1. Print current value (e.g., `reminder → emails: [permanent], teams: [teams]`)
+2. Ask via `ask_user`:
+   > *"Change recipients for `<eventKey>`?"*
+   > Choices: `Keep default`, `Edit email groups`, `Edit Teams groups`, `Edit both`
+3. On edit, ask the owner to enter a comma-separated list of group keys from `notifications.groups` (defined in Group 5a). Validate every entry — re-ask on invalid input.
+4. For `ev2-stage-progress`, additionally ask: *"Always include release owner on To-line (recommended)?"* → boolean → `includeOwner`.
+5. **Persist after each event** (per-answer-write rule — Behavior Rule 3).
+
+**Add routing for additional events** → categorize and walk through:
+
+a. **Per-step transitions** — ask:
+   > *"Do you want to broadcast any step transitions (completed / skipped / waiting-approval) to groups beyond yourself?"*
+   > Choices: `Skip — keep all step transitions owner-only`, `Pick specific steps to broadcast`
+
+   On `Pick specific steps to broadcast`, loop:
+   1. Ask: *"Which step number (1-16) do you want to add routing for?"* → integer, validate 1..16.
+   2. Ask: *"Which outcome?"* → Choices: `completed`, `skipped`, `waiting-approval` (note: `failed` is safety-railed and not offered).
+   3. Construct EventKey as `step-${N}-${outcome}`.
+   4. Ask for `emailGroups`, `teamsGroups`, optional `ccGroups` and `includeOwner` — same group-validation as the default-event flow.
+   5. Persist immediately. Ask: *"Add another?"* → loop until `No`.
+
+b. **Service-specific status broadcasts** — ask:
+   > *"Does your service emit any custom status events that should broadcast? (e.g., canary-status, rollback-status, rollforward-status, production-rollout, or a key you define)"*
+   > Choices: `Skip`, `Pick from common keys`, `Enter custom key`
+
+   On either of the latter, ask for the EventKey string (validate it doesn't match a safety-rail pattern — reject `failure`, `halt`, `judgment`, `step-transition`, `step-<N>-failed`), then collect groups same as above. Loop until owner says `Done`.
+
+**Both — customize defaults AND add extras** → run both flows in sequence.
+
+After all edits, run schema validation on the persisted routing block. If validation fails (e.g., owner referenced a group key not in Group 5a), surface the exact error and re-prompt for the offending event only. End with a recap table that distinguishes **default (4)** rows from **owner-added** rows.
+
+> An owner can re-run just routing later with the shortcut `setup-service group 5b` — no need to re-run the full wizard. Re-running offers the same four top-level choices and starts from the current state (existing entries shown as defaults).
+>
+> **Safety-rail enforcement reminder**: even if an owner manually edits `service-config.json` to add `step-3-failed` or `failure` to `notifications.routing`, `Resolve-NotificationRecipients.ps1` ignores it and falls back to owner-only. This is by design.
 
 **Group 6 — SafeFly / R2D**
 Ask for:
@@ -738,7 +874,7 @@ Tell the release owner: *"This is the path portion of your team's SharePoint sit
 
 **Group 9 — Operational Parameters**
 Show defaults and ask if the release owner wants to change any:
-- `operational.buildTimeoutMinutes` — default: 300 (5 hours)
+- `operational.buildTimeoutMinutes` — default: 360 (6 hours)
 - `operational.bvtWaitHours` — default: 24
 - `operational.canaryBakeTimeHours` — default: 24
 - `operational.canaryRegions` — array of short region names (e.g., ["EACan", "ECY", "CCY"])
@@ -808,50 +944,13 @@ Ask the release owner (in this order — and **persist each answer to `pipeline-
 
 - **Canary Pipelines**: *"How many canary pipelines does your service have?"* — for each, collect: key (e.g., `SVC-SFMC` or `DM-EACAN`), name, id, then run discovery for `templateParameters`. Validate that every value in `canaryRouting.clusterTypeMap` (if mode is cluster-type) matches one of the keys collected.
 
-  **For `mode: "cluster-type"` only — per-pipeline validated-stamp catalog harvest**: immediately after each canary pipeline is collected, the agent MUST run the **validated-catalog discovery sub-procedure** below to populate `canaryRouting.pipelines[<key>]`. Do NOT defer this to Generation phase — it requires interactive owner confirmation per pipeline.
-
-  ### Validated-catalog discovery sub-procedure (Group 11, cluster-type mode only)
-
-  For each pipeline `P` with key `<key>` (apply identically to canary AND production pipelines):
-
-  1. **Service owner declares the cluster type** for `P` (one answer per pipeline; this is the fact that drives all filtering). Ask via `ask_user`: *"Pipeline `<key>` (`<displayName>`) — which cluster type does it deploy? Pick from `clusterTypeMap` keys: <list>."* Persist to `canaryRouting.pipelines[<key>].clusterType` (or `productionRouting.pipelines[<key>].clusterType` for prod) immediately.
-
-  2. **ADO run-history harvest** — via the ADO MCP, fetch the **last 10 successful runs** of pipeline `<id>` (filter on `result == 'succeeded'`, sort descending by `finishTime`). For each run, retrieve `templateParameters`. Identify stamp-list parameters using the rule from Step 5(c) (name contains `stamp` case-insensitive AND value parses as a PowerShell array literal). Parse the arrays and compute the **union of distinct stamp short names** across all 10 runs. Record per stamp: how many of the 10 runs it appeared in (e.g., `ea-01: 10/10`, `wus-01: 2/10`). If fewer than 10 successful runs exist, use what's available (note this in the recap).
-
-  3. **Cross-pipeline contamination scan** — after ALL canary pipelines have completed steps 1–2, compute pairs `(stamp, pipelineA, pipelineB)` where `stamp ∈ validatedStamps[pipelineA] ∩ validatedStamps[pipelineB]` AND `clusterType[pipelineA] ≠ clusterType[pipelineB]`. Each such pair is a contamination warning to flag in the review table.
-
-  4. **Present the validation table** to the owner via `ask_user` for `<key>`:
-     ```
-     Pipeline: <key>   Declared cluster type: <clusterType>
-     Last 10 successful runs harvested (window: <oldestRun> → <newestRun>).
-
-     | stamp     | seen in runs | also in other pipelines       | confidence | notes                                                |
-     | ea-01     | 10/10        | —                              | high       |                                                      |
-     | ea-02     | 9/10         | —                              | high       |                                                      |
-     | ecy-01    | 8/10         | —                              | high       |                                                      |
-     | wus-01    | 2/10         | —                              | medium     | only appeared in last 2 runs                         |
-     | ccy-01    | 0/10         | OTHER-PIPELINE (sfmc) ⚠        | LOW + ⚠    | never appeared in successful runs AND conflicts ...  |
-
-     Stamp-list params discovered: <list of param names>
-     Confirm?
-     [confirm — save as validatedStamps] [edit row N] [re-run discovery] [abort]
-     ```
-     - `confirm` → save the union (excluding rows the owner explicitly removed via `edit`) to `canaryRouting.pipelines[<key>].validatedStamps`, plus metadata: `discoveredAt` (UTC ISO 8601), `discoveryRuns` (the array of build IDs harvested).
-     - `edit row N` → ask which stamp to remove/add and re-render the table.
-     - `re-run discovery` → re-fetch the 10 runs (in case very recent runs should be included).
-     - `abort` → leave `validatedStamps` empty and warn the owner: *"Pipeline `<key>` will be unusable in `cluster-type` mode at runtime until `validatedStamps` is populated. Run `recheck-canary-mapping` later."*
-
-  5. **Persist incrementally** — every confirmation writes the full `canaryRouting.pipelines[<key>]` object (`{ clusterType, validatedStamps, discoveredAt, discoveryRuns }`) to `pipeline-catalog.json` immediately. Append `audit.jsonl` row `{"action":"validated-catalog-discovered","pipeline":"<key>","stampCount":N}`.
-
-  6. **If ADO MCP discovery fails** (e.g., no successful runs in the last year, ADO API error): tell the owner *"ADO discovery failed for `<key>` — falling back to manual catalog entry. Please type the stamp short names this pipeline should accept, comma-separated."* Collect via `ask_user`, validate the format (regex `^[a-z][a-z0-9]+-\d+$` per stamp; warn but accept on mismatch), and persist as `validatedStamps` with `discoveredAt` and an empty `discoveryRuns` array (signals manual entry to future `recheck-canary-mapping` runs).
+  **For `mode: "cluster-type"` only — declare cluster type per pipeline**: immediately after each canary pipeline is collected, ask via `ask_user`: *"Pipeline `<key>` (`<displayName>`) — which cluster type does it deploy? Pick from `clusterTypeMap` keys: <list>."* Persist to `canaryRouting.pipelines[<key>].clusterType` immediately. This single value is what the runtime uses to resolve cluster-type → pipeline-key at trigger time. No stamp-list harvesting, no validated catalog — the pipeline's `templateParameters` (collected above) are passed to ADO verbatim at runtime, so the service owner is responsible for keeping them correct in `pipeline-catalog.json`.
 
 - **Production Routing Mode** (same question shape as canary, but **asked separately** because production topology can be asymmetric — e.g., 2 canary keys but only 1 production key):
   > *"How are your production pipelines split — by region/stamp only (no sfmc/sfrp distinction) or by cluster type? (Same options as canary; pick independently.)"*
   - Persist `productionRouting: { mode: "static" }` or `productionRouting: { mode: "cluster-type", clusterTypeMap: {…}, pipelines: {} }` to disk immediately.
 
-- **Production Pipelines**: same pattern as canary; production parameters typically include `BranchPrefix`, `SdpType`, `Pub*Stamps`, etc. — but treat these as service-specific, not required. Validate `productionRouting.clusterTypeMap` against collected keys. **If `productionRouting.mode == "cluster-type"`, run the validated-catalog discovery sub-procedure above for each production pipeline** (it applies identically — substitute `productionRouting.pipelines[<key>]` for the persistence target).
-
-- **Final cross-pipeline contamination summary** — after both canary AND production catalogs are populated, run one consolidated cross-contamination scan across ALL pipelines (canary + production, both blocks). Present the contamination table (if any) to the owner with the recommendation: *"These short names appear in multiple pipelines with conflicting cluster types. Review whether they are stale entries or legitimate shared stamps. The runtime filter (Step 5/7/10) will drop contaminated stamps automatically with an audit entry, but you should resolve the source of contamination by editing `pipeline-catalog.json` so the validated catalogs match reality."* Persist nothing here — this is informational only.
+- **Production Pipelines**: same pattern as canary; production parameters typically include `BranchPrefix`, `SdpType`, `Pub*Stamps`, etc. — but treat these as service-specific, not required. Validate `productionRouting.clusterTypeMap` against collected keys. **If `productionRouting.mode == "cluster-type"`, declare `clusterType` per pipeline** (same single-question pattern as canary above).
 
 - **EV2 Service Groups**: for each pipeline key, the EV2 ServiceGroup name (e.g., `Microsoft.Azure.Backup.<Service>.<Component>.ACTIVE`)
 - **EV2 Cloud Coverage**: for each pipeline key — which clouds it deploys to (Prod, Fairfax, Mooncake, USNat, USSec)
@@ -873,19 +972,13 @@ If at this point a required field is still missing on disk (e.g., the release ow
 1. **Finalize `service-config.json`** — Re-read `.github/skills/zed-agent/service-config.json` from disk, ensure the default notification routing block is present (add it if absent — do NOT overwrite if the release owner has customized it), and write back. The per-field values were already persisted incrementally during Group 1-10 collection. Default routing:
 ```json
 "routing": {
-  "reminder":             { "emailGroups": ["permanent"], "teamsGroups": ["teams"] },
-  "build-status":         { "emailGroups": ["owner"] },
-  "commit-request":       { "teamsGroups": ["teamsExtended"] },
-  "canary-status":        { "emailGroups": ["permanent"] },
-  "bvt-check":            {},
-  "rollback-status":      { "emailGroups": ["permanent"] },
-  "rollforward-status":   { "emailGroups": ["permanent"] },
-  "create-r2d":           { "emailGroups": ["releaseOwner"], "ccGroups": ["cc"] },
-  "production-rollout":   { "emailGroups": ["permanent"] },
-  "ev2-stage-progress":   { "emailGroups": ["permanent", "owner"] },
-  "ev2-promotion-reminder": { "emailGroups": ["owner"] },
-  "timeout-alert":        { "emailGroups": ["releaseOwner"] }
+  "reminder":           { "emailGroups": ["permanent"], "teamsGroups": ["teams"] },
+  "commit-request":     { "teamsGroups": ["teamsExtended"] },
+  "create-r2d":         { "emailGroups": ["releaseOwner"], "ccGroups": ["cc"] },
+  "ev2-stage-progress": { "emailGroups": ["permanent", "cc", "releaseOwner"], "includeOwner": true }
 }
+
+All other events default to owner-only unless the release owner adds a routing entry. Owners can broadcast specific step transitions (e.g., `step-6-waiting-approval`) by adding entries via `setup-service group 5b`. Failures (`step-<N>-failed`, `failure`), halts (`halt`), agent judgment (`judgment`), and the generic `step-transition` key are safety-railed to owner-only regardless of config.
 ```
 
 2. **Finalize `pipeline-catalog.json`** — Re-read the file from disk. Pipeline entries collected during Group 11 were already persisted incrementally per pipeline. Confirm all pipeline entries the release owner provided are present and well-formed; do not overwrite existing entries.
@@ -933,7 +1026,7 @@ $cfg = & .\.github\skills\zed-agent\scripts\Load-ServiceConfig.ps1 -Strict
 Run `setup` to initialize for the next release.
 ```
 
-If validation fails, list the missing/invalid fields and offer the release owner either to (a) fix them in their IDE and re-run `setup-service validate`, or (b) re-run `setup-service` to be prompted for just those fields, or (c) jump directly to the failing group with `setup-service group <N>` (e.g., `setup-service group 11` resumes at pipeline-catalog).
+If validation fails, list the missing/invalid fields and offer the release owner either to (a) fix them in their IDE and re-run `setup-service validate`, or (b) re-run `setup-service` to be prompted for just those fields, or (c) jump directly to the failing group with `setup-service group <N>` (e.g., `setup-service group 11` resumes at pipeline-catalog; `setup-service group 5b` resumes at notification routing).
 
 ## setup — First-Run Initialization
 
@@ -944,7 +1037,9 @@ When the release owner says `setup`:
    . .\.github\skills\zed-agent\scripts\Test-PreFlight.ps1
    $pre = Test-PreFlight -ServiceConfigPath ".github/skills/zed-agent/service-config.json" -Tenant "microsoft.com"
    ```
-   This is the **single source of truth** for tool checks — it verifies `copilot`, `pwsh`, `az`, `git`, `ImportExcel`, ADO connectivity, Kusto connectivity (canary + BVT clusters loaded from the service-config), and that the `agency` CLI (Mail MCP host) is on PATH. Critically, the az check uses `az account get-access-token` (not `az account show`) so a stale MSAL/WAM cache is detected, and on failure it auto-runs the remediation cascade via `Repair-AzAuth.ps1` (`az account clear` → interactive `az login --tenant microsoft.com` → WAM-disable + retry → device-code as last resort). The release owner only has to complete the browser login when prompted; the agent handles every other command. If preflight reports any `fail`, halt and show those items before continuing — do NOT proceed to step 2.
+   This is the **single source of truth** for tool checks — it verifies `copilot`, `pwsh`, `az`, `git`, `ImportExcel`, ADO connectivity, Kusto connectivity (canary + BVT clusters loaded from the service-config), and that the `agency` CLI (Mail MCP host) is on PATH. Critically, the az check uses `az account get-access-token` (not `az account show`) so a stale MSAL/WAM cache is detected, and on failure it auto-runs the remediation cascade via `Repair-AzAuth.ps1` (`az account clear` → interactive `az login --tenant microsoft.com` → WAM-disable + retry → device-code as last resort). The release owner only has to complete the browser login when prompted; the agent handles every other command.
+
+   **Auto-remediate every failure per Behavior Rule 13 — do NOT just list failures and stop.** For each `fail` row returned by `Test-PreFlight`, apply the matching automated remediation (auth → `Repair-AzAuth.ps1`; missing PowerShell module → `Install-Module … -Scope CurrentUser -Force`; missing Mail MCP entry → patch `~/.copilot/mcp-config.json`; Teams CDP unreachable → `Ensure-EdgeCDP.ps1`; missing region cache / query file → re-copy canonical version; corrupt watcher lock / orphaned tasks → `Register-WatcherTask -Action cleanup`; empty service-config / pipeline-catalog fields → resume the matching `setup-service group <N>`), then re-run `Test-PreFlight` ONCE. Only halt and surface the remaining failures to the owner if checks still fail after the automated remediation pass — and in that halt message, list exactly what was attempted, what the residual error is, and the explicit next command the owner needs to run. Never present a "here is what failed, fix it yourself" view without first having attempted the automated path.
 
 2. **CCOA region exclusion (auto-detect)**: Automatically check the CCOA (Critical Changes Only Advisory) schedule to determine which Azure regions are blocked for the current month.
    a. Use the Engineering Hub MCP tool (`es_search`) to query the CCOA schedule:
@@ -1035,13 +1130,12 @@ When the release owner says `setup`:
      EventLogAllClusters
      | where TIMESTAMP > ago(1d)
      | where CONFIG[kusto.canary.serviceFilter] and DeploymentName !contains "r-pod01"
-     | where StampName startswith "ea-can" or StampName startswith "ecy" or StampName startswith "ccy"
+     | where CONFIG[kusto.canary.stampPrefixFilter]
      | summarize make_set(DeploymentUnit) by StampName
      ```
    - **If `pipeline-catalog.json → canaryRouting.mode == "cluster-type"` OR `productionRouting.mode == "cluster-type"`**:
-     - Parse Kusto results to determine which **cluster types** are currently in canary (by inspecting `DeploymentUnit` substrings — `-sfmc`, `-sf`, etc., per each routing block's `clusterTypeMap`). Display the cluster-type → pipeline-key resolution that would happen at runtime.
-     - Additionally, verify that `canaryRouting.pipelines[<key>].validatedStamps` is populated for every pipeline key referenced in `clusterTypeMap` (and the same for `productionRouting.pipelines`). If any pipeline lacks `validatedStamps`, warn: *"Pipeline `<key>` has no validated stamp catalog — Step 5/7/10 will halt at runtime. Run `recheck-canary-mapping` or re-run `setup-service` (Group 11) to harvest the catalog from ADO run history before starting the release."*
-     - Display the per-pipeline catalogs to the owner (e.g., `PROT-SFRP: validatedStamps = [ea-01, ea-02, ecy-01, wus-01]`).
+     - Parse Kusto results to determine which **cluster types** are currently in canary (by inspecting `DeploymentUnit` substrings — `-sfmc`, `-sf`, etc., per each routing block's `clusterTypeMap`). Display the cluster-type → pipeline-key resolution that would happen at runtime. **Iterating `clusterTypeMap`**: each value may be either a single string key (`"sfmc": "SVC-SFMC"`) or an array of keys (`"sfmc": ["PROT-SFMC", "DT-SFMC"]`) — coerce scalar values to single-element arrays before iterating.
+     - Verify every pipeline key referenced in `clusterTypeMap` has a `clusterType` declared under `canaryRouting.pipelines[<key>]` / `productionRouting.pipelines[<key>]`. If any is missing, warn the owner to re-run `setup-service` (Group 11) to declare it.
    - **If both routing modes are `"static"` (default)**: skip cluster-type parsing — Steps 5, 7, and 10 will trigger all `canary.*` / `production.*` entries unconditionally. Display: *"Routing mode is 'static' — all canary/production pipelines will be triggered every release; no Kusto-driven routing required."*
 
 9. **SafeFly API connectivity test**: Run the SafeFly pre-flight skill:
@@ -1274,10 +1368,10 @@ When the release owner says `approve-crb` or `approve crb`:
 3. **Check dual-gate**: Read `state.json → step14.safeFlyApproved`
    - If **both** `safeFlyApproved` and `crbApproved` are `true`:
      - Set step 14 → `completed`, advance to step 15
-     - Post Teams: *"✅ Both CRB and SafeFly approved — proceeding to production rollout"*
+     - Send transition email to release owner via `Resolve-NotificationRecipients -EventKey 'step-14-completed'`: *"✅ Both CRB and SafeFly approved — proceeding to production rollout"* (no Teams unless owner has configured `step-14-completed` routing)
      - Resume execution loop
    - If SafeFly is **not yet approved**:
-     - Post Teams: *"✅ CRB approved. Waiting for SafeFly R2D #{number} approval — currently: {safeFlyApprovalState}"*
+     - Send email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: *"✅ CRB approved. Waiting for SafeFly R2D #{number} approval — currently: {safeFlyApprovalState}"* (no Teams per Rule 1)
      - Keep step 14 in `waiting-approval` — watcher continues polling SafeFly
 4. Log in audit
 
@@ -1307,7 +1401,7 @@ When the release owner says `stop`:
 1. Parse `watcher.lock` as JSON (per the "Reading `watcher.lock`" sub-section in Step Execution Loop) → extract `$lock.pid`
 2. Kill watcher process: `Stop-Process -Id $lock.pid`
 3. Set release status → `stopped`
-4. Post Teams notification: "Release paused by release owner"
+4. Send email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: "Release paused by release owner" (no Teams per Rule 1)
 5. Log in audit
 
 ## test — Dry-Run Step or Full Flow
@@ -1394,57 +1488,6 @@ When the release owner says `test-run`:
 4. **After Step 15 completes**: Send test summary email (see Test Mode Overrides below),
    remind owner to abandon SafeFly R2D, auto-teardown.
 
-## recheck-canary-mapping — Re-Harvest Validated Stamp Catalogs
-
-When the release owner says `recheck-canary-mapping`:
-
-> **Purpose**: Refresh `canaryRouting.pipelines[*].validatedStamps` and `productionRouting.pipelines[*].validatedStamps` in `pipeline-catalog.json` from ADO run history. Use this when:
-> - A new canary region / stamp short name has been added and recent successful runs reflect it.
-> - The Step 5/7/10 audit log shows recurring `not-in-validated-catalog` drops for stamps the owner believes are legitimate.
-> - Cross-pipeline contamination was flagged and the owner has cleaned up `templateParameters` in ADO — re-harvest to confirm the contamination is gone.
-> - Periodic refresh (recommended every N releases — e.g., every 3 monthly releases).
-
-**Pre-conditions**: at least one of `canaryRouting.mode` or `productionRouting.mode` is `"cluster-type"`. If both are `"static"`, the command is a no-op — print *"No cluster-type routing configured; nothing to harvest."* and exit.
-
-**Behaviour**:
-
-1. **Pre-flight**: dot-source and invoke `Test-PreFlight` (ADO connectivity required). Halt on `fail`.
-
-2. **Load** the current `pipeline-catalog.json`. Build the set of pipelines to re-harvest = every key under `canaryRouting.pipelines` (if `canaryRouting.mode == "cluster-type"`) plus every key under `productionRouting.pipelines` (if `productionRouting.mode == "cluster-type"`).
-
-3. **For each pipeline `P` in the set** — re-run **steps 2–5 of the validated-catalog discovery sub-procedure** (defined under Group 11 in `setup-service`): fetch the last 10 successful ADO runs, harvest stamp-list union, cross-pipeline contamination scan, owner-facing validation table with diff against the current saved `validatedStamps`. The diff renders three sections:
-   ```
-   Pipeline: <key>   Declared cluster type: <clusterType>
-   Saved validatedStamps: [<oldList>]
-   Re-harvested from <N>/10 successful runs:
-
-   ➕ New stamps (in recent runs, not in saved catalog):
-     | stamp  | seen in runs | also in other pipelines | confidence |
-     | wus-02 | 3/10         | —                       | medium     |
-
-   ➖ Removed stamps (in saved catalog, not in any recent run):
-     | stamp  | last seen        | also in other pipelines | notes                |
-     | ccy-01 | not in last 10   | PROT-SFMC (sfmc) ⚠      | likely stale         |
-
-   ✓ Unchanged stamps: [ea-01, ea-02, ecy-01]
-
-   Confirm? [accept all changes] [accept adds only] [accept removes only] [edit row N] [skip this pipeline] [abort]
-   ```
-   - `accept all changes` → replace `validatedStamps` with the harvested union, update `discoveredAt` and `discoveryRuns`.
-   - `accept adds only` → union saved + new (no removals).
-   - `accept removes only` → keep saved minus the removed entries.
-   - `edit row N` → modify individual stamps.
-   - `skip this pipeline` → leave `validatedStamps` unchanged.
-   - `abort` → halt the command immediately, persist nothing further.
-
-4. **Persist incrementally** per pipeline (same rules as Group 11 — write to disk after each owner confirmation, not at the end). Append `audit.jsonl` row: `{"action":"recheck-canary-mapping","pipeline":"<key>","added":[...],"removed":[...],"contaminations":[...]}`.
-
-5. **Final consolidated contamination summary** (same as Group 11 finale) — list every cross-pipeline contamination still present after the refresh, with recommendation to resolve at the source (edit ADO pipeline param defaults).
-
-6. **Report**: print a one-line summary per pipeline (`<key>: +N stamps, -M stamps, K unchanged`) and the path to the updated `pipeline-catalog.json`. Remind the owner: *"Commit `pipeline-catalog.json` to capture the refresh. The next release will use the new catalogs immediately."*
-
-**State**: this command does NOT modify `state.json` or any release state — it only updates `pipeline-catalog.json`. It is safe to run mid-release; the change takes effect on the next Step 5/7/10 invocation.
-
 ## teardown — Post-Release Cleanup
 
 When the release owner says `teardown`:
@@ -1457,7 +1500,7 @@ When the release owner says `teardown`:
    ```
    This removes the current release task AND sweeps any orphaned/stale tasks from crashed runs or old test-runs.
 2. Delete `.zed-agent/secrets.json`
-3. Post final Teams notification: "Release {id} teardown complete"
+3. Send final email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: "Release {id} teardown complete" (no Teams per Rule 1)
 4. Log in audit
 5. Report teardown completion summary — include count of tasks removed and processes killed
 
@@ -1470,9 +1513,9 @@ When the release owner says `teardown`:
 **Trigger**: Start of `run` execution
 **Actions**:
 1. Render `templates/reminder-message.html` with release dates via `Expand-Template`
-2. Post to `notifications.channels.release` via `Send-TeamsMessage`
+2. Resolve recipients via `Resolve-NotificationRecipients -EventKey 'reminder'` (returns Teams chat list + email recipients per `routing.reminder` block: `teamsGroups: ["teams"]`, `emailGroups: ["permanent"]`). For each Teams chat returned, post via `Send-TeamsMessage`.
 3. Render `templates/reminder-email.html` via `Expand-Template`
-4. Send to reminder recipients (see Notification Recipients in Domain Knowledge) via `SendEmailWithAttachments` MCP tool with the rendered HTML as `body`, `contentType: "HTML"`
+4. Send to the email recipients returned by `Resolve-NotificationRecipients` via `SendEmailWithAttachments` MCP tool with the rendered HTML as `body`, `contentType: "HTML"`
 **State**: Step 1 → `completed`
 **Next**: Proceed immediately to Step 2
 **Failure**: Notification failure → log warning, continue (non-blocking)
@@ -1487,24 +1530,41 @@ When the release owner says `teardown`:
    - `sourceBranch` = `refs/heads/{release.currentBranch}` — the release branch being built (NOT develop)
    - `templateParameters`: Use all key-value pairs from `CONFIG[pipelines.officialBuild.templateParameters]` (loaded from pipeline-catalog.json)
 4. Store `buildId` in `release.json` and step metadata
-**State**: Step 2 → `completed`, Step 3 → `in-progress`
+5. **Run Step 4's inline (synchronous) work in parallel with the about-to-be-armed build watcher.** Per the Step Dependency Matrix parallelism note (Step 3 ∥ Step 4), execute Step 4 Actions sub-steps 1–9 **right here, before arming any watcher** — git fetch, `git log --cherry-pick`, classify every commit, build `commits.xlsx`, upload to SharePoint, post the commit-request Teams message. On completion:
+   - Set `state.step4InlineCompleted = true`
+   - Set `state.step4InlineCompletedAt = <UTC ISO 8601 now>` (used by the watcher's 24 h nudge timer)
+   - Set `state.step4ExcelUrl = <SharePoint sharing URL>` (same value stored in `release.json.commitExcelUrl`)
+   - Set `state.steps[4].status = "in-progress"` (the Excel Impact poll will continue via the watcher side-channel; `completed` is set automatically by the watcher when Impact reaches 100%)
+   - Append `{ "event": "step4-inline-done", "excelUrl": "...", "commitCount": N }` to `audit.jsonl`
+   - **Test mode override**: if `release.json.testMode == true`, auto-fill the Excel manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes"), skip Teams post, set `state.steps[4].status = "completed"` immediately, and skip the watcher side-channel entirely.
+   - **Failure of Step 4 inline work** is non-fatal for Step 3: log the error, set `state.steps[4].status = "failed"`, send owner email, but **still arm Step 3's build watcher** and exit. Step 13's prerequisite check will catch the Step 4 failure later.
+6. Arm Step 3's build watcher and EXIT.
+**State**: Step 2 → `completed`, Step 3 → `in-progress` (build watcher armed), Step 4 → `in-progress` (Excel-fill side-channel armed; or `completed` in test mode)
 **Watcher**: `{ action: "poll-ado-build", target: "<build API URL>", pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], successCondition: "$.status == 'completed'", onSuccess: "continue release {id}", onFailure: "release {id} build failed" }`
-**Failure**: Branch creation failure → `failed`, Teams notify, halt
+**Failure**: Branch creation failure → `failed`, Teams notify, halt. (Step 4 inline failure does NOT block Step 2 from completing — see Action 5 above.)
 
 ## Step 3: Wait for Build Completion
 
 **Trigger**: Watcher detects build status `completed`
 **Actions**:
 1. Fetch build result (succeeded/failed) via ADO API
-2. If **succeeded**: send email to release owner via `SendEmailWithAttachments` MCP tool with build number and duration, advance to next step
-3. If **failed**: send failure email to release owner via `SendEmailWithAttachments` MCP tool, set step → `failed`, halt for `ack`. Release owner can issue `ack retry` to re-queue the build on the same release branch with the same `templateParameters` (Step 2's queueing logic, but Step 1's branch-creation is skipped because the branch already exists). Any other `ack` aborts the release.
+2. If **succeeded**: send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-3-completed'` with build number and duration, advance to next step
+3. If **failed**: send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-3-failed'` (safety rail: owner-only), set step → `failed`, halt for `ack`.Release owner can issue `ack retry` to re-queue the build on the same release branch with the same `templateParameters` (Step 2's queueing logic, but Step 1's branch-creation is skipped because the branch already exists). Any other `ack` aborts the release.
 **State**: Step 3 → `completed` or `failed`
 **Next**: Proceed to Step 4
 
 ## Step 4: Collect & Analyze Commit Details
 
-**Trigger**: Step 2 completed (runs in **parallel** with Step 3 — commit analysis happens while the build is running)
-**Actions**:
+**Trigger**: Step 2 completed (runs in **parallel** with Step 3 — commit analysis happens while the build is running).
+
+**Execution model (parallelism implementation):** This step is split into two phases — see the Step Dependency Matrix parallelism note for the full rationale.
+
+- **Phase A — Inline (Actions 1–9 below)**: Runs **synchronously inside Step 2's body** right after the build is queued. Generates `commits.xlsx`, uploads to SharePoint, posts the Teams commit-request message. Sets `state.step4InlineCompleted = true` and `state.step4ExcelUrl`. Step 4's status becomes `in-progress` at the end of Phase A (not `completed`, because the team still has to fill the Impact column).
+- **Phase B — Side-channel poll**: Runs **inside `Release-Watcher.ps1`'s main loop, opportunistically on every tick**, as long as `state.step4InlineCompleted == true` and `state.steps[4].status == 'in-progress'`. No dedicated `watcherDirective` is needed — the build watcher's polling loop reads the OneDrive Excel and updates `state.step4ExcelImpactPct` on every iteration. When Impact reaches 100 %, the watcher sets `state.steps[4].status = "completed"` and writes a `step4-completed-by-side-channel` audit entry.
+
+**Step 13 fallback**: If Step 12 finishes before Step 4 reaches 100 % (uncommon — Step 6 alone bakes 24 h), Step 13 arms a dedicated `poll-onedrive-file` directive and EXITs. See Step 13.
+
+**Actions (Phase A — executed inline during Step 2)**:
 1. Read `repoRoot` from `environment.json` and branch names from `release.json`
 2. Run `git -C "{repoRoot}" fetch --all` to ensure branches are up to date
 3. Run `git -C "{repoRoot}" log --cherry-pick origin/{currentBranch}..origin/{previousBranch} --pretty=format:"%h%x1f%an%x1f%aD%x1f%s%x1f%b%x1e"` to collect commits (fields separated by US `0x1f`, records by RS `0x1e`). Parse the delimiter-separated output into a list of raw commits with fields: CommitID, Author, Date, Subject, Body.
@@ -1556,13 +1616,13 @@ When the release owner says `teardown`:
    - `excelUrl` — the SharePoint sharing URL stored in step 8 (`release.json → commitExcelUrl`)
 
    Before sending, verify the rendered body contains no `{{` substring; if any remain, fix the variable map and re-render rather than sending a broken message.
-**State**: Step 4 → `waiting` (watcher active)
-**⚠️ Test Mode Override**: When `testMode` is `true`, auto-fill the manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes") for all rows. Skip the `poll-onedrive-file` watcher — mark Step 4 as `completed` immediately after upload. No Teams commit-request message (test mode suppresses Teams).
-**Watcher**: `poll-onedrive-file` — polls the uploaded Excel on SharePoint every `CONFIG[operational.watcherPollIntervalSeconds]` (default 1 hour) to check team progress. The watcher reads the Excel and counts how many rows have the **Impact** column filled (non-empty). Completion condition: **100% of Impact cells are filled**.
-- On each poll: log fill percentage to `audit.jsonl`
-- When 100% filled → Step 4 → `completed`
-- If no progress after **24 hours**, send a reminder nudge to Teams using `templates/commit-nudge-message.html` (includes fill progress, pending contributors, and SharePoint link)
-**Next**: Step 13 (Create R2D) waits for **both** Step 12 and Step 4 to complete — ensuring the team has reviewed commit impact before the R2D is created. In test mode, Step 12 is `skipped` (satisfies dependency) and Step 4 auto-fills (completes immediately).
+**State**: Step 4 → `in-progress` after Phase A completes (during Step 2). Transitions to `completed` automatically when the watcher side-channel detects 100 % Impact fill.
+**⚠️ Test Mode Override**: When `testMode` is `true`, auto-fill the manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes") for all rows. Skip the side-channel poll — mark Step 4 as `completed` immediately after upload. No Teams commit-request message (test mode suppresses Teams).
+**Watcher (Phase B side-channel — no dedicated directive)**: `Release-Watcher.ps1` polls the uploaded Excel on SharePoint every `CONFIG[operational.watcherPollIntervalSeconds]` (default 1 hour) **as a side-channel inside whatever directive is currently active** (typically `poll-ado-build` during Step 3, then `poll-ado-pipelines` during Step 5). The watcher reads the Excel via Graph API + ImportExcel and counts how many rows have the **Impact** column filled (non-empty). Completion condition: **100 % of Impact cells are filled**.
+- On each poll: update `state.step4ExcelImpactPct`, log fill percentage to `audit.jsonl` as event `step4-side-channel-poll`
+- When 100 % filled → set `state.steps[4].status = "completed"` and log `step4-completed-by-side-channel`
+- If no progress after **24 hours** (computed from `state.step4InlineCompletedAt`), send a reminder nudge to Teams using `templates/commit-nudge-message.html` (includes fill progress, pending contributors, and SharePoint link). The watcher sets `state.step4NudgeSentAt` to avoid duplicate nudges.
+**Next**: Step 13 (Create R2D) waits for **both** Step 12 and Step 4 to complete — ensuring the team has reviewed commit impact before the R2D is created. If Step 4 is still `in-progress` when Step 13 fires, Step 13 arms a dedicated `poll-onedrive-file` directive and EXITs (see Step 13). In test mode, Step 12 is `skipped` (satisfies dependency) and Step 4 auto-fills (completes immediately).
 **Failure**: Git/SharePoint/upload failure → `failed`, notify, halt
 
 ## Step 5: Deploy Canary
@@ -1571,56 +1631,36 @@ When the release owner says `teardown`:
 **Actions**:
 1. Read `pipeline-catalog.json → canaryRouting` (default `{ mode: "static" }` if absent):
    - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `canary.*` in parallel. Pass each entry's `templateParameters` to ADO verbatim.
-   - **`mode: "cluster-type"`** — run the cluster-type routing sub-procedure below. **Kusto is mandatory in this mode**: if the query fails, the step MUST halt with `failed` and notify CONFIG[notifications.groups.permanent]. Do NOT silently fall back to triggering everything — that is what caused the PROT 2026-05 mis-routing.
+   - **`mode: "cluster-type"`** — run the cluster-type routing sub-procedure below. **Kusto is mandatory in this mode**: if the query fails, the step MUST halt with `failed` and emit the owner-only step-transition email per Behavior Rule 11. Do NOT silently fall back to triggering everything — that is what caused the PROT 2026-05 mis-routing.
 
    ### Cluster-type routing sub-procedure (used by Steps 5, 7, 10)
 
-   > **Key insight**: cluster type is a property of the **pipeline**, not of the stamp short name. `ea-01` in `PROT-SFRP` always means an SFRP stamp (because that pipeline only deploys SFRP); the same short name in `PROT-SFMC` always means an SFMC stamp. The agent never translates short names to physical Kusto `StampName`s. Instead, it relies on two signals captured at `setup-service` time and stored under `canaryRouting.pipelines[<key>]`:
-   > - `clusterType` — declared once per pipeline by the service owner.
-   > - `validatedStamps` — the union of stamp-list values observed across the last N successful ADO runs of that pipeline (the **validated catalog**).
-   >
-   > Runtime is then a trivial filter: drop any stamp from the current pipeline definition that is not in this pipeline's validated catalog, and flag any stamp that appears in *another* pipeline's validated catalog with a different `clusterType` (cross-contamination — the actual PROT 2026-05 failure mode).
+   > **Key insight**: cluster type is a property of the **pipeline**, not of the stamp short name. `ea-01` in `PROT-SFRP` always means an SFRP stamp (because that pipeline only deploys SFRP); the same short name in `PROT-SFMC` always means an SFMC stamp. The agent never translates short names to physical Kusto `StampName`s and never filters stamp lists at runtime. Kusto's runtime role is **pipeline selection only** — it returns the set of cluster types currently in canary, which resolves to a set of pipeline keys via `clusterTypeMap`. Each selected pipeline's `templateParameters` (collected and confirmed at `setup-service` time) are passed to ADO **verbatim**. Safety of the deployment therefore depends entirely on `pipeline-catalog.json` being correct.
 
    a. **Pipeline selection via Kusto** — query `CONFIG[kusto.canary.cluster]` / `CONFIG[kusto.canary.database]` using the canary deployment-units query from Domain Knowledge. **Parse the response per the Kusto MCP Response Parsing rule** (`$resp.Tables[0].Rows` — never `$resp.tables | Where TableName -eq 'PrimaryResult'`; see the BVT Failure Analysis → Query Execution section). On any token error, **invoke `.github/skills/zed-agent/scripts/Repair-AzAuth.ps1 -Tenant 'microsoft.com' -Resource <kusto.canary.cluster>`** (3-attempt cascade: interactive login → WAM-disable + retry → device-code). Retry the Kusto query once after a successful remediation; if still failing, mark the step `failed` — do not proceed.
 
       Collect the set of cluster types **currently in canary** by inspecting each row's `DeploymentUnit` values (`-sfmc` → `sfmc`; `-sf` without `-sfmc` → `sf` / `sfrp`; service-specific otherwise — owner has documented the suffix-to-clusterType mapping in `canaryRouting.clusterTypeMap` at setup time). The output of this step is a **set of cluster types**, e.g., `{ "sfmc", "sfrp" }` — **not** a per-stamp classification.
 
-   b. **Select pipelines to trigger**: for each cluster type observed in (a), look it up in `canaryRouting.clusterTypeMap` (values may be a string key or an array of keys). Union all resolved pipeline keys → that is the trigger set. Cluster types with no mapping → log warning + skip.
+   b. **Select pipelines to trigger**: for each cluster type observed in (a), look it up in `canaryRouting.clusterTypeMap` (values may be a string key or an array of keys — coerce scalars to single-element arrays before iterating). Union all resolved pipeline keys → that is the trigger set. Cluster types with no mapping → log warning + skip.
 
-   c. **Per-pipeline stamp filtering against the validated catalog** — this is the cross-contamination defence. For each pipeline `P` in the trigger set:
-      - Load `validatedStamps[P]` and `clusterType[P]` from `canaryRouting.pipelines[P]` in the service config. If absent → halt with `failed` and tell the release owner: *"Pipeline `<P>` has no validated stamp catalog. Run `recheck-canary-mapping` (or re-run `setup-service`) to harvest the catalog from ADO run history before continuing."* Do NOT proceed with an unvalidated pipeline.
-      - **Identify stamp-list parameters** in `P`'s current `templateParameters`: a parameter is a stamp list if (i) its name contains the substring `stamp` (case-insensitive — covers `CanaryStamps`, `CanarystampsProd`, `PublicStamps`, `Publicstamps`, `MCstamps`, `FFstamps`, `Bleustamps`, and any future variant) AND (ii) its value parses as a PowerShell array literal (`@("ea-01","ccy-01",…)`). Other parameters pass through unchanged.
-      - For each identified stamp-list parameter, walk every short name in the array:
-        - **(c.i) Not in this pipeline's validated catalog** — `stamp ∉ validatedStamps[P]`: drop it with audit reason `"not-in-validated-catalog"`. This is the primary stale-entry signal. (If the owner intentionally added a new stamp that hasn't deployed yet, they will see the drop in the audit log and can run `recheck-canary-mapping` to re-harvest.)
-        - **(c.ii) Cross-pipeline contamination** — `stamp ∈ validatedStamps[Q]` for some other pipeline `Q` where `clusterType[Q] ≠ clusterType[P]`: drop it with audit reason `"cross-pipeline-contamination"` and `conflictingPipeline = Q`, `conflictingClusterType = clusterType[Q]`. This is the exact PROT 2026-05 failure mode (`ccy-01` was an SFMC stamp leaked into the SFRP pipeline's `CanarystampsProd`).
-        - Otherwise: keep.
-      - Re-serialize the filtered list. **If filtered list is empty** → omit pipeline `P` entirely with audit reason `"all-stamps-filtered"`. Do NOT trigger with empty stamps.
-
-   d. **Audit log entry** — write to `audit.jsonl` before triggering. Required fields:
+   c. **Audit log entry** — write to `audit.jsonl` before triggering. Required fields:
       ```json
-      { "event": "stamp-validation-filter",
+      { "event": "cluster-type-routing",
         "step": 5,
         "kustoClusterTypes": ["sfmc","sfrp"],
         "triggeredPipelines": [
           { "key": "PROT-SFRP", "clusterType": "sfrp",
-            "params": { "CanarystampsProd": {
-              "original": ["ea-01","ecy-01","ccy-01"],
-              "filtered": ["ea-01","ecy-01"],
-              "drops": [ { "stamp": "ccy-01",
-                           "reason": "cross-pipeline-contamination",
-                           "conflictingPipeline": "PROT-SFMC",
-                           "conflictingClusterType": "sfmc" } ] } } }
+            "params": { "CanarystampsProd": ["ea-01","ecy-01"] } },
+          { "key": "PROT-SFMC", "clusterType": "sfmc",
+            "params": { "CanarystampsProd": ["ccy-01"] } }
         ],
-        "skippedDueToNoMapping": [],
-        "skippedDueToEmptyStamps": [] }
+        "skippedDueToNoMapping": [] }
       ```
-      This single audit row makes a future PROT-2026-05-style mis-route diagnosable from the audit alone.
+      This audit row is the single source of truth for what was triggered and is reused by Step 7 (Rollback).
 
-   e. **Surface contamination to the release owner** — if ANY drop has `reason: "cross-pipeline-contamination"`, post a Teams 1:1 to the release owner (NOT to any group chat) summarising the contamination table, and recommend they run `recheck-canary-mapping` after this release completes to update `pipeline-catalog.json`. The agent still proceeds with the filtered list (the filter has already neutralised the bad routing); contamination is a stale-config alarm, not a halt condition.
-
-2. Trigger all resolved pipelines in **parallel** with the filtered `templateParameters`.
+2. Trigger all resolved pipelines in **parallel** with their `templateParameters` (passed verbatim from `pipeline-catalog.json`).
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
-4. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Canary deployment started"
+4. Email notification via `SendEmailWithAttachments` MCP tool: "Canary deployment started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-5-completed'` (this is part of the Step 5 → Step 6 transition email per Behavior Rule 11; do not emit a separate "canary started" broadcast).
 5. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):
    ```powershell
    . .github\skills\zed-agent\scripts\Get-PipelineApprovalLinks.ps1
@@ -1653,8 +1693,8 @@ When the release owner says `teardown`:
 6. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
 **Watcher approval detection**: On each poll cycle, the watcher also scans for new approval links (see `poll-ado-pipelines` action in `Release-Watcher.ps1`). If new links are found that haven't been posted, the watcher sends an updated Teams message to the Teams chat specified in the watcher directive's `teamsChatName` field.
-**Completion**: All triggered pipelines succeed → send email to release owner via `SendEmailWithAttachments` MCP tool: "Canary deployment completed"
-**Failure**: Any pipeline fails → step `failed`, email to release owner via `SendEmailWithAttachments` MCP tool, halt for `ack`
+**Completion**: All triggered pipelines succeed → send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-completed'`: "Canary deployment completed"
+**Failure**: Any pipeline fails → step `failed`, send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-failed'` (safety rail: owner-only), halt for `ack`
 
 ## Step 6: BVT Check (Kusto-Based Failure Analysis)
 
@@ -1687,8 +1727,8 @@ When the release owner says `teardown`:
    - **HALT** — release owner must `ack retry` (re-run BVT check after fixes) or `ack skip` (proceed despite failures)
 
    **If zero rows returned** (no CONFIG[service.name] failures):
-   - Post Teams: "✅ BVT Check passed — no CONFIG[service.name] failures detected in window {triggerTime} → {now}"
-   - Post `templates/approval-needed-message.html`: "BVT results ready — please review and sign off"
+   - Send approval-needed email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-6-waiting-approval'` (defaults to owner-only; owner can broadcast if configured): "✅ BVT Check passed — no CONFIG[service.name] failures in window {triggerTime} → {now}. Results ready — please review and sign off" (use `templates/approval-needed-message.html` as body).
+   - No Teams post (Rule 1: approval halts are owner-only email)
    - Set step status → `waiting-approval`
    - **HALT** — release owner must `approve-bvt` to proceed
 
@@ -1700,10 +1740,10 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 6 approved
 **Actions**:
-1. Determine which canary pipelines to trigger using `canaryRouting` — **same logic as Step 5**: in `mode: "cluster-type"`, re-run the Kusto pipeline-selection query (do NOT reuse Step 5's cached result — cluster topology may have shifted during the canary window; Kusto is mandatory, halt on failure with no fallback), then apply the per-pipeline validated-catalog + cross-contamination filter from `canaryRouting.pipelines[*].validatedStamps` (see Step 5 cluster-type routing sub-procedure for the full algorithm and audit-log schema). In `mode: "static"`, no Kusto, no filter, trigger everything.
-2. Trigger the same CANARY pipelines used in Step 5, but with `ArtifactsBranch` set to `release.json → previousBranch` (the previous release branch containing known-good production bits), in **parallel**
+1. **Reuse Step 5's actually-triggered set** — do NOT re-query Kusto and do NOT recompute pipeline selection. Rollback MUST target exactly the same canary surface that was deployed to in Step 5, otherwise the rollback either (a) restores bits in regions that were never updated, or (b) misses regions that received the forward bits. Read from the Step 5 `cluster-type-routing` audit row (or equivalent `state.json → step5.triggeredPipelines`) the list of `{ key, params }` pairs that were actually triggered with their `templateParameters`. Use those verbatim. This applies to both `mode: "static"` and `mode: "cluster-type"` — Step 7 never re-runs the routing sub-procedure. If Step 5's triggered-set is missing from state/audit (e.g., manual intervention scrubbed it), halt with `failed` and ask the release owner to provide the list explicitly via `modify` before retrying.
+2. Trigger each of those CANARY pipelines, but with `ArtifactsBranch` overridden to `release.json → previousBranch` (the previous release branch containing known-good production bits), in **parallel**. Preserve every other parameter (including the stamp lists) exactly as Step 5 sent them.
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step7 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
-4. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Rollback started"
+4. Email notification via `SendEmailWithAttachments` MCP tool: "Rollback started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-7-completed'` (Step 6 → Step 7 transition per Behavior Rule 11).
 5. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use `releaseId` + `releaseOwner` + the rollback build details for the template vars. Rollback pipelines have the same EV2 approval gates as forward canary, so release owners need these links.
 6. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
@@ -1721,8 +1761,8 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 8 completed
 **Actions**:
-1. Post Teams summary of post-rollback BVT results
-2. Post `templates/approval-needed-message.html`: "Post-rollback results ready for review"
+1. Send approval-needed email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-9-waiting-approval'` (defaults to owner-only) with BVT summary + `templates/approval-needed-message.html` body: "Post-rollback results ready for review"
+2. No Teams post (Rule 1)
 3. **HALT** — waiting for release owner `approve-rollback`
 **State**: Step 9 → `waiting-approval`
 **Release owner**: `approve-rollback`
@@ -1733,11 +1773,11 @@ When the release owner says `teardown`:
 **Actions**:
 1. Read `pipeline-catalog.json → productionRouting` (default `{ mode: "static" }` if absent — **note: this is a SEPARATE block from `canaryRouting`** because services often have asymmetric canary vs production topology):
    - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `production.*` (targeting canary regions) in parallel.
-   - **`mode: "cluster-type"`** — apply the **cluster-type routing sub-procedure defined in Step 5** against the `production.*` entries and `productionRouting.clusterTypeMap`. Kusto is mandatory (for pipeline selection only); on query failure halt with `failed`. Filter every stamp-list parameter per pipeline against `productionRouting.pipelines[<key>].validatedStamps` (same algorithm as Step 5(c) — drop not-in-catalog + cross-contamination). Log the full classification + filtered stamp map to `audit.jsonl`. If any production pipeline has no validated stamp catalog, halt and instruct the owner to run `recheck-canary-mapping`.
+   - **`mode: "cluster-type"`** — apply the **cluster-type routing sub-procedure defined in Step 5** against the `production.*` entries and `productionRouting.clusterTypeMap`. Kusto is mandatory (for pipeline selection only); on query failure halt with `failed`. Pass each selected pipeline's `templateParameters` to ADO **verbatim** (no stamp-list filtering). Write a `cluster-type-routing` audit row with `step: 10` and the list of triggered pipelines + params.
 2. This validates that the PROD pipelines work correctly before using them for public regions.
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step10 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. **Capture BuildNumber**: After the PROD pipeline runs start, read the `buildNumber` from **any** of the triggered pipeline runs via ADO API (`GET /{project}/_apis/build/builds/{buildId}`) — all PROD pipelines build from the same release branch so `buildNumber` is identical across runs. The format is `<BranchName>-<RunCount>` (e.g., `Release-2604-2` means branch `Release-2604`, 2nd run). Store this in `release.json → buildNumber`. This value is used later by Step 13 for the SafeFly `DeploymentDetails.DeploymentToolInputs.BuildNumber` parameter.
-5. Email notification to CONFIG[notifications.groups.permanent] via `SendEmailWithAttachments` MCP tool: "Roll-forward started (PROD pipelines → canary)"
+5. Email notification via `SendEmailWithAttachments` MCP tool: "Roll-forward started (PROD pipelines → canary)" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-10-completed'` (Step 9 → Step 10 transition per Behavior Rule 11).
 6. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use the PROD pipeline build details for the template vars; PROD pipelines have EV2 approval gates just like canary.
 7. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
@@ -1755,8 +1795,8 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 11 completed
 **Actions**:
-1. Post Teams summary of post-roll-forward BVT results
-2. Post `templates/approval-needed-message.html`: "Post-roll-forward results ready for review"
+1. Send approval-needed email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-12-waiting-approval'` (defaults to owner-only) with BVT summary + `templates/approval-needed-message.html` body: "Post-roll-forward results ready for review"
+2. No Teams post (Rule 1)
 3. **HALT** — waiting for release owner `approve-rollforward`
 **State**: Step 12 → `waiting-approval`
 **Release owner**: `approve-rollforward`
@@ -1764,6 +1804,29 @@ When the release owner says `teardown`:
 ## Step 13: Create SafeFly R2D Request
 
 **Trigger**: Step 12 approved AND Step 4 completed (commit data)
+
+**Prerequisite check (Step 4 join point — see Step Dependency Matrix parallelism note):**
+
+Before running any of the actions below, read `state.json` and verify `state.steps[4].status == "completed"`. If Step 4 is still `in-progress` (Phase B side-channel hasn't reached 100 % Impact fill yet — uncommon, because Step 6 alone bakes 24 h before Step 13 is reached):
+
+1. Arm a dedicated `poll-onedrive-file` watcher directive targeting `state.step4ExcelUrl` — this is the only place in the pipeline that uses `poll-onedrive-file` as a primary directive (during normal flow it runs as the side-channel inside the build/canary watchers):
+   ```json
+   {
+     "action": "poll-onedrive-file",
+     "target": "<state.step4ExcelUrl>",
+     "pollIntervalSeconds": "CONFIG[operational.watcherPollIntervalSeconds]",
+     "successCondition": "$.impactPct == 100",
+     "onSuccess": "continue release {id}",
+     "onFailure": "release {id} step 4 excel poll failed at step 13 barrier"
+   }
+   ```
+2. Set `state.steps[13].status = "waiting"` and log `step13-waiting-on-step4` to `audit.jsonl`.
+3. Send the release owner a Behavior Rule 11 step-transition email with subject `⏸ Step 13 waiting on Step 4 Excel completion`.
+4. EXIT (per Rule 10). The watcher re-invokes the agent when Step 4 reaches 100 %.
+
+If `state.steps[4].status == "failed"`, halt Step 13 with `failed`, email owner with the chain of remediation attempts (per the Self-Healing rule), and wait for `ack`.
+
+If `state.steps[4].status == "completed"`, proceed with the actions below.
 
 **Skill**: `.github/skills/zed-agent/scripts/SafeFly/New-SafeFlyRequest.ps1`
 **API Reference**: `.github/skills/zed-agent/scripts/SafeFly/SAFEFLY-API-REFERENCE.md` — full schema, all enums, valid values for every field (sourced from [SafeFly OpenAPI spec](https://www.safefly.azure.com/swagger/v1/swagger.json))
@@ -1857,7 +1920,7 @@ This step uses the SafeFly skill to create the R2D request. Most payload paramet
        -BuildId           "{release.json → buildId}" `
        -BuildNumber       "{release.json → buildNumber}" `
        -ReleaseId         "{release.json → releaseId}" `
-       -ReleaseOwnerAlias      "{state.json → releaseOwner.alias}" `
+       -ReleaseOwnerAlias      "{release.json → releaseOwner.alias}" `
        -DeploymentNature  $derivedNatures `
        -SDPType           $derivedSDPType `
        -TargetedRegions   $targetedRegions `
@@ -1867,7 +1930,7 @@ This step uses the SafeFly skill to create the R2D request. Most payload paramet
 
 5. **Handle the result**:
    - **Success**: `$result` contains `safeFlyId`, `safeFlyRequestNumber`, `safeFlyUrl`, `requestStatus`
-   - **Failure** (skill throws): Log full error, set step → `failed`, send failure email **only** to the release owner via `SendEmailWithAttachments` MCP tool (release owner email from `state.json → releaseOwner.email`), then **HALT**. Do NOT post to Teams or any other channel.
+   - **Failure** (skill throws): Log full error, set step → `failed`, send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-13-failed'` (safety rail: owner-only via `release.releaseOwner.email`), then **HALT**. Do NOT post to Teams or any other channel.
 
 6. **Store SafeFly details** in `release.json` via `Update-ReleaseState`:
    ```json
@@ -1880,7 +1943,7 @@ This step uses the SafeFly skill to create the R2D request. Most payload paramet
    ```
 
 7. **Send R2D notification email** via `SendEmailWithAttachments` MCP tool with rendered `templates/r2d-email.html`:
-   - To: `CONFIG[notifications.groups.releaseOwner]` (the release-owner rotation DL — see Notification Recipients in Domain Knowledge), CC: `CONFIG[notifications.groups.cc]`. Do **not** use `{{managerEmail}}` — managers are not separately tracked by this agent.
+   - Recipients: resolve via `Resolve-NotificationRecipients -EventKey 'create-r2d'` — defaults route to `notifications.groups.releaseOwner` (the release-owner rotation DL) with CC `notifications.groups.cc`. Do **not** use `{{managerEmail}}` — managers are not separately tracked by this agent.
    - **Email format**:
      ```
      Subject: ✅ SafeFly R2D #{requestNumber} Created — Release {releaseId}
@@ -1906,19 +1969,7 @@ This step uses the SafeFly skill to create the R2D request. Most payload paramet
      Next step: Present at CRB and get approval. The agent will auto-poll SafeFly approval every 60 minutes.
      ```
 
-8. **Post Teams notification**:
-   ```
-   ✅ SafeFly R2D request #{requestNumber} created — Release {releaseId}
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   📋 SafeFly URL: {safeFlyUrl}
-   🏷️ SDP Type: {sdpType}
-   🔧 Nature: {nature1}, {nature2}, ...
-   🌍 Regions: {count} targeted ({excludedCount} excluded by CCOA)
-   📊 Commit Excel: {commitExcelUrl}
-   🔢 Build: {buildNumber} (ID: {buildId})
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ⏭️ Next: CRB review + SafeFly approval (auto-polling every 60min)
-   ```
+8. **No separate Teams notification** — the R2D creation broadcast is handled entirely by the email in action 7 (event `create-r2d` routes to release owner + CC per `routing.create-r2d`). No additional Teams post is sent (Rule 1).
 
 **Dry run**: To validate the payload without submitting, the release owner can run:
 ```powershell
@@ -1979,13 +2030,13 @@ This step polls SafeFly approval via the skill and waits for the release owner's
      }
    }
    ```
-   - When skill returns `Approved` → update `safeFlyApproved: true`, post Teams: *"✅ SafeFly R2D #{number} approved!"*
+   - When skill returns `Approved` → update `safeFlyApproved: true`, send email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: *"✅ SafeFly R2D #{number} approved!"* (no Teams per Rule 1)
    - When release owner runs `approve-crb` → update `crbApproved: true`
    - **Step 14 completes ONLY when both gates are true**
 
 5. **Timeout handling**: If 72 hours pass without SafeFly approval:
-   - Send email to release owner (release owner) only via `SendEmailWithAttachments` MCP tool: *"SafeFly R2D #{number} has not been approved after 72 hours — please attend the next R2D review meeting or follow up with the SafeFly approvers."*
-   - No Teams message — release owner handles this offline
+   - Send email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'judgment'` (Rule 1: owner-only): *"SafeFly R2D #{number} has not been approved after 72 hours — please attend the next R2D review meeting or follow up with the SafeFly approvers."*
+   - No Teams message (Rule 1) — release owner handles this offline
    - Keep step in `waiting-approval` (continue polling)
 
 **State**: Step 14 → `waiting-approval` (dual-gate: SafeFly skill + release owner `approve-crb`)
@@ -2006,8 +2057,7 @@ This step polls SafeFly approval via the skill and waits for the release owner's
    This replaces the old `poll-ado-pipelines` approach — we do **NOT** wait for ADO pipeline completion because:
    - ADO pipeline completion is irrelevant — the EV2 rollout runs independently
    - ADO builds may even show `Failed` (e.g., monitoring step timeout) while the EV2 rollout continues normally
-4. Post Teams: *"Production rollout triggered — {N} pipelines running. EV2 manages staged rollout via SDP nodes. First EV2 status check in 1 hour."*
-   Include EV2 portal link: `https://ev2portal.azure.net/#/?servicegroups=CONFIG[pipelines.ev2ServiceGroups]*&daterange=1&rolloutinfra=Prod`
+4. Send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-15-completed'`: *"Production rollout triggered — {N} pipelines running. EV2 manages staged rollout via SDP nodes. First EV2 status check in 1 hour."* Include EV2 portal link: `https://ev2portal.azure.net/#/?servicegroups=CONFIG[pipelines.ev2ServiceGroups]*&daterange=1&rolloutinfra=Prod`. No Teams unless owner has configured `step-15-completed` routing.
 
 **Actions — Phase 2: EV2 Rollout Monitoring** (triggered by the 1-hour wait-timer completing):
 5. **Write watcher directive**: `poll-ev2-rollout` with `pollIntervalSeconds = 3600` (1 hour) and targets from `pipeline-catalog.json → ev2ServiceGroups` — includes **all clouds** from `CONFIG[pipelines.ev2CloudCoverage]`. Each pipeline produces rollouts for multiple clouds. **The Release-Watcher polls the EV2 REST API for rollout progress — it does NOT check ADO pipeline status:**
@@ -2023,8 +2073,8 @@ This step polls SafeFly approval via the skill and waits for the release owner's
 6. **On EV2 failure** (any region fails): Read `state.ev2Diagnostics` from `state.json`, then:
    a. For each `failedNode`, extract: `node.error` (summary), `node.errorCode`, `node.errorReason`, `node.errorDetail` (full StatusMessage)
    b. **Research the error** using the **EV2 Error Analysis — Dynamic Documentation Lookup** procedure (below): search MS Learn, ES Chat, and ADO wiki for the `errorCode`/`errorReason`, then synthesize findings into actionable `agentAnalysis` text
-   c. Post Teams using `ev2-failure-report-message.html` with failed regions, actual error details, agent analysis, and suggested actions
-   d. **Send failure email to release owner ONLY** via `SendEmailWithAttachments` MCP tool — do NOT CC the permanent DLs for failure reports (only the release owner needs to act on failures)
+   c. No Teams post (Rule 1: failure notifications are owner-only email). The failure-report HTML (`ev2-failure-report-message.html`) is sent only as the email body.
+   d. **Send failure email** via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-15-failed'` (safety rail: owner-only) — body = rendered `ev2-failure-report-message.html` with failed regions, actual error details, agent analysis, and suggested actions
    e. Set step → `failed`, halt for `ack retry` or `ack skip`
 7. **On EV2 success**: All rollouts completed (all 10 targets show `Completed/Succeeded`) → Step 15 → `completed`. **ADO pipeline status is irrelevant** — a pipeline may show `Failed` in ADO but the EV2 rollout it triggered can still succeed independently.
 
@@ -2048,7 +2098,7 @@ The gov-cloud scraper (`Invoke-Ev2PortalScrape.js`) connects to the user's runni
 
 **Gov-cloud auth-failure handling**: If any gov-cloud query returns `overallStatus = "AuthRequired"`, the agent MUST:
 1. **Continue gracefully** — render the dashboard with Prod data and mark gov-clouds as "⚠️ Auth Required" (do NOT block on gov-cloud failures)
-2. **Send a notification email** to the release owner using Mail MCP with:
+2. **Send a notification email** to recipients from `Resolve-NotificationRecipients -EventKey 'judgment'` (Rule 1: owner-only) via `SendEmailWithAttachments` MCP tool with:
    - **Subject**: `[ZED Agent] Gov-Cloud EV2 Auth Expired — Action Required`
    - **Body** (Text):
      ```
@@ -2180,15 +2230,14 @@ During `poll-ev2-rollout`, the agent MUST track batch-level stage transitions an
    - **Send stage progress email** via `SendEmailWithAttachments` MCP tool:
      - **Template**: `templates/ev2-stage-progress-email.html`
      - **Subject**: `[ZED] EV2 Stage Complete — {{completedStageName}} ✅ | {{releaseId}}`
-     - **To**: CONFIG[notifications.groups.permanent]
-     - **CC**: `{{releaseOwnerEmail}}`
+     - **Recipients**: resolve via `Resolve-NotificationRecipients -EventKey 'ev2-stage-progress'` (defaults: To = `notifications.groups.permanent` + `notifications.groups.cc` + `notifications.groups.releaseOwner`, owner always included via `includeOwner: true`).
      - **Body**: Render template with `{{dashboardRows}}` = current full dashboard table rows as HTML `<tr>` elements
 4. **Waiting for manual promotion detected** (next stage has status `Waiting|NotStarted|Queued` AND all regions in current stage are completed AND `waitingForPromotion` was `false`):
    - Set `waitingForPromotion = true`
    - **Send promotion reminder email** via `SendEmailWithAttachments` MCP tool:
      - **Template**: `templates/ev2-promotion-reminder-email.html`
      - **Subject**: `[ZED] ⏳ Manual Promotion Needed — {{nextStageName}} | {{pipelineName}} {{cloud}}`
-     - **To**: `{{releaseOwnerEmail}}` (release owner only)
+     - **To**: recipients from `Resolve-NotificationRecipients -EventKey 'ev2-promotion-reminder'` (owner-only short-circuit per Rule 1/4)
      - **Body**: Render template with pipeline name, cloud, completed stage, next stage, dashboard table
 5. **Avoid duplicate emails**: Only send if `lastNotifiedStage` differs from current completed stage, or `waitingForPromotion` transitioned from `false` → `true`
 
@@ -2232,7 +2281,7 @@ When writing failure analysis for email reports:
 1. Create PR from `{branch}` to `CONFIG[ado.baseBranch]` via ADO MCP
 2. Set PR title: "Merge back: {branch}"
 3. Store `mergeBackPrId` in `release.json`
-4. Post Teams: "Merge-back PR created — release complete! 🎉"
+4. No notification (per `notifications.md`: `merge-back` has no email + no Teams)
 5. Unregister Task Scheduler task
 **State**: Step 16 → `completed`, release status → `completed`
 **Watcher**: Cleared — watcher exits on next poll

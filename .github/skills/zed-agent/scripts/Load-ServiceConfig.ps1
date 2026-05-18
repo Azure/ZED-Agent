@@ -112,6 +112,37 @@ Assert-FieldExists -FieldPath 'sharepoint.sitePath'            -Root $cfg
 Assert-FieldExists -FieldPath 'notifications.groups.permanent' -Root $cfg -NonEmptyArray
 Assert-FieldExists -FieldPath 'notifications.groups.releaseOwner'   -Root $cfg -NonEmptyArray
 
+# --- Validate notifications.routing block ---
+# The four default broadcast events are required; owners MAY add additional event keys
+# (e.g., 'step-3-completed', 'canary-status') via setup-service group 5b — those are
+# validated below for group-reference integrity but not for presence.
+if ($null -eq $cfg.notifications.PSObject.Properties['routing'] -or $null -eq $cfg.notifications.routing) {
+    throw "Required config field is missing or null: 'notifications.routing'. Run 'setup-service group 5b' to regenerate."
+}
+$requiredRoutingKeys = @('reminder', 'commit-request', 'create-r2d', 'ev2-stage-progress')
+foreach ($key in $requiredRoutingKeys) {
+    if (-not $cfg.notifications.routing.PSObject.Properties[$key]) {
+        throw "Required routing event missing: 'notifications.routing.$key'. Run 'setup-service group 5b'."
+    }
+}
+
+# --- Validate group references inside routing resolve to declared groups (ALL keys, not just required ones) ---
+$groupsObj = $cfg.notifications.groups
+foreach ($routingProp in $cfg.notifications.routing.PSObject.Properties) {
+    $key = $routingProp.Name
+    $rule = $routingProp.Value
+    foreach ($prop in @('emailGroups','ccGroups','teamsGroups')) {
+        if ($rule.PSObject.Properties[$prop]) {
+            foreach ($g in @($rule.$prop)) {
+                if ([string]::IsNullOrWhiteSpace($g)) { continue }
+                if (-not $groupsObj.PSObject.Properties[$g]) {
+                    throw "notifications.routing.$key.$prop references group '$g' which is not declared under notifications.groups. Run 'setup-service group 5b'."
+                }
+            }
+        }
+    }
+}
+
 # stepGates must exist (but is not drilled into with dot-notation sub-fields)
 if ($null -eq $cfg.PSObject.Properties['stepGates'] -or $null -eq $cfg.stepGates) {
     throw "Required config field is missing or null: 'stepGates'"

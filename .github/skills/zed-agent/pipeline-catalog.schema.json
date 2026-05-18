@@ -125,6 +125,11 @@
         "name":         { "type": "string" },
         "id":           { "type": "integer", "minimum": 0 },
         "sourceBranch": { "type": "string" },
+        "clusterType": {
+          "type": "string",
+          "description": "Optional cluster-type tag (e.g., 'sfmc', 'sfrp'). Used by canaryRouting/productionRouting when mode='cluster-type' as a per-pipeline declaration of which cluster type this pipeline serves (alternative to declaring it only in clusterTypeMap).",
+          "minLength": 1
+        },
         "templateParameters": {
           "type": "object",
           "description": "Free-form pass-through to ADO. Reserved {{placeholders}}: {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}}.",

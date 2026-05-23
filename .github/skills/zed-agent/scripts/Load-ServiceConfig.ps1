@@ -110,33 +110,46 @@ Assert-FieldExists -FieldPath 'kusto.bvt.cluster'         -Root $cfg
 Assert-FieldExists -FieldPath 'kusto.canary.cluster'      -Root $cfg
 Assert-FieldExists -FieldPath 'sharepoint.sitePath'            -Root $cfg
 Assert-FieldExists -FieldPath 'notifications.groups.permanent' -Root $cfg -NonEmptyArray
-Assert-FieldExists -FieldPath 'notifications.groups.releaseOwner'   -Root $cfg -NonEmptyArray
 
 # --- Validate notifications.routing block ---
-# The four default broadcast events are required; owners MAY add additional event keys
-# (e.g., 'step-3-completed', 'canary-status') via setup-service group 5b — those are
-# validated below for group-reference integrity but not for presence.
+# Routing is per-step (keys match stepGates: '1-send-reminder' .. '16-merge-back') with
+# per-outcome sub-objects (success | failure | halt). Any step/outcome not listed
+# defaults to owner-only. Nothing is *required* to be present — but every group
+# reference must resolve to a declared group under notifications.groups.
 if ($null -eq $cfg.notifications.PSObject.Properties['routing'] -or $null -eq $cfg.notifications.routing) {
     throw "Required config field is missing or null: 'notifications.routing'. Run 'setup-service group 5b' to regenerate."
 }
-$requiredRoutingKeys = @('reminder', 'commit-request', 'create-r2d', 'ev2-stage-progress')
-foreach ($key in $requiredRoutingKeys) {
-    if (-not $cfg.notifications.routing.PSObject.Properties[$key]) {
-        throw "Required routing event missing: 'notifications.routing.$key'. Run 'setup-service group 5b'."
-    }
-}
 
-# --- Validate group references inside routing resolve to declared groups (ALL keys, not just required ones) ---
+$validOutcomes = @('success', 'failure', 'halt')
+$validStepKeys = @(
+    '1-send-reminder','2-cut-branch','3-wait-build','4-collect-commits',
+    '5-deploy-canary','6-bvt-check','7-rollback','8-post-rollback-bvt',
+    '9-post-rollback-signoff','10-roll-forward','11-post-rollforward-bvt',
+    '12-post-rollforward-signoff','13-create-r2d','14-crb-review',
+    '15-production-rollout','16-merge-back'
+)
+
 $groupsObj = $cfg.notifications.groups
 foreach ($routingProp in $cfg.notifications.routing.PSObject.Properties) {
-    $key = $routingProp.Name
-    $rule = $routingProp.Value
-    foreach ($prop in @('emailGroups','ccGroups','teamsGroups')) {
-        if ($rule.PSObject.Properties[$prop]) {
-            foreach ($g in @($rule.$prop)) {
-                if ([string]::IsNullOrWhiteSpace($g)) { continue }
-                if (-not $groupsObj.PSObject.Properties[$g]) {
-                    throw "notifications.routing.$key.$prop references group '$g' which is not declared under notifications.groups. Run 'setup-service group 5b'."
+    $stepKey = $routingProp.Name
+    if ($stepKey -eq '_comment') { continue }
+    if ($validStepKeys -notcontains $stepKey) {
+        throw "notifications.routing.$stepKey is not a valid step key. Expected one of: $($validStepKeys -join ', ')."
+    }
+    $stepBlock = $routingProp.Value
+    foreach ($outcomeProp in $stepBlock.PSObject.Properties) {
+        $outcome = $outcomeProp.Name
+        if ($validOutcomes -notcontains $outcome) {
+            throw "notifications.routing.$stepKey.$outcome is not a valid outcome. Expected one of: $($validOutcomes -join ', ')."
+        }
+        $rule = $outcomeProp.Value
+        foreach ($prop in @('emailGroups','ccGroups','teamsGroups')) {
+            if ($rule.PSObject.Properties[$prop]) {
+                foreach ($g in @($rule.$prop)) {
+                    if ([string]::IsNullOrWhiteSpace($g)) { continue }
+                    if (-not $groupsObj.PSObject.Properties[$g]) {
+                        throw "notifications.routing.$stepKey.$outcome.$prop references group '$g' which is not declared under notifications.groups. Run 'setup-service group 5b'."
+                    }
                 }
             }
         }

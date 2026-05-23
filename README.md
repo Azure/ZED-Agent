@@ -8,8 +8,10 @@ acknowledgements (`ack`, `gate on/off`) — ZED handles the orchestration, the
 file plumbing, the email/Teams notifications, and the audit trail.
 
 It is **service-agnostic**. Every service-specific value lives in two committed
-JSON files (`service-config.json` + `pipeline-catalog.json`) — no hard-coded
-service names, paths, or pipeline IDs anywhere in the agent or its scripts.
+JSON files in the *target* repo (`service-config.json` + `pipeline-catalog.json`)
+— this source repo ships only the **schemas** and the installer that writes
+empty skeletons. No hard-coded service names, paths, or pipeline IDs anywhere
+in the agent or its scripts.
 
 ## What's in this repo
 
@@ -20,19 +22,20 @@ service names, paths, or pipeline IDs anywhere in the agent or its scripts.
 └── skills/
     └── zed-agent/
         ├── SKILL.md               # Skill overview + variable reference
-        ├── service-config.json    # Empty skeleton — populated per target repo
-        ├── service-config.schema.json   # JSON Schema (drives VS Code IntelliSense)
-        ├── pipeline-catalog.json  # Empty skeleton — populated per target repo
+        ├── service-config.schema.json   # JSON Schema (drives VS Code IntelliSense in target repos)
+        ├── pipeline-catalog.schema.json # JSON Schema for pipeline catalog
         ├── queries/               # KQL queries (BVT failure detection)
         ├── scripts/               # 21 production PowerShell scripts
-        │   ├── Install-Zed.ps1    # Copies the skeleton into a target repo
+        │   ├── Install-Zed.ps1    # Generates empty configs from schema + copies skill into a target repo
+        │   ├── New-EmptyFromSchema.ps1 # Walks a JSON Schema and emits an empty skeleton honouring `default`
         │   ├── EV2/               # Edge CDP + Playwright EV2 portal scrape
         │   └── SafeFly/           # SafeFly request submission
         ├── templates/             # Email + Teams notification templates
         └── tests/                 # Pester tests
 ```
 
-No service-specific data ships with this repo — both JSON files are empty.
+No `service-config.json` or `pipeline-catalog.json` lives here — the installer
+generates empty skeletons from the schema files at install time.
 
 ## Installing ZED into a target service repo
 
@@ -64,8 +67,8 @@ pwsh -File .github\skills\zed-agent\scripts\Install-Zed.ps1 `
 The installer:
 
 - Copies `ZedAgent.agent.md` into `<target>/.github/agents/`
-- Copies the entire `zed-agent/` skill (scripts, schema, queries, templates) into `<target>/.github/skills/`
-- Writes **empty** `service-config.json` and `pipeline-catalog.json` into the target — even if some other service's values exist in the source clone
+- Copies the entire `zed-agent/` skill (scripts, schemas, queries, templates) into `<target>/.github/skills/`
+- Writes **empty** `service-config.json` and `pipeline-catalog.json` into the target, generated from the schema files at install time (defaults baked in via the `default` keyword)
 - Skips `node_modules/` and runtime artifacts
 
 Pass `-Force` to overwrite existing ZED files in the target.

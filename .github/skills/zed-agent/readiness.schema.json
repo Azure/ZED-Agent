@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/microsoft/zed-agent/readiness.schema.json",
+  "title": "ZED Agent Readiness State",
+  "description": "Per-workspace record of the three readiness stages (test-preflight, setup-service, setup). Written to .zed-agent/readiness.json by each stage as it completes. Read by run and the chain-check gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "preflight": {
+      "type": "object",
+      "description": "Last test-preflight invocation outcome. Considered stale by run after 24 hours.",
+      "additionalProperties": false,
+      "properties": {
+        "ranAt":      { "type": "string", "format": "date-time", "description": "UTC ISO timestamp when Test-PreFlight returned." },
+        "status":     { "type": "string", "enum": ["pass", "warn", "fail"] },
+        "verdict":    { "type": "string", "enum": ["pass", "warn", "fail"], "description": "Mirror of status — kept for human-readable consumption." },
+        "summary":    {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pass": { "type": "integer", "minimum": 0 },
+            "warn": { "type": "integer", "minimum": 0 },
+            "fail": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "failures":   { "type": "array", "items": { "type": "string" }, "description": "Detail line of every check whose status was 'fail'." },
+        "warnings":   { "type": "array", "items": { "type": "string" }, "description": "Detail line of every check whose status was 'warn'." },
+        "overridden": { "type": "boolean", "description": "True if the owner accepted a non-pass verdict and continued anyway.", "default": false }
+      },
+      "required": ["ranAt", "status"]
+    },
+    "setupService": {
+      "type": "object",
+      "description": "Last setup-service outcome. Does not expire — setup-service is per-repo, not per-day.",
+      "additionalProperties": false,
+      "properties": {
+        "ranAt":         { "type": "string", "format": "date-time" },
+        "status":        { "type": "string", "enum": ["pass", "incomplete", "fail"] },
+        "lastGroup":     { "type": "string", "description": "Identifier of the last group successfully persisted (e.g., '11', '5b'). Useful for resuming." },
+        "missingFields": { "type": "array", "items": { "type": "string" }, "description": "Dotted paths into service-config.json / pipeline-catalog.json that are still empty/placeholder." },
+        "overridden":    { "type": "boolean", "default": false }
+      },
+      "required": ["ranAt", "status"]
+    },
+    "setup": {
+      "type": "object",
+      "description": "Last setup outcome. Does not expire — setup is per-release.",
+      "additionalProperties": false,
+      "properties": {
+        "ranAt":            { "type": "string", "format": "date-time" },
+        "status":           { "type": "string", "enum": ["pass", "incomplete", "fail"] },
+        "releaseId":        { "type": "string", "description": "Release ID (YYYY-MM) that setup initialized." },
+        "missingArtifacts": { "type": "array", "items": { "type": "string" }, "description": "Files or fields that setup expected to produce but did not (e.g., 'environment.json:repoRoot', 'secrets.json:teamsChats')." },
+        "overridden":       { "type": "boolean", "default": false }
+      },
+      "required": ["ranAt", "status"]
+    }
+  }
+}

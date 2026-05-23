@@ -1,0 +1,492 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="29" errors="0" failures="1" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2026-05-23" time="21:11:24">
+  <environment os-version="10.0.26200" user-domain="REDMOND" nunit-version="2.5.8.0" machine-name="CPC-gwazi-3Q8JG" cwd="Q:\ZED-Agent" clr-version="10.0.6" user="gwazire" platform="Microsoft Windows 11 Enterprise|C:\Windows|\Device\Harddisk0\Partition4" />
+  <culture-info current-culture="en-US" current-uiculture="en-US" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Failure" success="False" time="3.1704" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="Q:\ZED-Agent\.github\skills\zed-agent\tests\Setup-Service-Skill.Tests.ps1" executed="True" result="Failure" success="False" time="3.1704" asserts="0" description="Q:\ZED-Agent\.github\skills\zed-agent\tests\Setup-Service-Skill.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="setup-service skill (extracted from agent.md)" executed="True" result="Failure" success="False" time="1.3411" asserts="0" description="setup-service skill (extracted from agent.md)">
+            <results>
+              <test-suite type="TestFixture" name="setup-service skill (extracted from agent.md).File presence" executed="True" result="Success" success="True" time="0.4486" asserts="0" description="setup-service skill (extracted from agent.md).File presence">
+                <results>
+                  <test-case description="SKILL.md exists at .github/skills/setup-service/SKILL.md" name="setup-service skill (extracted from agent.md).File presence.SKILL.md exists at .github/skills/setup-service/SKILL.md" time="0.3032" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="setup-service skill (extracted from agent.md).YAML frontmatter" executed="True" result="Success" success="True" time="0.6125" asserts="0" description="setup-service skill (extracted from agent.md).YAML frontmatter">
+                <results>
+                  <test-case description="starts with a YAML frontmatter block delimited by --- / ---" name="setup-service skill (extracted from agent.md).YAML frontmatter.starts with a YAML frontmatter block delimited by --- / ---" time="0.0602" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="declares name: setup-service" name="setup-service skill (extracted from agent.md).YAML frontmatter.declares name: setup-service" time="0.0348" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="has a non-empty description that mentions the key trigger phrases" name="setup-service skill (extracted from agent.md).YAML frontmatter.has a non-empty description that mentions the key trigger phrases" time="0.0284" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases)" executed="True" result="Success" success="True" time="0.8323" asserts="0" description="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases)">
+                <results>
+                  <test-case description="contains heading: Group 1 — Service Identity" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 1 — Service Identity" time="0.0313" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 2 — Azure DevOps" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 2 — Azure DevOps" time="0.0065" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 3 — Service Tree ID" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 3 — Service Tree ID" time="0.006" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Phase 4a — BVT Kusto" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Phase 4a — BVT Kusto" time="0.0058" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Phase 4b — Canary Detection Kusto" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Phase 4b — Canary Detection Kusto" time="0.0058" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 5a — Notifications" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 5a — Notifications" time="0.0074" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 5b — Notifications" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 5b — Notifications" time="0.007" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 6 — SafeFly" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 6 — SafeFly" time="0.0094" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 7 — Commit Excel" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 7 — Commit Excel" time="0.0067" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 8 — SharePoint" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 8 — SharePoint" time="0.0087" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 9 — Operational Parameters" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 9 — Operational Parameters" time="0.0073" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 10 — Step Gates" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 10 — Step Gates" time="0.0071" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains heading: Group 11 — Pipeline Catalog" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains heading: Group 11 — Pipeline Catalog" time="0.0081" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains the Generation section" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains the Generation section" time="0.0348" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="contains the Validation section" name="setup-service skill (extracted from agent.md).Wizard body structure (all groups + phases).contains the Validation section" time="0.0279" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing)" executed="True" result="Failure" success="False" time="1.1172" asserts="0" description="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing)">
+                <results>
+                  <test-case description="preserves the hardcoded gwazire@microsoft.com agentFeedbackEmail rule" name="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing).preserves the hardcoded gwazire@microsoft.com agentFeedbackEmail rule" time="0.0312" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="preserves the MAB-family conditional default regex" name="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing).preserves the MAB-family conditional default regex" time="0.1113" asserts="0" success="False" result="Failure" executed="True">
+                    <failure>
+                      <message>Expected regular expression '\^\(MAB\|DPM\|Prot\|BDP\)\$' to match '---
+name: setup-service
+description: |
+  Interactive one-time onboarding wizard for the ZED Agent. Populates
+  .github/skills/zed-agent/service-config.json and pipeline-catalog.json by
+  reading what the release owner has already filled in and prompting only for
+  empty fields. Persists incrementally (per-answer file write + audit log).
+  Use this skill whenever the release owner types any of:
+    - `setup-service`               (full wizard from group 1)
+    - `setup-service validate`      (run loader in strict mode, no prompts)
+    - `setup-service group &lt;N&gt;`     where N in {1, 2, 3, 4a, 4b, 5a, 5b, 6, 7, 8, 9, 10, 11}
+                                    (jump directly to a group)
+  Also use this skill from inside the `setup` command when Test-PreFlight reports
+  empty service-config or pipeline-catalog fields and Behavior Rule 13 says to
+  "resume the matching setup-service group &lt;N&gt;".
+allowed-tools: shell
+---
+You are the ZED Agent setup-service wizard. The release owner has just typed `setup-service`, `setup-service validate`, or `setup-service group &lt;N&gt;`. Follow the procedure below.
+&gt; **This command is run ONCE per repo** to generate the service configuration files. After generation, the files should be committed to the repo. For subsequent releases, use `setup` instead.
+### Configuration files
+The service configuration lives in just **two files** under `.github/skills/zed-agent/`:
+- `service-config.json` — service identity, ADO, Kusto, notifications, SafeFly, gates, operational tunables
+- `pipeline-catalog.json` — official build + canary + production pipeline definitions with `templateParameters`
+Both files **already exist** in the repo (placed there by `Install-Zed.ps1`, or shipped empty in the ZED skeleton). The release owner can fill them in any way they want before — or instead of — running the wizard:
+- **Fill nothing** → `setup-service` asks every question.
+- **Fill some fields by hand** in VS Code (the `$schema` reference gives IntelliSense) → `setup-service` reads what's already there and only asks about the rest.
+- **Fill everything by hand** → `setup-service` finds nothing missing, runs validation, and exits.
+There is only one command — `setup-service` — and only one flow. The wizard is a gap-filler, not a separate mode.
+&gt; *Tip to surface to the release owner on first invocation:*
+&gt; *"You can pre-fill any fields you already know in `.github/skills/zed-agent/service-config.json` and `pipeline-catalog.json` before running `setup-service` — VS Code's JSON Schema autocomplete will guide you. Whatever you don't fill, I'll ask about. Use `setup-service validate` to check the files without prompting."*
+### Interactive Collection Flow
+**Always start by reading the current state of both files.** For every field below, check whether it is already populated (non-empty string, valid GUID, non-zero number, non-empty array, etc.). If populated, **skip the question** and use the existing value. If empty/null/placeholder, prompt the release owner. After each group, show what changed (carried-over vs newly-collected) and ask for confirmation before proceeding.
+**⚠️ Persist incrementally — write after EVERY answer.** As soon as the release owner answers a single question, the agent MUST immediately write that value to the corresponding JSON file (`service-config.json` or `pipeline-catalog.json`) on disk before asking the next question. Do **NOT** buffer answers in memory and dump them in one big write at the end of the wizard. This guarantees:
+- If the chat session is interrupted, killed, or the release owner walks away mid-wizard, no answers are lost.
+- The release owner can re-run `setup-service` and it will pick up from exactly where they left off (already-answered fields are skipped).
+- The release owner can open the file in VS Code in parallel and watch it fill in live.
+Implementation pattern for every prompt:
+1. Read the JSON file from disk into an object.
+2. Ask the release owner the question via `ask_user`.
+3. On receiving the answer, set the field on the in-memory object.
+4. Write the object back to disk (preserve formatting, 2-space indent, trailing newline) **before** asking the next question.
+5. Append a one-line entry to `audit.jsonl` (`{"action":"setup-service-field","field":"&lt;dotted.path&gt;","timestamp":"..."}`) — do NOT log the value if it is a secret.
+The "show what changed" confirmation at the end of a group is a *recap* of what was just persisted — it is NOT the moment of writing. Writing happens per-answer.
+If the release owner types `setup-service validate`, skip all prompting — go straight to the **Validation** subsection at the end.
+**`setup-service group &lt;N&gt;` shortcut** — jump directly to a specific group instead of walking from the top. Supported group identifiers:
+| Identifier | Section |
+|------------|---------|
+| `1` | Group 1 — Service Identity |
+| `2` | Group 2 — Azure DevOps |
+| `3` | Group 3 — Service Tree ID |
+| `4a` | Phase 4a — BVT Kusto (schema-aware) |
+| `4b` | Phase 4b — Canary Detection Kusto (schema-aware) — **executes AFTER Group 11** because it depends on `canaryRouting.mode` set there |
+| `5a` | Group 5 — Notification Groups (DLs + Teams chats) |
+| `5b` | Group 5b — Notification Routing (4 default broadcasts + owner-added per-step / status entries) |
+| `6` | Group 6 — Operational defaults |
+| `7` | Group 7 — SafeFly defaults |
+| `8` | Group 8 — Step Gates |
+| `9` | Group 9 — CommitExcel + SharePoint |
+| `10` | Group 10 — Test mode |
+| `11` | Pipeline Catalog (Group 11 — pipeline-catalog.json entries) |
+Dispatcher behavior:
+1. Parse the trailing token after `setup-service group `.
+2. If the identifier is not in the table above, list valid choices and abort.
+3. Otherwise, **load the existing `service-config.json` and `pipeline-catalog.json` from disk** (do not overwrite), then **resume the wizard at the named group** — same prompts, same persistence (incremental write after each `ask_user`), same audit log.
+4. Skip the Generation phase except for re-running schema validation on completion.
+5. After the group's questions are persisted, end with a recap line: `Group &lt;N&gt; updated — run 'setup-service validate' to re-validate.`
+**Group 1 — Service Identity**
+Ask for:
+- `service.name` — Short canonical name (e.g., "Prot", "DPM", "MABS"). Used in file names, tags, and filters.
+- `service.displayName` — Human-readable name (e.g., "Protection Service", "Data Protection Manager")
+&gt; **Do NOT prompt for `service.agentFeedbackEmail`.** This field is hardcoded to `gwazire@microsoft.com` (the ZED agent author). Always write that exact value to `service-config.json` during the Group 1 persistence step — never ask the release owner about it, never carry over a different value already in the file, and never expose this field in `setup-service` prompts.
+**Group 2 — Azure DevOps**
+Ask for:
+- `ado.organization` — ADO org (e.g., "msazure")
+- `ado.project` — ADO project (e.g., "One")
+- `ado.repository` — Repository name (e.g., "Mgmt-RecoverySvcs-BackupDataPlane")
+- `ado.branchPrefix` — Release branch prefix (e.g., "official/bdp-"). The agent appends YYMM.
+- `ado.baseBranch` — Branch to cut releases from (e.g., "develop", "main")
+**Group 3 — Service Tree ID**
+Ask for:
+- `serviceTreeIds.safefly` — Your team's Service Tree ID (36-char hyphenated GUID). The agent uses this internally wherever a Service Tree ID is required.
+Tell the release owner: *"You can find your Service Tree ID at https://microsoftservicetree.com/home — search for your service name. If you don't know it now, type `skip` and you can fill it in later. If your service uses different service IDs for different environments, you can update them manually later in the file."*
+&gt; **One question, multiple fields**: Persist the answer to `serviceTreeIds.safefly`, `serviceTreeIds.ev2.Prod`, `serviceTreeIds.ev2.Fairfax`, and `serviceTreeIds.ev2.Mooncake` — all four get the same GUID. Do NOT ask the release owner separately for EV2/Fairfax/Mooncake IDs.
+**Group 4 — Kusto Configuration**
+Kusto powers several discovery and analysis tasks in this agent:
+- **BVT failure analysis** (Steps 6, 8, 11) — attributes BVT failures to your service.
+- **Canary stamp cluster-type detection** (Steps 5, 7, 10) — discovers which cluster types (e.g., `sfmc`, `sfrp`) are currently live in canary stamps so the agent picks the right canary pipeline(s).
+- **Production stamp cluster-type detection** (Step 15) — same idea as canary, but across production stamps for every cloud the service runs in (Public, Mooncake, Fairfax, Bleu, USNat, USSec, …) so the agent picks the right production pipeline(s) per cloud.
+- **Region + stamp inventory per cloud** — enumerates the regions and stamp short names that belong to each cloud (Public / MC / FF / Bleu / …) for region scoping at production trigger time.
+Collect the connection + query settings in **Phase 4a (BVT)** here. The canary/production stamp-discovery Kusto config (**Phase 4b**) is collected **after Group 11** because it depends on `canaryRouting.mode` (set during pipeline catalog collection). If `canaryRouting.mode = "static"` or `"explicit"`, Phase 4b is skipped entirely — no Kusto query is needed.
+---
+**Phase 4a — BVT Kusto (schema-aware)**
+The agent runs a built-in BVT failure-analysis query to decide whether canary BVTs passed. The default query expects a specific schema. Walk the release owner through it before asking for cluster details:
+1. **Show the default query** by reading `.github/skills/zed-agent/queries/&lt;default file&gt;.kql` from disk and printing it verbatim in a fenced code block. If no default file exists in the repo yet, show the canonical version from the BVT Failure Analysis section of this spec.
+2. **Show the required column contract** the agent depends on for downstream logic:
+   ```
+   Required columns in result rows:
+     WorkLoadType, Environment, TestCaseName, IssueCategory,
+     FrontLiners, Analysis, CanBeCaughtInInnerLoop
+   Required placeholders in the .kql file:
+     {{PIPELINE_TRIGGER_TIME}}   (appears in main query AND join subquery)
+     {{RESPONSIBLE_TEAM}}        (replaced with kusto.bvt.queryVariables.RESPONSIBLE_TEAM at runtime)
+   Tables referenced by default query:
+     BvtDailyTestRunData (primary), BVTRawData (join — provides FrontLiners)
+   ```
+3. **Ask the service-fit question** via `ask_user`:
+   &gt; *"The default query above is valid for services in **Azure Backup** (it queries `BvtDailyTestRunData` / `BVTRawData`). Does your service fall under Azure Backup?*
+   &gt;
+   &gt; *If your service is NOT an Azure Backup service, you'll likely need a different mechanism for BVT failure checking — I'll walk you through the options."*
+   &gt; Choices: `Yes — Azure Backup service`, `No — not an Azure Backup service`
+4. **Branch on the answer**:
+   **(A) `Yes — Azure Backup service`** (default path — MAB / DPM / Prot / BDP / similar):
+   - Persist the default `.kql` file path to `kusto.bvt.queryFile` (e.g., `MAB-BVT-FailureAnalysis.kql`). If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version into it now.
+   - **Do NOT prompt for `kusto.bvt.cluster` or `kusto.bvt.database`** — the default query targets a fixed Azure Backup cluster/database. Write these values directly:
+     - `kusto.bvt.cluster` → `https://mabprod1.kusto.windows.net/`
+     - `kusto.bvt.database` → `AzureBackup`
+   - Ask only **one** field:
+     - `kusto.bvt.queryVariables.RESPONSIBLE_TEAM` — value used by the agent to filter rows attributable to your team (e.g., `Prot`, `MABS`)
+   - Note to release owner: *"Cluster `https://mabprod1.kusto.windows.net/` and database `AzureBackup` are fixed for the default Azure Backup BVT query. If results look wrong later, you can edit `.github/skills/zed-agent/queries/{queryFile}` directly — the agent re-reads it on every run."*
+   **(B) `No — not an Azure Backup service`**:
+   - First, show the release owner the available BVT failure-detection mechanisms supported by this agent today:
+     &gt; *"The agent currently supports the following mechanisms for BVT failure detection:*
+     &gt; *  (1) **Custom Kusto query** — you provide a KQL query the agent runs on your team's Kusto cluster after canary BVTs complete; the result rows are treated as failures.*
+     &gt;
+     &gt; *More mechanisms may be added later."*
+     &gt; Choices: `1) Custom Kusto query`
+   - On `Custom Kusto query`, walk the owner through a guided setup so the resulting query is solid and re-runnable by the agent. Persist each answer immediately:
+     1. Ask `kusto.bvt.cluster` — Kusto cluster URL where the BVT data lives.
+     2. Ask `kusto.bvt.database` — database name on that cluster.
+     3. Ask the owner how they want to provide the KQL, via `ask_user`:
+        &gt; *"How do you want to provide your team's BVT query?"*
+        &gt; Choices: `Paste KQL now`, `Point me at a .kql file in this repo`
+     4. **If `Paste KQL now`**: collect the KQL via `ask_user` (multi-line), write it to `.github/skills/zed-agent/queries/&lt;service-name&gt;-bvt.kql`, and persist that path to `kusto.bvt.queryFile`.
+     5. **If `Point me at a .kql file in this repo`**: ask for the relative path, validate the file exists, and persist it to `kusto.bvt.queryFile`.
+     6. **Make the query agent-runnable** — the agent must analyze the submitted KQL and intelligently fill in / negotiate the runtime parameters it needs:
+        - **Timestamp window**: scan the query for any of `ago(...)`, `datetime(...)`, `between(...)`, `now()`, or a `TimeStamp &gt;=` predicate. If none reference a pipeline-driven anchor, tell the owner the agent's BVT step needs the query to be scoped to "since canary deploy started" and offer to inject the placeholder `{{PIPELINE_TRIGGER_TIME}}` in the right spot. Confirm the exact column to filter on (default `TimeStamp`) via `ask_user`.
+        - **Team / service filter (or whatever scoping the query uses)**: don't assume every custom query scopes results with a `ResponsibleTeam == "&lt;team&gt;"` predicate — some teams use a completely different mechanism (e.g., a tag column, a build-id join, a namespace prefix on `TestCaseName`, a pre-filtered function in their own database, or no per-team filter at all because the cluster only holds their data). Ask the owner via `ask_user` how their query already narrows results to their service's BVT runs, with choices roughly: `Uses a {{RESPONSIBLE_TEAM}}-style column filter`, `Uses a different mechanism — let me describe it`, `No scoping needed — query is already service-specific`. Then:
+           - On `Uses a {{RESPONSIBLE_TEAM}}-style column filter`: ask for the column name (e.g., `ResponsibleTeam`, `ServiceName`, `Owner`) and the match value, offer to inject `{{RESPONSIBLE_TEAM}}`, and collect `kusto.bvt.queryVariables.RESPONSIBLE_TEAM`.
+           - On `Uses a different mechanism`: collect a free-text description of the mechanism via `ask_user` (persist to `kusto.bvt.scopingNotes` as a comment for future maintainers), then ask which placeholders — if any — the agent needs to substitute at runtime and what values to bind. Persist each placeholder under `kusto.bvt.queryVariables.&lt;NAME&gt;`. If the mechanism needs nothing dynamic (a build id, a stamp list, etc. is hard-coded by the owner inside the .kql file), just record the note and move on — do NOT force a `{{RESPONSIBLE_TEAM}}` placeholder.
+           - On `No scoping needed`: leave `kusto.bvt.queryVariables` untouched and record `kusto.bvt.scopingNotes = "Query is pre-scoped — no runtime filter needed"`.
+           - In all branches: confirm the final shape with the owner (echo the relevant section of the .kql + the placeholder list) before persisting.
+        - **Failure semantics**: confirm with the owner that "a returned row = a failure to surface to the release owner" (the agent does not interpret severity — it just routes whatever rows come back). If the query also returns passes, instruct the owner to add a `where Result == false` (or equivalent) filter.
+        - **Required columns for routing**: ask which columns the owner wants displayed in the failure summary (TestCaseName, Environment, Owner, Analysis link, etc.). Persist the column list to `kusto.bvt.displayColumns` so Steps 6/8/11 can render a consistent table even with a non-MAB schema.
+        - **Additional placeholders**: if the owner referenced any other `{{...}}` tokens, prompt for each one and persist under `kusto.bvt.queryVariables.&lt;NAME&gt;`.
+     7. **Dry-run check (optional but recommended)**: offer to execute the finalized query once via the Kusto MCP against the cluster/database the owner just provided, using a recent `{{PIPELINE_TRIGGER_TIME}}` (e.g., `ago(7d)`) to confirm it returns rows in the expected shape. On error, surface the Kusto error verbatim and let the owner edit the file and re-run the dry-run.
+     8. **Show this hard reminder** before finishing:
+        &gt; ⚠️ **Contract**: Steps 6, 8, and 11 will run this query verbatim against the cluster/database you just provided, substituting `{{PIPELINE_TRIGGER_TIME}}`, `{{RESPONSIBLE_TEAM}}`, and any other placeholders you declared. Every returned row will be reported as a BVT failure. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run; no agent code change needed.
+5. After persistence, recap to the release owner what was saved (cluster, database, query file path, team filter value, display columns).
+&gt; **Note**: Phase 4b runs **after Group 11** because its prompts depend on `canaryRouting.mode` from `pipeline-catalog.json`. Skip ahead to **Group 5a** next.
+**Group 5a — Notifications (Groups)**
+Ask for:
+- `notifications.groups.permanent` — Email addresses that receive important release notifications (array)
+- `notifications.groups.cc` — CC recipients (array)
+- `notifications.groups.releaseOwner` — Distribution list of people who *could* be release owners — e.g., your team's release-owner rotation distribution list like `mab-release-owners@microsoft.com` (array). This is **NOT** the current release owner's personal email — that's auto-detected from the signed-in user during `setup`. This distribution list receives release-owner-targeted notifications (R2D created, etc.) so the whole rotation has visibility.
+- `notifications.groups.teams` — Teams chat names for notifications (array)
+- `notifications.groups.teamsExtended` — Extended Teams chats for commit requests (array, can be subset of teams)
+**Group 5b — Notifications (Routing)**
+Routing is **per step, per outcome**. Each of the 16 pipeline steps has three outcomes:
+- **success** — step finished OK (also covers `skipped` and intermediate progress like EV2 stage ticks).
+- **failure** — step ended in failure.
+- **halt** — pipeline paused (unexpected halt OR waiting for an approval gate).
+The release owner is **always** added to every notification by `Resolve-NotificationRecipients.ps1` — there is no `includeOwner` field. Any step/outcome not listed in `notifications.routing` defaults to owner-only, so the JSON only needs entries that broadcast wider than the owner.
+Ensure the default routing block exists in `service-config.json` first — if `notifications.routing` is missing or empty, write the four seeded entries from the Generation section (`1-send-reminder.success`, `4-collect-commits.success`, `13-create-r2d.success`, `15-production-rollout.success`). Then read it back and **render the full 16-step table** to the release owner. Use `—` (em dash) for empty/owner-only cells. Each outcome cell shows `emailGroups` / `ccGroups` / `teamsGroups` separated by ` / `.
+Example of what the agent renders (with the owner's actual values, not these placeholders):
+| Step | success (email / cc / teams) | failure (email / cc / teams) | halt (email / cc / teams) |
+| ---- | ---------------------------- | ---------------------------- | ------------------------- |
+| `1-send-reminder` | `permanent` / — / `teams` | — / — / — | — / — / — |
+| `2-cut-branch` | — / — / — | — / — / — | — / — / — |
+| `3-wait-build` | — / — / — | — / — / — | — / — / — |
+| `4-collect-commits` | — / — / `teamsExtended` | — / — / — | — / — / — |
+| `5-deploy-canary` | — / — / — | — / — / — | — / — / — |
+| `6-bvt-check` | — / — / — | — / — / — | — / — / — |
+| `7-rollback` | — / — / — | — / — / — | — / — / — |
+| `8-post-rollback-bvt` | — / — / — | — / — / — | — / — / — |
+| `9-post-rollback-signoff` | — / — / — | — / — / — | — / — / — |
+| `10-roll-forward` | — / — / — | — / — / — | — / — / — |
+| `11-post-rollforward-bvt` | — / — / — | — / — / — | — / — / — |
+| `12-post-rollforward-signoff` | — / — / — | — / — / — | — / — / — |
+| `13-create-r2d` | `releaseOwner` / `cc` / — | — / — / — | — / — / — |
+| `14-crb-review` | — / — / — | — / — / — | — / — / — |
+| `15-production-rollout` | `permanent`, `cc`, `releaseOwner` / — / — | — / — / — | — / — / — |
+| `16-merge-back` | — / — / — | — / — / — | — / — / — |
+After the table, add this one-line footnote:
+&gt; *— means owner-only. The release owner is always on the To-line of every notification regardless of what's in the table. Cells override that default by adding distribution lists / Teams chats.*
+Then ask:
+&gt; *"Edit routing?"*
+&gt; Choices: `Keep as-is`, `Edit a cell`, `Done`
+Loop on the choice until the owner picks `Keep as-is` or `Done`:
+- **`Edit a cell`** — ask for the step (e.g., `6-bvt-check`), then the outcome (`success` / `failure` / `halt`), then which fields to change (`emailGroups`, `ccGroups`, `teamsGroups`). For each field, collect a comma-separated list of group keys from `notifications.groups` (Group 5a) and validate every entry against that list; re-ask on invalid input. To clear a cell back to owner-only, pass an empty list (the agent removes the field; if all three fields are empty it removes the outcome; if all three outcomes are empty it removes the step entry). Persist immediately and re-render the table.
+After the loop exits, run schema validation on the persisted routing block. If validation fails (e.g., owner referenced a group key not in Group 5a), surface the exact error and re-prompt for the offending cell only.
+&gt; An owner can re-run just routing later with the shortcut `setup-service group 5b`. Re-running starts from the current table.
+**Group 6 — SafeFly / R2D**
+Ask for:
+- `safefly.titleTemplate` — R2D title template. Suggest: `[MAB][{serviceName}] {serviceDisplayName} monthly release for {month}-{yy}`
+- `safefly.tags` — SafeFly tags array (e.g., ["Prot_Regular_Rollout"])
+- `safefly.additionalNotifiers` — Extra emails notified on SafeFly changes (array)
+- `safefly.genevaMdmLink` — Geneva MDM monitoring link
+**Group 7 — Commit Excel**
+Ask for:
+- `commitExcel.sheetNameTemplate` — Sheet name template (e.g., "Prot{{YYMM}}Commits"). `{{YYMM}}` is replaced at runtime.
+- `commitExcel.sharePointFolder` — SharePoint folder path (e.g., "/Shared Documents/Monthly Releases")
+**Group 8 — SharePoint**
+Ask for:
+- `sharepoint.sitePath` — SharePoint site path for Graph API auto-detection (e.g., "/teams/AzureBackupDataPlane", "/teams/MyTeamSite")
+Tell the release owner: *"This is the path portion of your team's SharePoint site URL. For example, if your SharePoint is at `microsoft.sharepoint.com/teams/MyTeam`, enter `/teams/MyTeam`."*
+**Group 9 — Operational Parameters**
+Show defaults and ask if the release owner wants to change any:
+- `operational.buildTimeoutMinutes` — default: 360 (6 hours)
+- `operational.bvtWaitHours` — default: 24
+- `operational.canaryBakeTimeHours` — default: 24
+- `operational.canaryRegions` — array of short region names (e.g., ["EACan", "ECY", "CCY"])
+- `operational.watcherPollIntervalSeconds` — default: 3600 (1 hour)
+- `operational.watcherTaskPrefix` — default: "ZED-ReleaseWatcher"
+Tell the release owner: *"These defaults work well for most services. Only change if your service has specific timing requirements."*
+**Group 10 — Step Gates**
+Show all 16 steps with their default gate settings:
+```
+Step 1  send-reminder:            OFF
+Step 2  cut-branch:               OFF
+Step 3  wait-build:               OFF
+Step 4  collect-commits:          OFF
+Step 5  deploy-canary:            OFF
+Step 6  bvt-check:                ON   ← release owner reviews BVT results
+Step 7  rollback:                 OFF
+Step 8  post-rollback-bvt:        OFF
+Step 9  post-rollback-signoff:    ON   ← release owner approves post-rollback
+Step 10 roll-forward:             OFF
+Step 11 post-rollforward-bvt:     OFF
+Step 12 post-rollforward-signoff: ON   ← release owner approves post-rollforward
+Step 13 create-r2d:               OFF
+Step 14 crb-review:               ON   ← ALWAYS ON (non-overridable)
+Step 15 production-rollout:       OFF
+Step 16 merge-back:               OFF
+```
+Explain what a gate is, then ask whether to change defaults. Use this exact phrasing:
+&gt; *"A **gate** is a pause point. When a step's gate is **ON**, the pipeline stops there and waits for you to type `approve-step &lt;N&gt;` (or `approve`) before moving to the next step. When **OFF**, that step auto-advances with no human input.*
+&gt;
+&gt; *Example: Step 6 (BVT Check) gate is ON by default — after canary BVTs run, the agent shows you the results and waits. You eyeball them, then type `approve-bvt` to continue to rollback. If you turned this gate OFF, the agent would auto-proceed to Step 7 the moment BVTs pass.*
+&gt;
+&gt; *The recommended defaults gate the 4 human-judgment steps (6 BVT review, 9 post-rollback sign-off, 12 post-roll-forward sign-off, 14 CRB review) and let the other 12 steps auto-flow. Step 14 is always ON and cannot be turned off — CRB approval is mandatory.*
+&gt;
+&gt; *Would you like to change any gates? You can also adjust them later any time with `gate on &lt;N&gt;` / `gate off &lt;N&gt;`."*
+**Group 11 — Pipeline Catalog**
+This generates `pipeline-catalog.json`. **Critical insight:** every service's pipelines have *different* `templateParameters` keys — there is **no fixed schema**. The agent treats `templateParameters` as a **free-form, pass-through key-value object**. Whatever the release owner provides is forwarded verbatim to the ADO pipeline trigger API at runtime. Do **not** assume a fixed set of keys; do **not** reject unknown keys.
+Before collecting, ask the release owner how they'd like to discover their pipelines' parameters:
+&gt; *"For each pipeline, what's the easiest way for you to provide its `templateParameters`?*
+&gt; *  (a) **Auto-fetch from ADO** — give me a pipeline ID and I'll call the ADO REST API `GET /pipelines/{id}` to read the YAML's `parameters:` block, then ask you to fill in concrete values for any parameters you want to override.*
+&gt; *  (b) **Paste YAML** — paste the `parameters:` (or `templateParameters:`) block from your pipeline YAML file and I'll convert each entry to a JSON key-value pair.*
+&gt; *  (c) **Paste JSON** — paste an existing `templateParameters` object (e.g., from another service's pipeline-catalog.json) and I'll diff/edit the values with you.*
+&gt; *  (d) **Manual** — ask me one parameter at a time."*
+The release owner can choose a different mode per pipeline. **For every mode**, capture the resulting key-value map verbatim — never drop unknown keys, never validate against an expected schema.
+Special placeholders the agent reserves and substitutes at runtime (do NOT ask the release owner to provide values for these — explain that you'll keep them as `{{...}}` placeholders):
+- `{{currentBranch}}` — replaced with the active release branch (e.g., `releases/svc2604`)
+- `{{excludeStamps}}`, `{{pubRegions}}`, `{{ffStamps}}`, `{{ffRegions}}` — replaced with CCOA / SafeFly region scope at production trigger time
+- `{{sdpType}}`, `{{validateOnly}}` — replaced based on rollout mode
+Ask the release owner (in this order — and **persist each answer to `pipeline-catalog.json` immediately** after it's collected, just like every other group; do NOT buffer until the end):
+- **Official Build**: pipeline name + ID, then run the chosen discovery mode for `templateParameters`
+- **Canary Routing Mode** (asked BEFORE collecting individual canary pipelines so the agent knows what to ask for):
+  &gt; *"How are your canary pipelines split? (a) **by region/stamp** only (no sfmc/sfrp distinction); the agent triggers ALL of them every release. (b) **By cluster type** — each canary region hosts multiple cluster-type variants (e.g., SFMC + SFRP) served by separate pipelines (sfmc pipeline/sfrp pipeline); the agent queries Kusto at runtime to pick which one(s) to trigger and filters each pipeline's stamp-list params against a per-pipeline catalog harvested from ADO run history."*
+  - If (a): write `canaryRouting: { mode: "static" }` to `pipeline-catalog.json` immediately.
+  - If (b): write `canaryRouting: { mode: "cluster-type", clusterTypeMap: {}, pipelines: {} }`. Then ask: *"List your cluster-type suffixes (the substring the agent should look for in Kusto `DeploymentUnit` values) and which canary pipeline key each maps to (e.g., 'sfmc' → 'SVC-SFMC', 'sf' → 'SVC-SFRP'). Values may be a single key or an array of keys."* — populate `clusterTypeMap` and write to disk.
+- **Canary Pipelines**: *"How many canary pipelines does your service have?"* — for each, collect: key (e.g., `SVC-SFMC` or `DM-EACAN`), name, id, then run discovery for `templateParameters`. Validate that every value in `canaryRouting.clusterTypeMap` (if mode is cluster-type) matches one of the keys collected.
+  **For `mode: "cluster-type"` only — declare cluster type per pipeline**: immediately after each canary pipeline is collected, ask via `ask_user`: *"Pipeline `&lt;key&gt;` (`&lt;displayName&gt;`) — which cluster type does it deploy? Pick from `clusterTypeMap` keys: &lt;list&gt;."* Persist to `canaryRouting.pipelines[&lt;key&gt;].clusterType` immediately. This single value is what the runtime uses to resolve cluster-type → pipeline-key at trigger time. No stamp-list harvesting, no validated catalog — the pipeline's `templateParameters` (collected above) are passed to ADO verbatim at runtime, so the service owner is responsible for keeping them correct in `pipeline-catalog.json`.
+- **Production Routing Mode** (same question shape as canary, but **asked separately** because production topology can be asymmetric — e.g., 2 canary keys but only 1 production key):
+  &gt; *"How are your production pipelines split — by region/stamp only (no sfmc/sfrp distinction) or by cluster type? (Same options as canary; pick independently.)"*
+  - Persist `productionRouting: { mode: "static" }` or `productionRouting: { mode: "cluster-type", clusterTypeMap: {…}, pipelines: {} }` to disk immediately.
+- **Production Pipelines**: same pattern as canary; production parameters typically include `BranchPrefix`, `SdpType`, `Pub*Stamps`, etc. — but treat these as service-specific, not required. Validate `productionRouting.clusterTypeMap` against collected keys. **If `productionRouting.mode == "cluster-type"`, declare `clusterType` per pipeline** (same single-question pattern as canary above).
+- **EV2 Service Groups**: for each pipeline key, the EV2 ServiceGroup name (e.g., `Microsoft.Azure.Backup.&lt;Service&gt;.&lt;Component&gt;.ACTIVE`)
+- **EV2 Cloud Coverage**: for each pipeline key — which clouds it deploys to (Prod, Fairfax, Mooncake, USNat, USSec)
+- **EV2 Service Tree IDs**: per cloud (Prod, Fairfax, Mooncake) — GUID
+Tell the release owner: *"Pipeline IDs can be found in the ADO pipeline URL — it's the number in `definitionId=XXXXXX`. The auto-fetch mode uses the same Personal Access Token / Entra auth as `setup`."*
+&gt; **Implementation note for auto-fetch mode (a):** Call `GET https://dev.azure.com/{org}/{project}/_apis/pipelines/{pipelineId}?api-version=7.1` to retrieve the pipeline definition, then parse the YAML at `configuration.path` for the `parameters:` block. If the YAML uses `extends:` from a template, also fetch the template's `parameters:`. If parsing fails, fall back to mode (b) and ask the release owner to paste the YAML manually.
+---
+**Phase 4b — Canary Detection Kusto (schema-aware)**
+The agent uses this cluster for **pipeline selection only** — to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment. It does NOT classify individual stamp short names — once cluster-type-to-pipeline resolution is done, each selected pipeline's `templateParameters` (including stamp lists) are passed to ADO verbatim.
+&gt; **Phase 4b runs after Group 11** because the questions below only make sense once `canaryRouting.mode` is known. Group 11 already collected it — Phase 4b just reads it and short-circuits when no Kusto is needed.
+0. **Read `pipeline-catalog.json → canaryRouting.mode`** (set during Group 11). Branch:
+   **If `mode == "static"`** — Phase 4b is not needed. Clear `service-config.json → kusto.canary.*` (cluster, database, queryFile, serviceFilter, stampPrefixFilter, clusterTypeExtraction) and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'static' — no canary-detection Kusto query is used"`. Recap to the owner: *"Phase 4b skipped — canary routing is `static`. Steps 5/7/10 will trigger every entry under `canary.*` / `production.*` in parallel."* Exit Phase 4b.
+   **If `mode == "explicit"`** (or the `_pendingExplicitList` schema-fallback equivalent) — Phase 4b is not needed. Clear `kusto.canary.*` as above and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'explicit' — pipeline selection uses the static canaryStamps/canaryRegions list, no Kusto query"`. Show the brittleness reminder one more time:
+   &gt; ⚠️ **Brittleness reminder**: the agent will trigger canary pipelines based on the static `canaryStamps` / `canaryRegions` list you declared in Group 11. Keep that list fresh when the org rebalances. To switch to dynamic Kusto-driven routing later, re-run `setup-service group 11` and change `canaryRouting.mode` to `cluster-type`, then re-run `setup-service group 4b` to collect the Kusto details.
+   Exit Phase 4b.
+   **If `mode == "cluster-type"`** — proceed with steps 1-5 below to collect the Kusto details.
+   **If `mode` is missing or unrecognized** — surface this as a configuration error: tell the owner to run `setup-service group 11` first to set `canaryRouting.mode`, then re-run `setup-service group 4b`. Do not prompt for any Kusto values yet.
+1. **Show the default canary-detection query** — print verbatim in a fenced code block:
+   ```kql
+   EventLogAllClusters
+   | where TIMESTAMP &gt; ago(1d)
+   | where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
+   | where {{STAMP_PREFIX_FILTER}}
+   | summarize make_set(DeploymentUnit) by StampName
+   | order by StampName asc
+   ```
+2. **Show the required column contract** the agent depends on:
+   ```
+   Required columns in result rows:
+     StampName, DeploymentUnit (a set/array of deployment unit names)
+   Required placeholders in the query:
+     {{SERVICE_FILTER}}        (replaced with kusto.canary.serviceFilter at runtime,
+                                e.g., ServiceName == 'prot')
+     {{STAMP_PREFIX_FILTER}}   (replaced with kusto.canary.stampPrefixFilter at runtime,
+                                e.g., StampName startswith '&lt;your-prefix-1&gt;' or
+                                      StampName startswith '&lt;your-prefix-2&gt;')
+   Tables referenced by default query:
+     EventLogAllClusters
+   Downstream usage (Steps 5, 7, 10):
+     The agent collects the SET of cluster types observed across all rows
+     (by inspecting DeploymentUnit substrings — e.g., '-sfmc' → 'sfmc',
+     '-sf' without '-sfmc' → 'sfrp'). This set is intersected with
+     canaryRouting.clusterTypeMap to pick which pipelines to trigger.
+     The agent does NOT translate or filter stamp short names —
+     each selected pipeline's templateParameters are passed to ADO
+     verbatim from pipeline-catalog.json.
+   Response parsing:
+     ALWAYS use $resp.Tables[0].Rows. NEVER use $resp.tables | Where TableName -eq 'PrimaryResult'
+     (see Kusto MCP Response Parsing in BVT Failure Analysis section).
+   ```
+3. **Ask the schema-fit question** via `ask_user`:
+   &gt; *"The default query above is valid for services in **Azure Backup**. Does your service fall under Azure Backup?"*
+   &gt; Choices: `Yes — Use default query`, `No — Use a different query`
+4. **Branch on the answer**:
+   **(A) `Yes — Use default query`** (default path):
+   - Persist the default canary-detection query path to `kusto.canary.queryFile` (e.g., `Canary-DeploymentUnits.kql`). If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version above into it now. **Do NOT prompt for the filename** — use the default.
+   - **Do NOT prompt for `kusto.canary.cluster` or `kusto.canary.database`** — the default query targets a fixed Azure Backup cluster/database. Write these values directly:
+     - `kusto.canary.cluster` → `https://mabprod1.kusto.windows.net/`
+     - `kusto.canary.database` → `MABKustoProd1`
+   - Ask only the **2 filter fields** (one at a time, persist after each):
+     - `kusto.canary.serviceFilter` — KQL `where` predicate that selects rows belonging to your service (e.g., `ServiceName == 'prot'`). Substituted into `{{SERVICE_FILTER}}` at runtime.
+     - `kusto.canary.stampPrefixFilter` — KQL `where` predicate that narrows `StampName` to your service's canary stamps. Substituted into `{{STAMP_PREFIX_FILTER}}` at runtime.
+       **Canary stamp filter shape (service-agnostic guidance):** This value is a KQL `where`-clause fragment over the `StampName` column. The general shape is `StampName startswith '&lt;prefix1&gt;' or StampName startswith '&lt;prefix2&gt;' …`. Replace `&lt;prefix...&gt;` with the short-name prefixes your service uses for canary stamps. Leave empty if your custom `.kql` file does not use the `{{STAMP_PREFIX_FILTER}}` placeholder.
+       **Conditional default offer:** If `service.name` matches a known MAB-family service (case-insensitive regex `^(WBCM|DM|Prot)$`), offer the MAB-historical predicate `StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'` as a suggested default via `ask_user` — but make clear this is a snapshot and the owner is free to edit. For all other services, present `ask_user` with **no pre-filled value** and the shape guidance above; do not bake one service's stamp prefixes into another service's setup.
+   - Note to release owner: *"If results look wrong later, you can edit `.github/skills/zed-agent/queries/{queryFile}` directly — the agent re-reads it on every run."*
+   **(B) `No — Use a different query`**:
+   - First, show the release owner the available canary-detection mechanisms supported by this agent today:
+     &gt; *"The agent currently supports the following mechanisms for canary cluster-type detection:*
+     &gt; *  (1) **Custom Kusto query** — you provide a KQL query the agent runs against your team's Kusto cluster; the agent inspects the returned rows to determine which cluster types are currently live in canary, then maps those to the right pipeline(s) via `canaryRouting.clusterTypeMap` (Group 11).*
+     &gt;
+     &gt; *More mechanisms may be added later."*
+     &gt; Choices: `1) Custom Kusto query`
+   - On `Custom Kusto query`, walk the owner through a guided setup so the resulting query is solid and re-runnable by the agent. Persist each answer immediately:
+     1. Ask `kusto.canary.cluster` — Kusto cluster URL where the canary deployment data lives.
+     2. Ask `kusto.canary.database` — database name on that cluster.
+     3. Ask the owner how they want to provide the KQL, via `ask_user`:
+        &gt; *"How do you want to provide your team's canary-detection query?"*
+        &gt; Choices: `Paste KQL now`, `Point me at a .kql file in this repo`
+     4. **If `Paste KQL now`**: collect the KQL via `ask_user` (multi-line), write it to `.github/skills/zed-agent/queries/&lt;service-name&gt;-canary.kql`, and persist that path to `kusto.canary.queryFile`.
+     5. **If `Point me at a .kql file in this repo`**: ask for the relative path, validate the file exists, and persist it to `kusto.canary.queryFile`.
+     6. **Make the query agent-runnable** — the agent must analyze the submitted KQL and intelligently fill in / negotiate the runtime parameters it needs:
+        - **Timestamp window**: scan the query for any of `ago(...)`, `datetime(...)`, `between(...)`, `now()`, or a `TIMESTAMP &gt;=` / `TimeStamp &gt;=` predicate. The canary-detection step needs a recent window (typically the last 1-2 days, not anchored to pipeline trigger time — canary detection is a *snapshot of what's live now*). If no time window is present, offer to inject `| where TIMESTAMP &gt; ago(1d)` and confirm the exact column name to filter on via `ask_user`.
+        - **Service scoping (or whatever mechanism the query uses)**: don't assume every custom query scopes to the service with a `ServiceName == "&lt;svc&gt;"` predicate — some teams use a different column, a build-id join, a namespace prefix on `DeploymentName`, a pre-filtered function in their own database, or no per-service filter at all because the cluster only holds their data. Ask the owner via `ask_user` how their query already narrows results to their service's canary stamps, with choices roughly: `Uses a {{SERVICE_FILTER}}-style column filter`, `Uses a different mechanism — let me describe it`, `No scoping needed — query is already service-specific`. Then:
+           - On `Uses a {{SERVICE_FILTER}}-style column filter`: ask for the predicate (e.g., `ServiceName == 'prot'`), offer to inject `{{SERVICE_FILTER}}`, and collect `kusto.canary.serviceFilter`.
+           - On `Uses a different mechanism`: collect a free-text description via `ask_user` (persist to `kusto.canary.scopingNotes` as a comment for future maintainers), then ask which placeholders — if any — the agent needs to substitute at runtime and what values to bind. Persist each placeholder under `kusto.canary.queryVariables.&lt;NAME&gt;`. If the mechanism needs nothing dynamic, just record the note and move on — do NOT force a `{{SERVICE_FILTER}}` placeholder.
+           - On `No scoping needed`: leave `kusto.canary.serviceFilter` empty and record `kusto.canary.scopingNotes = "Query is pre-scoped — no runtime service filter needed"`.
+        - **Stamp-prefix scoping (optional)**: ask whether the query needs runtime narrowing to canary stamp short-name prefixes via `ask_user`, with choices: `Uses a {{STAMP_PREFIX_FILTER}}-style predicate`, `No — stamps are hard-coded or not filtered`. On the first choice, collect `kusto.canary.stampPrefixFilter` using the same shape guidance and conditional MAB-family default offer described in branch (A) above; otherwise leave it empty.
+        - **Cluster-type extraction contract**: confirm with the owner how the agent should read cluster types from the result rows. Ask via `ask_user`:
+          &gt; *"How does your query expose the cluster type of each canary stamp?"*
+          &gt; Choices: `Set/array column named DeploymentUnit (parse substrings like -sfmc, -sf)`, `Dedicated column (e.g., ClusterType) — I'll tell you the name`, `Other — let me describe it`
+          - On `Set/array column named DeploymentUnit`: persist `kusto.canary.clusterTypeExtraction = { mode: "deployment-unit-substring" }`.
+          - On `Dedicated column`: ask for the column name, persist `kusto.canary.clusterTypeExtraction = { mode: "column", column: "&lt;name&gt;" }`.
+          - On `Other`: collect a free-text description, persist to `kusto.canary.clusterTypeExtraction = { mode: "custom", notes: "&lt;description&gt;" }`, and warn the owner that Steps 5/7/10 may need code changes to honor this mode (file a follow-up).
+        - **Required columns**: ask the owner to confirm the query returns at minimum a row-per-stamp shape with a `StampName` column (or equivalent) plus whatever column the cluster-type extraction step reads. Persist the column list to `kusto.canary.resultColumns`.
+        - **Additional placeholders**: if the owner referenced any other `{{...}}` tokens, prompt for each one and persist under `kusto.canary.queryVariables.&lt;NAME&gt;`.
+     7. **Dry-run check (optional but recommended)**: offer to execute the finalized query once via the Kusto MCP against the cluster/database the owner just provided. Surface the returned rows in a small table and confirm with the owner that the cluster-type extraction step would produce the expected SET of cluster types. On error, surface the Kusto error verbatim and let the owner edit the file and re-run the dry-run.
+     8. **Show this hard reminder** before finishing:
+        &gt; ⚠️ **Contract**: Steps 5, 7, and 10 will run this query verbatim against the cluster/database you just provided, substituting any placeholders you declared. The agent will then extract the SET of cluster types using `kusto.canary.clusterTypeExtraction` and intersect it with `canaryRouting.clusterTypeMap` (Group 11) to decide which canary pipeline(s) to trigger. Make sure the suffix/key vocabulary lines up between this query's output and `clusterTypeMap`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run; no agent code change needed.
+5. After persistence, recap to the release owner what was saved (cluster, database, query file path, service filter value).
+&gt; If the release owner uses the **same** Kusto cluster/database for both BVT and canary detection, the agent can still keep them as separate config keys — that's fine, just enter the same values.
+### Generation
+By this point, all field values collected from the release owner have **already been written to disk incrementally** (see the Interactive Collection Flow). The Generation phase is therefore a **finalization pass**, not a bulk write. It exists to:
+- Inject any default sub-objects (like the `routing` block below) that were not asked field-by-field.
+- Run schema validation on the now-complete files.
+- Print the final summary to the release owner.
+If at this point a required field is still missing on disk (e.g., the release owner answered "skip" earlier), surface it during validation rather than silently writing a placeholder.
+1. **Finalize `service-config.json`** — Re-read `.github/skills/zed-agent/service-config.json` from disk, ensure the default notification routing block is present (add it if absent — do NOT overwrite if the release owner has customized it), and write back. The per-field values were already persisted incrementally during Group 1-10 collection. Default routing:
+```json
+"routing": {
+  "1-send-reminder":       { "success": { "emailGroups": ["permanent"],                       "teamsGroups": ["teams"] } },
+  "4-collect-commits":     { "success": {                                                     "teamsGroups": ["teamsExtended"] } },
+  "13-create-r2d":         { "success": { "emailGroups": ["releaseOwner"], "ccGroups": ["cc"] } },
+  "15-production-rollout": { "success": { "emailGroups": ["permanent", "cc", "releaseOwner"] } }
+}
+The release owner is always added to the To-line of every notification by `Resolve-NotificationRecipients.ps1`. Steps/outcomes not listed default to owner-only. Owners can widen any cell — including `failure` and `halt` for any step — via `setup-service group 5b`. The legacy generic keys (`judgment`, `failure`, `halt`, `step-transition`) are unmapped (no associated step) and stay owner-only.
+```
+2. **Finalize `pipeline-catalog.json`** — Re-read the file from disk. Pipeline entries collected during Group 11 were already persisted incrementally per pipeline. Confirm all pipeline entries the release owner provided are present and well-formed; do not overwrite existing entries.
+3. **Validate** — Run `Load-ServiceConfig.ps1` to verify the generated files parse and validate correctly:
+```powershell
+$cfg = &amp; .\.github\skills\zed-agent\scripts\Load-ServiceConfig.ps1
+Write-Host "✅ Config loaded: $($cfg.service.displayName)"
+Write-Host "   Canary pipelines: $($cfg.pipelines.canary.PSObject.Properties.Count)"
+Write-Host "   Production pipelines: $($cfg.pipelines.production.PSObject.Properties.Count)"
+```
+4. **Remind the release owner** to commit the files:
+```
+✅ Service configuration generated!
+Files created:
+  .github/skills/zed-agent/service-config.json
+  .github/skills/zed-agent/pipeline-catalog.json
+Next steps:
+  1. Review the generated files
+  2. Force-add and commit: git add -f .github/skills/zed-agent/service-config.json .github/skills/zed-agent/pipeline-catalog.json
+  3. Push to your branch
+  4. Run `setup` for per-release initialization
+```
+### Validation — `setup-service validate`
+Whether the release owner has been editing by hand, running through the wizard, or both, validation is the same routine. It is also run automatically at the end of every wizard pass, and can be invoked on its own with `setup-service validate`:
+1. **Read** `.github/skills/zed-agent/service-config.json` and `pipeline-catalog.json`. If either file is missing, tell the release owner and stop.
+2. **Run loader** with strict mode:
+```powershell
+$cfg = &amp; .\.github\skills\zed-agent\scripts\Load-ServiceConfig.ps1 -Strict
+```
+3. **Schema check** — for each required key listed in `service-config.schema.json`, verify the value is present and non-empty.
+4. **Sanity checks** — verify pipeline IDs are numeric, service tree IDs are GUIDs, email addresses contain `@`, GUIDs are 36-char hyphenated.
+5. **Report**: list any missing fields, type errors, or unresolved `&lt;TODO&gt;` placeholders. If everything passes, print:
+```
+✅ Configuration valid: &lt;serviceDisplayName&gt;
+   - &lt;N&gt; canary pipelines, &lt;N&gt; production pipelines
+   - &lt;N&gt; notification routing rules
+   - Step gates: &lt;N&gt; on, &lt;N&gt; off
+Run `setup` to initialize for the next release.
+```
+If validation fails, list the missing/invalid fields and offer the release owner either to (a) fix them in their IDE and re-run `setup-service validate`, or (b) re-run `setup-service` to be prompted for just those fields, or (c) jump directly to the failing group with `setup-service group &lt;N&gt;` (e.g., `setup-service group 11` resumes at pipeline-catalog; `setup-service group 5b` resumes at notification routing).
+', but it did not match.</message>
+                      <stack-trace>at $script:Body | Should -Match '\^\(MAB\|DPM\|Prot\|BDP\)\$', Q:\ZED-Agent\.github\skills\zed-agent\tests\Setup-Service-Skill.Tests.ps1:80
+at &lt;ScriptBlock&gt;, Q:\ZED-Agent\.github\skills\zed-agent\tests\Setup-Service-Skill.Tests.ps1:80</stack-trace>
+                    </failure>
+                  </test-case>
+                  <test-case description="preserves the default routing JSON block (per-step seed entries)" name="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing).preserves the default routing JSON block (per-step seed entries)" time="0.0359" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="preserves the 16-step gate-defaults table including non-overridable Step 14" name="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing).preserves the 16-step gate-defaults table including non-overridable Step 14" time="0.0332" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="preserves the Phase 4b column contract (StampName, DeploymentUnit)" name="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing).preserves the Phase 4b column contract (StampName, DeploymentUnit)" time="0.0305" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="preserves the Phase 4a required-columns contract" name="setup-service skill (extracted from agent.md).Critical literal strings (behavior-bearing).preserves the Phase 4a required-columns contract" time="0.0307" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="setup-service skill (extracted from agent.md).Agent.md stub no longer contains wizard prompts" executed="True" result="Success" success="True" time="1.2783" asserts="0" description="setup-service skill (extracted from agent.md).Agent.md stub no longer contains wizard prompts">
+                <results>
+                  <test-case description="does not contain orphan Group N heading lines for the wizard" name="setup-service skill (extracted from agent.md).Agent.md stub no longer contains wizard prompts.does not contain orphan Group N heading lines for the wizard" time="0.0382" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="still has the setup-service heading stub pointing to the skill" name="setup-service skill (extracted from agent.md).Agent.md stub no longer contains wizard prompts.still has the setup-service heading stub pointing to the skill" time="0.0302" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="still has surviving cross-references (Rule 11, Notification Routing, help row)" name="setup-service skill (extracted from agent.md).Agent.md stub no longer contains wizard prompts.still has surviving cross-references (Rule 11, Notification Routing, help row)" time="0.0302" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="has a Skill Invocations section referencing /setup-service" name="setup-service skill (extracted from agent.md).Agent.md stub no longer contains wizard prompts.has a Skill Invocations section referencing /setup-service" time="0.0313" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>

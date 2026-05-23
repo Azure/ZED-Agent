@@ -143,7 +143,7 @@ $payload = @{
 
     # Alerting & compliance
     Sev2Alerting                = "Yes"
-    HasSev2AlertingDetails      = "<a href='$($cfg.safefly.genevaMdmLink)'>Geneva MDM Monitors</a>"
+    HasSev2AlertingDetails      = "<a href='$($cfg.safefly.monitoringLink)'>Monitoring Dashboard</a>"
     PayloadGoingToFairfax       = "yes"
     PayloadGoingToMooncake      = "yes"
     ImpactOfHoldingOffDeployment = "Next set of features and enhancements will not go in"

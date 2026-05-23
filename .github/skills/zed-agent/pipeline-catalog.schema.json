@@ -7,7 +7,7 @@
   "additionalProperties": true,
   "required": ["officialBuild", "canary", "production", "ev2ServiceGroups", "ev2CloudCoverage"],
   "properties": {
-    "_comment":   { "type": "string" },
+    "$schema":    { "type": "string", "default": "./pipeline-catalog.schema.json", "description": "Pointer to this schema file for editor validation." },
     "description":{ "type": "string" },
 
     "ev2ServiceTreeIds": {
@@ -114,6 +114,21 @@
       "type": "object",
       "description": "Optional reference shapes. Delete once real entries are populated.",
       "additionalProperties": true
+    },
+
+    "yamlRepos": {
+      "type": "object",
+      "description": "Per-repo base-branch overrides used by Group 11 YAML discovery (Read-PipelineYaml.ps1). Keyed by ADO repo name. Populated incrementally during setup-service group 11 whenever the agent encounters a YAML file (or extends: reference) in a repo it hasn't seen yet. Use this to keep YAML discovery deterministic across runs.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "baseBranch": { "type": "string", "description": "Branch name (no 'refs/heads/' prefix), e.g. 'develop' or 'main'." },
+          "organization": { "type": "string", "description": "Optional ADO org override when the YAML repo lives outside the service's primary org. Defaults to service-config.json → ado.organization." },
+          "project": { "type": "string", "description": "Optional ADO project override. Defaults to service-config.json → ado.project." }
+        },
+        "required": ["baseBranch"],
+        "additionalProperties": false
+      }
     }
   },
 
@@ -134,6 +149,46 @@
           "type": "object",
           "description": "Free-form pass-through to ADO. Reserved {{placeholders}}: {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}}.",
           "additionalProperties": true
+        },
+        "_learnedFrom": {
+          "type": "object",
+          "description": "Provenance recorded by Group 11 wizard (setup-service). Skipped by the schema-driven empty-skeleton generator but accepted by the validator. Helps future re-runs detect drift (e.g., YAML sha changed).",
+          "properties": {
+            "runIds":      { "type": "array", "items": { "type": ["integer", "string"] }, "description": "ADO run IDs the agent learned templateParameters from (most-recent first, up to 3)." },
+            "yamlRepo":    { "type": "string" },
+            "yamlBranch":  { "type": "string" },
+            "yamlPath":    { "type": "string" },
+            "yamlSha":     { "type": "string" },
+            "learnedAt":   { "type": "string", "description": "UTC ISO 8601 timestamp." }
+          },
+          "additionalProperties": true
+        },
+        "discoveryNotes": {
+          "type": "object",
+          "description": "Auto-detected quirks observed during discovery (exclusion-list separator, stamp-name casing, reserved-token literal forms). Free-form owner annotations also welcome.",
+          "properties": {
+            "exclusionFormat": { "type": "string", "description": "e.g., 'comma', 'semicolon', 'json-array', 'newline'." },
+            "stampNameStyle":  { "type": "string", "description": "e.g., 'lowercase', 'mixed', 'prefix-ea-can'." },
+            "extraParams":     { "type": "array",  "items": { "type": "string" }, "description": "Parameters present in prior runs but NOT declared in the YAML. Surface to maintainers — likely stale." },
+            "freeText":        { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "_validated": {
+          "type": "object",
+          "description": "Stamp recorded after a successful Phase 11.2 / 11.3 dry-run. Underscore-prefixed → wizard metadata, not config.",
+          "properties": {
+            "at":            { "type": "string", "description": "UTC ISO 8601." },
+            "lastDryRunId":  { "type": ["integer", "string"] },
+            "by":            { "type": "string", "description": "Owner email or 'wizard'." },
+            "skipped":       { "type": "boolean", "description": "true when sub-identifier 11.discovery-only was used (no dry-run performed)." }
+          },
+          "additionalProperties": true
+        },
+        "agentGaps": {
+          "type": "array",
+          "description": "Free-text gap descriptions the agent could not resolve during discovery (e.g., 'parameter X has no prior value and no YAML default — owner supplied manually'). Empty array on clean discovery.",
+          "items": { "type": "string" }
         }
       }
     }

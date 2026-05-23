@@ -18,7 +18,7 @@ BvtDailyTestRunData
 | where (dayofweek(TimeStamp) > time(0.00:00:00) and dayofweek(TimeStamp) < time(6.00:00:00))
 | where Result == false and Analysis != "" and Environment != "BVTD3"
 | where IssueCategory !contains "test"
-| where ResponsibleTeam =~ "{{RESPONSIBLE_TEAM}}"
+| where ResponsibleTeam contains "{{RESPONSIBLE_TEAM}}"
 | project TimeStamp, WorkLoadType, Environment, TestCaseName,
           IssueCategory = trim("\\s", IssueCategory), ResponsibleTeam,
           CanBeCaughtInInnerLoop, RepairItem, Analysis,

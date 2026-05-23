@@ -5,26 +5,35 @@
 .DESCRIPTION
     Single source of truth for "who gets which email/Teams message" across the agent.
 
+    Model: every notification belongs to a (step, outcome) pair.
+      Outcomes: success | failure | halt   (halt covers both unexpected halts and waiting-approval gates).
+    Routing lives in notifications.routing.<stepKey>.<outcome> in service-config.json.
+
     Resolution order:
       1. Test mode (release.testMode == true) → owner-only, Teams suppressed.
-      2. Safety-rail events (always owner-only regardless of config):
-           failure, halt, judgment, step-transition,
-           and any 'step-<N>-failed' (failures never broadcast).
-         These cannot be overridden by config — they protect against accidentally
-         spamming the team during a bad deploy.
-      3. Lookup notifications.routing.<EventKey>. If present, use it.
-      4. Default (no routing entry): owner-only.
+      2. Map EventKey -> (stepKey, outcome). If unmapped (judgment, failure, halt,
+         step-transition, or any unrecognized key) -> owner-only.
+      3. Lookup notifications.routing.<stepKey>.<outcome>. Resolve emailGroups /
+         ccGroups / teamsGroups against notifications.groups.
+      4. ALWAYS add the release owner's personal email to the To-line.
+         (No includeOwner field — owner is implicit on every notification.)
+      5. Missing entry / empty buckets -> owner-only (the default everywhere).
 
-    OWNER-CONFIGURABLE events (any of these can be added to notifications.routing
-    by the release owner via `setup-service group 5b`):
-      reminder, commit-request, create-r2d, ev2-stage-progress,
-      step-<N>-completed, step-<N>-skipped, step-<N>-waiting-approval (for N=1..16),
-      canary-status, rollback-status, rollforward-status, production-rollout,
-      and any other custom event key the service needs.
+    EventKey -> (step, outcome) map:
+      step-<N>-completed         -> (<N>, success)
+      step-<N>-skipped           -> (<N>, success)
+      step-<N>-failed            -> (<N>, failure)
+      step-<N>-waiting-approval  -> (<N>, halt)
+      reminder                   -> (1,  success)
+      commit-request             -> (4,  success)
+      create-r2d                 -> (13, success)
+      ev2-stage-progress         -> (15, success)
+      ev2-promotion-reminder     -> (15, halt)
+      anything else              -> unmapped -> owner-only
 
 .PARAMETER EventKey
-    Event key string. See DESCRIPTION above for the canonical set; any string is accepted.
-    Unknown event keys with no routing entry default to owner-only (safe default).
+    Event key string. See DESCRIPTION for the mapping table.
+    Unmapped or unrouted events default to owner-only (safe default).
 
 .PARAMETER Config
     Loaded service config object (output of Load-ServiceConfig.ps1).
@@ -38,7 +47,7 @@
 
 .OUTPUTS
     Hashtable:
-      EmailTo               = string[]  (To-line addresses)
+      EmailTo               = string[]  (To-line addresses; always includes owner)
       EmailCc               = string[]  (CC-line addresses)
       TeamsConversationIds  = string[]  (Teams conversation IDs to post to)
       TestMode              = bool      (true if testMode redirect was applied)
@@ -65,14 +74,46 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Safety-rail events — ALWAYS owner-only regardless of notifications.routing.
-# These cover failures, halts, agent-judgment updates, and the generic step-transition
-# marker. Step-failure transitions (e.g., 'step-3-failed') are also force-owner-only
-# via the regex below so a misconfigured routing block can never broadcast a failure.
-$AlwaysOwnerOnlyEvents = @('failure', 'halt', 'judgment', 'step-transition')
-$FailedStepPattern     = '^step-\d+-failed$'
+# Step name lookup (matches keys in service-config.stepGates and routing).
+$StepNames = @{
+    1  = '1-send-reminder';            2  = '2-cut-branch';                3  = '3-wait-build'
+    4  = '4-collect-commits';          5  = '5-deploy-canary';             6  = '6-bvt-check'
+    7  = '7-rollback';                 8  = '8-post-rollback-bvt';         9  = '9-post-rollback-signoff'
+    10 = '10-roll-forward';            11 = '11-post-rollforward-bvt';     12 = '12-post-rollforward-signoff'
+    13 = '13-create-r2d';              14 = '14-crb-review';               15 = '15-production-rollout'
+    16 = '16-merge-back'
+}
 
-# --- Extract owner email (may be missing for pure broadcast events) ---
+# Legacy / semantic EventKey -> (step number, outcome) overrides.
+$LegacyMap = @{
+    'reminder'               = @{ Step = 1;  Outcome = 'success' }
+    'commit-request'         = @{ Step = 4;  Outcome = 'success' }
+    'create-r2d'             = @{ Step = 13; Outcome = 'success' }
+    'ev2-stage-progress'     = @{ Step = 15; Outcome = 'success' }
+    'ev2-promotion-reminder' = @{ Step = 15; Outcome = 'halt'    }
+}
+
+function _Map-EventKey {
+    param([string]$key)
+    if ($key -match '^step-(\d+)-(completed|skipped|failed|waiting-approval)$') {
+        $n = [int]$Matches[1]
+        if (-not $StepNames.ContainsKey($n)) { return $null }
+        $outcome = switch ($Matches[2]) {
+            'completed'        { 'success' }
+            'skipped'          { 'success' }
+            'failed'           { 'failure' }
+            'waiting-approval' { 'halt'    }
+        }
+        return @{ StepKey = $StepNames[$n]; Outcome = $outcome }
+    }
+    if ($LegacyMap.ContainsKey($key)) {
+        $m = $LegacyMap[$key]
+        return @{ StepKey = $StepNames[$m.Step]; Outcome = $m.Outcome }
+    }
+    return $null
+}
+
+# --- Extract owner email (required for every notification — owner is always on To-line) ---
 $ownerEmail = $null
 if ($Release.PSObject.Properties['releaseOwner'] -and $Release.releaseOwner) {
     if ($Release.releaseOwner.PSObject.Properties['email']) {
@@ -103,9 +144,11 @@ if ($testMode) {
     }
 }
 
-# --- Safety-rail short-circuit: failures, halts, judgment, and step-transition always owner-only ---
-if ($AlwaysOwnerOnlyEvents -contains $EventKey -or $EventKey -match $FailedStepPattern) {
-    _Require-Owner "always-owner-only event '$EventKey'"
+_Require-Owner "owner is always included on every notification"
+
+# --- Map EventKey to (stepKey, outcome). Unmapped -> owner-only fallback. ---
+$mapped = _Map-EventKey $EventKey
+if ($null -eq $mapped) {
     return @{
         EmailTo              = @($ownerEmail)
         EmailCc              = @()
@@ -115,13 +158,19 @@ if ($AlwaysOwnerOnlyEvents -contains $EventKey -or $EventKey -match $FailedStepP
     }
 }
 
-# --- Routing lookup: missing entry == owner-only default (NOT an error) ---
+# --- Routing lookup: missing step or missing outcome == owner-only default ---
 $routing = $null
 if ($Config.notifications -and $Config.notifications.PSObject.Properties['routing']) {
     $routing = $Config.notifications.routing
 }
-if ($null -eq $routing -or -not $routing.PSObject.Properties[$EventKey]) {
-    _Require-Owner "event '$EventKey' has no routing entry (defaulting to owner-only)"
+$rule = $null
+if ($null -ne $routing -and $routing.PSObject.Properties[$mapped.StepKey]) {
+    $stepBlock = $routing.($mapped.StepKey)
+    if ($stepBlock -and $stepBlock.PSObject.Properties[$mapped.Outcome]) {
+        $rule = $stepBlock.($mapped.Outcome)
+    }
+}
+if ($null -eq $rule) {
     return @{
         EmailTo              = @($ownerEmail)
         EmailCc              = @()
@@ -131,7 +180,6 @@ if ($null -eq $routing -or -not $routing.PSObject.Properties[$EventKey]) {
     }
 }
 
-$rule = $routing.$EventKey
 $groups = $Config.notifications.groups
 
 function _Resolve-EmailGroup($groupKey) {
@@ -144,8 +192,6 @@ function _Resolve-EmailGroup($groupKey) {
 }
 
 function _Resolve-TeamsGroup($groupKey) {
-    # Teams groups resolve to conversation IDs via secrets.teamsChats.<groupKey>.
-    # Each chat NAME from $groups.$groupKey is looked up in $Secrets.teamsChats.
     if (-not $groups.PSObject.Properties[$groupKey]) {
         throw "Resolve-NotificationRecipients: routing references group '$groupKey' which is not defined under notifications.groups."
     }
@@ -163,36 +209,27 @@ function _Resolve-TeamsGroup($groupKey) {
     return $ids
 }
 
-# Resolve emailGroups
+# Resolve groups from the rule
 $emailTo = @()
 if ($rule.PSObject.Properties['emailGroups']) {
     foreach ($g in @($rule.emailGroups)) { $emailTo += _Resolve-EmailGroup $g }
 }
-
-# Resolve ccGroups
 $emailCc = @()
 if ($rule.PSObject.Properties['ccGroups']) {
     foreach ($g in @($rule.ccGroups)) { $emailCc += _Resolve-EmailGroup $g }
 }
-
-# Resolve teamsGroups
 $teamsIds = @()
 if ($rule.PSObject.Properties['teamsGroups']) {
     foreach ($g in @($rule.teamsGroups)) { $teamsIds += _Resolve-TeamsGroup $g }
 }
 
-# Honor includeOwner: always add owner to To-line if requested
-$includeOwner = $false
-if ($rule.PSObject.Properties['includeOwner']) { $includeOwner = [bool]$rule.includeOwner }
-if ($includeOwner) {
-    _Require-Owner "broadcast event '$EventKey' has includeOwner=true"
-    if ($emailTo -notcontains $ownerEmail) { $emailTo += $ownerEmail }
-}
+# Owner is always on the To-line.
+if ($emailTo -notcontains $ownerEmail) { $emailTo += $ownerEmail }
 
 return @{
     EmailTo              = @($emailTo | Select-Object -Unique)
     EmailCc              = @($emailCc | Select-Object -Unique)
     TeamsConversationIds = @($teamsIds | Select-Object -Unique)
     TestMode             = $false
-    Broadcast            = $true
+    Broadcast            = ($emailTo.Count -gt 1 -or $emailCc.Count -gt 0 -or $teamsIds.Count -gt 0)
 }

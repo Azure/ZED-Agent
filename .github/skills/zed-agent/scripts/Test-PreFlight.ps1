@@ -356,6 +356,23 @@ function Test-PreFlight {
 
     $verdict = if ($failCount -gt 0) { "fail" } elseif ($warnCount -gt 0) { "warn" } else { "pass" }
 
+    # ── Persist readiness.preflight ──
+    $failureDetails = @($checks | Where-Object { $_.status -eq 'fail' } | ForEach-Object { "$($_.name): $($_.detail)" })
+    $warningDetails = @($checks | Where-Object { $_.status -eq 'warn' } | ForEach-Object { "$($_.name): $($_.detail)" })
+
+    try {
+        & (Join-Path $PSScriptRoot 'Write-Readiness.ps1') -Stage 'preflight' -Data @{
+            status     = $verdict
+            verdict    = $verdict
+            summary    = @{ pass = $passCount; warn = $warnCount; fail = $failCount }
+            failures   = $failureDetails
+            warnings   = $warningDetails
+            overridden = $false
+        } | Out-Null
+    } catch {
+        Write-Warning "Could not persist readiness.preflight: $_"
+    }
+
     return @{
         checks  = $checks
         summary = @{ pass = $passCount; warn = $warnCount; fail = $failCount }

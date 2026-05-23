@@ -22,12 +22,14 @@
   "properties": {
     "$schema": {
       "type": "string",
+      "default": "./service-config.schema.json",
       "description": "Pointer to this schema file for editor validation."
     },
     "version": {
       "type": "string",
       "description": "Schema version. Currently '1.0'.",
-      "enum": ["1.0"]
+      "enum": ["1.0"],
+      "default": "1.0"
     },
 
     "service": {
@@ -116,6 +118,7 @@
         "baseBranch": {
           "type": "string",
           "description": "Base branch from which release branches are cut.",
+          "default": "develop",
           "minLength": 1
         }
       }
@@ -241,7 +244,7 @@
         "groups": {
           "type": "object",
           "description": "Named recipient groups referenced by routing rules.",
-          "required": ["permanent", "releaseOwner", "teams"],
+          "required": ["permanent", "teams"],
           "additionalProperties": true,
           "properties": {
             "permanent": {
@@ -252,11 +255,6 @@
             "cc": {
               "type": "array",
               "description": "CC-line email addresses.",
-              "items": { "type": "string" }
-            },
-            "releaseOwner": {
-              "type": "array",
-              "description": "Release owner email addresses.",
               "items": { "type": "string" }
             },
             "teams": {
@@ -273,14 +271,27 @@
         },
         "routing": {
           "type": "object",
-          "description": "Maps notification event keys to recipient groups. The four default broadcast events (reminder, commit-request, create-r2d, ev2-stage-progress) are required. Owners can ALSO add entries for any other event key (e.g., 'step-3-completed', 'step-6-waiting-approval', 'canary-status', 'rollback-status', 'rollforward-status', 'production-rollout') to broadcast that event to chosen groups. Events with no entry default to owner-only. SAFETY RAIL: failures, halts, agent-judgment updates, the generic 'step-transition' marker, and any 'step-<N>-failed' key are ALWAYS owner-only regardless of what's in this block — they cannot be broadcast (enforced in Resolve-NotificationRecipients.ps1).",
-          "required": ["reminder", "commit-request", "create-r2d", "ev2-stage-progress"],
-          "additionalProperties": { "$ref": "#/definitions/routingRule" },
+          "description": "Per-step notification routing. Keys are step identifiers (matching stepGates: '1-send-reminder' through '16-merge-back'). Each step may define routing for any of three outcomes: 'success', 'failure', 'halt' (where 'halt' covers both unexpected halts and approval-waiting gates). The release owner is ALWAYS added to every notification by Resolve-NotificationRecipients.ps1 — there is no per-rule includeOwner field. Any step or outcome not listed defaults to owner-only. EventKeys map into this table as follows: step-<N>-completed/skipped -> success; step-<N>-failed -> failure; step-<N>-waiting-approval -> halt; reminder -> 1-send-reminder.success; commit-request -> 4-collect-commits.success; create-r2d -> 13-create-r2d.success; ev2-stage-progress -> 15-production-rollout.success; ev2-promotion-reminder -> 15-production-rollout.halt. Generic keys (judgment, failure, halt, step-transition) are unmapped and always owner-only.",
+          "additionalProperties": false,
           "properties": {
-            "reminder":               { "$ref": "#/definitions/routingRule" },
-            "commit-request":         { "$ref": "#/definitions/routingRule" },
-            "create-r2d":             { "$ref": "#/definitions/routingRule" },
-            "ev2-stage-progress":     { "$ref": "#/definitions/routingRule" }
+            "_comment": { "type": "string", "description": "Human-readable comment explaining the routing section." },
+
+            "1-send-reminder":             { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "2-cut-branch":                { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "3-wait-build":                { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "4-collect-commits":           { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "5-deploy-canary":             { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "6-bvt-check":                 { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "7-rollback":                  { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "8-post-rollback-bvt":         { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "9-post-rollback-signoff":     { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "10-roll-forward":             { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "11-post-rollforward-bvt":     { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "12-post-rollforward-signoff": { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "13-create-r2d":               { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "14-crb-review":               { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "15-production-rollout":       { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "16-merge-back":               { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } }
           }
         }
       }
@@ -313,9 +324,9 @@
           "description": "Extra email addresses to notify on SafeFly CR events.",
           "items": { "type": "string" }
         },
-        "genevaMdmLink": {
+        "monitoringLink": {
           "type": "string",
-          "description": "Link to Geneva MDM monitors dashboard.",
+          "description": "Monitoring dashboard URL (e.g., Geneva MDM monitors link).",
           "format": "uri"
         }
       }
@@ -331,7 +342,6 @@
         "excelCompletionTimeoutHours",
         "canaryBakeTimeHours",
         "reminderBeforeCutDays",
-        "canaryRegions",
         "watcherPollIntervalSeconds",
         "watcherTestModePollIntervalSeconds",
         "watcherMaxRetries",
@@ -342,57 +352,61 @@
         "buildTimeoutMinutes": {
           "type": "integer",
           "description": "Maximum minutes to wait for a build to complete. Default 360 (6 hours).",
+          "default": 360,
           "minimum": 1
         },
         "bvtWaitHours": {
           "type": "integer",
           "description": "Hours to wait before running BVT queries after deployment.",
+          "default": 24,
           "minimum": 1
         },
         "bvtQueryTimeoutMinutes": {
           "type": "integer",
           "description": "Maximum minutes for a BVT Kusto query to return results.",
+          "default": 120,
           "minimum": 1
         },
         "excelCompletionTimeoutHours": {
           "type": "integer",
           "description": "Maximum hours to wait for commit Excel completion.",
+          "default": 48,
           "minimum": 1
         },
         "canaryBakeTimeHours": {
           "type": "integer",
           "description": "Hours to bake in canary before progressing.",
+          "default": 24,
           "minimum": 1
         },
         "reminderBeforeCutDays": {
           "type": "integer",
           "description": "Days before branch cut date to send the reminder.",
+          "default": 2,
           "minimum": 0
-        },
-        "canaryRegions": {
-          "type": "array",
-          "description": "EV2 canary region codes for initial deployment.",
-          "items": { "type": "string" },
-          "minItems": 1
         },
         "watcherPollIntervalSeconds": {
           "type": "integer",
           "description": "Seconds between watcher poll cycles in production mode.",
+          "default": 3600,
           "minimum": 60
         },
         "watcherTestModePollIntervalSeconds": {
           "type": "integer",
           "description": "Seconds between watcher poll cycles in test mode.",
+          "default": 1800,
           "minimum": 60
         },
         "watcherMaxRetries": {
           "type": "integer",
           "description": "Maximum consecutive retries for transient watcher failures.",
+          "default": 3,
           "minimum": 0
         },
         "watcherTaskPrefix": {
           "type": "string",
           "description": "Prefix for watcher scheduled-task names.",
+          "default": "ZED-ReleaseWatcher",
           "minLength": 1
         },
         "regionMappingRepo": {
@@ -440,61 +454,29 @@
           "type": "string",
           "description": "Human-readable comment explaining the stepGates section."
         },
-        "1-send-reminder":             { "type": "boolean" },
-        "2-cut-branch":                { "type": "boolean" },
-        "3-wait-build":                { "type": "boolean" },
-        "4-collect-commits":           { "type": "boolean" },
-        "5-deploy-canary":             { "type": "boolean" },
-        "6-bvt-check":                 { "type": "boolean" },
-        "7-rollback":                  { "type": "boolean" },
-        "8-post-rollback-bvt":         { "type": "boolean" },
-        "9-post-rollback-signoff":     { "type": "boolean" },
-        "10-roll-forward":             { "type": "boolean" },
-        "11-post-rollforward-bvt":     { "type": "boolean" },
-        "12-post-rollforward-signoff": { "type": "boolean" },
-        "13-create-r2d":               { "type": "boolean" },
-        "14-crb-review":               { "type": "boolean" },
-        "15-production-rollout":       { "type": "boolean" },
-        "16-merge-back":               { "type": "boolean" }
+        "1-send-reminder":             { "type": "boolean", "default": false },
+        "2-cut-branch":                { "type": "boolean", "default": false },
+        "3-wait-build":                { "type": "boolean", "default": false },
+        "4-collect-commits":           { "type": "boolean", "default": false },
+        "5-deploy-canary":             { "type": "boolean", "default": false },
+        "6-bvt-check":                 { "type": "boolean", "default": true },
+        "7-rollback":                  { "type": "boolean", "default": false },
+        "8-post-rollback-bvt":         { "type": "boolean", "default": false },
+        "9-post-rollback-signoff":     { "type": "boolean", "default": true },
+        "10-roll-forward":             { "type": "boolean", "default": false },
+        "11-post-rollforward-bvt":     { "type": "boolean", "default": false },
+        "12-post-rollforward-signoff": { "type": "boolean", "default": true },
+        "13-create-r2d":               { "type": "boolean", "default": false },
+        "14-crb-review":               { "type": "boolean", "default": true },
+        "15-production-rollout":       { "type": "boolean", "default": false },
+        "16-merge-back":               { "type": "boolean", "default": false }
       }
-    }
-  },
+    },
 
-  "definitions": {
-    "routingRule": {
-      "type": "object",
-      "description": "A notification routing rule mapping an event to recipient groups. Used for the four default broadcast events AND any custom event keys (e.g., 'step-3-completed', 'canary-status') that owners add to notifications.routing.",
-      "additionalProperties": false,
-      "properties": {
-        "emailGroups": {
-          "type": "array",
-          "description": "Names of groups (from notifications.groups) to email. Each item must match a key under notifications.groups.",
-          "items": {
-            "type": "string",
-            "enum": ["permanent", "cc", "releaseOwner", "teams", "teamsExtended"]
-          }
-        },
-        "teamsGroups": {
-          "type": "array",
-          "description": "Names of groups (from notifications.groups) to notify via Teams.",
-          "items": {
-            "type": "string",
-            "enum": ["permanent", "cc", "releaseOwner", "teams", "teamsExtended"]
-          }
-        },
-        "ccGroups": {
-          "type": "array",
-          "description": "Names of groups (from notifications.groups) to CC on email.",
-          "items": {
-            "type": "string",
-            "enum": ["permanent", "cc", "releaseOwner", "teams", "teamsExtended"]
-          }
-        },
-        "includeOwner": {
-          "type": "boolean",
-          "description": "If true, the release owner's email is always added to the To-line in addition to the resolved emailGroups."
-        }
-      }
+    "agentFeedbackEmail": {
+      "type": "string",
+      "description": "Email address that receives feedback about the ZED agent itself. Hardcoded to the agent author; do not change.",
+      "default": "gwazire@microsoft.com"
     }
   }
 }

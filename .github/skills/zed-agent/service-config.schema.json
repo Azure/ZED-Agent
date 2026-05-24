@@ -51,6 +51,12 @@
         "description": {
           "type": "string",
           "description": "Brief description of the service release purpose."
+        },
+        "stampTag": {
+          "type": "string",
+          "description": "Per-service stamp-name infix used to filter inventory rows to THIS service. Stamps follow the grammar `{shortName}-{layout}-{stampTag}{index}` (e.g. 'eus-pod01-prot1', 'eus-pod01-rec2'). Consumed by Get-StampInventory.ps1 to filter Kusto results and validate canary stamp names. Lowercase, letters only.",
+          "pattern": "^[a-z]+$",
+          "examples": ["prot", "rec", "mab"]
         }
       }
     },
@@ -162,36 +168,61 @@
         },
         "canary": {
           "type": "object",
-          "description": "Canary health monitoring Kusto query settings.",
-          "required": ["cluster", "database", "serviceFilter", "queryFile"],
+          "description": "Canary cluster-type detection Kusto query settings. Consumed by Resolve-PipelinesByClusterType.ps1 (-Scope canary) when pipeline-catalog.json → canaryRouting.mode == 'cluster-type'.",
+          "required": ["cluster", "database", "queryFile"],
           "additionalProperties": true,
           "properties": {
-            "cluster": {
-              "type": "string",
-              "description": "Kusto cluster URL.",
-              "format": "uri"
-            },
-            "database": {
-              "type": "string",
-              "description": "Kusto database name.",
-              "minLength": 1
-            },
-            "serviceFilter": {
-              "type": "string",
-              "description": "KQL where-clause fragment to filter by service.",
-              "minLength": 1
-            },
-            "queryFile": {
-              "type": "string",
-              "description": "Filename (relative to .github/skills/zed-agent/queries/) of the canary cluster-type detection KQL query. Required when canaryRouting.mode='cluster-type'.",
-              "minLength": 1
-            },
+            "cluster":   { "type": "string", "description": "Kusto cluster URL.", "format": "uri" },
+            "database":  { "type": "string", "description": "Kusto database name.", "minLength": 1 },
+            "queryFile": { "type": "string", "description": "Filename (relative to .github/skills/zed-agent/queries/) of the canary cluster-type detection KQL query.", "minLength": 1 },
+            "serviceFilter":     { "type": "string",  "description": "KQL where-clause fragment substituted into {{SERVICE_FILTER}}. May be empty when scopingNotes records that the query is pre-scoped." },
             "stampPrefixFilter": {
               "type": "array",
-              "description": "KQL `where`-clause fragment (as a list of stamp-name prefixes) narrowing `StampName` to your service's canary stamps. Service-specific — values are illustrative only; supply whatever prefixes your service uses.",
+              "description": "List of stamp-name prefixes joined into a `StampName startswith '<p1>' or …` predicate and substituted into {{STAMP_PREFIX_FILTER}}.",
               "examples": [["ea-can", "ecy", "ccy"], ["cn-can", "use-can"]],
               "items": { "type": "string", "minLength": 1 }
-            }
+            },
+            "clusterTypeExtraction": {
+              "type": "object",
+              "description": "How Resolve-PipelinesByClusterType.ps1 extracts the live cluster-type set from result rows.",
+              "required": ["mode"],
+              "properties": {
+                "mode":   { "type": "string", "enum": ["deployment-unit-substring", "column", "custom"] },
+                "column": { "type": "string", "description": "Required when mode='column' — name of the result column holding the cluster type." },
+                "notes":  { "type": "string", "description": "Free-text used when mode='custom'." }
+              }
+            },
+            "queryVariables": { "type": "object", "description": "Additional {{NAME}} placeholders the owner declared.", "additionalProperties": { "type": "string" } },
+            "scopingNotes":   { "type": "string", "description": "Free-text memo describing how the query scopes to the service when serviceFilter is empty." }
+          }
+        },
+        "production": {
+          "type": "object",
+          "description": "Production cluster-type detection Kusto query settings. Consumed by Resolve-PipelinesByClusterType.ps1 (-Scope production) when pipeline-catalog.json → productionRouting.mode == 'cluster-type' (Step 10 and Step 15). Shape mirrors the canary block exactly — cluster type is a pipeline-level attribute, so the resolver runs once per release (not per cloud) and each resolved pipeline pushes to whichever clouds are listed under ev2CloudCoverage.<key>.",
+          "required": ["cluster", "database", "queryFile"],
+          "additionalProperties": true,
+          "properties": {
+            "cluster":   { "type": "string", "description": "Kusto cluster URL.", "format": "uri" },
+            "database":  { "type": "string", "description": "Kusto database name.", "minLength": 1 },
+            "queryFile": { "type": "string", "description": "Filename (relative to .github/skills/zed-agent/queries/) of the production cluster-type detection KQL query. Must declare {{SERVICE_FILTER}} and {{STAMP_PREFIX_FILTER}} placeholders (same shape as canary).", "minLength": 1 },
+            "serviceFilter":     { "type": "string",  "description": "KQL where-clause fragment substituted into {{SERVICE_FILTER}}. May be empty when scopingNotes records that the query is pre-scoped." },
+            "stampPrefixFilter": {
+              "type": "array",
+              "description": "List of stamp-name prefixes joined into a `StampName startswith '<p1>' or …` predicate and substituted into {{STAMP_PREFIX_FILTER}} — typically broader than canary.",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "clusterTypeExtraction": {
+              "type": "object",
+              "description": "How Resolve-PipelinesByClusterType.ps1 extracts the live cluster-type set from result rows.",
+              "required": ["mode"],
+              "properties": {
+                "mode":   { "type": "string", "enum": ["deployment-unit-substring", "column", "custom"] },
+                "column": { "type": "string" },
+                "notes":  { "type": "string" }
+              }
+            },
+            "queryVariables": { "type": "object", "additionalProperties": { "type": "string" } },
+            "scopingNotes":   { "type": "string" }
           }
         }
       }
@@ -470,6 +501,67 @@
         "14-crb-review":               { "type": "boolean", "default": true },
         "15-production-rollout":       { "type": "boolean", "default": false },
         "16-merge-back":               { "type": "boolean", "default": false }
+      }
+    },
+
+    "inventory": {
+      "type": "object",
+      "description": "Stamp/region inventory overrides. Populated by setup-service. The production inventory is always live-queried from Kusto by Get-StampInventory.ps1; the canary inventory is owner-curated here (canary set is small and stable — one DC in the Canary cloud, today).",
+      "additionalProperties": true,
+      "properties": {
+        "canary": {
+          "type": "object",
+          "description": "Owner-curated canary stamp inventory. Get-StampInventory.ps1 (-Scope canary) reads this block instead of querying Kusto. Cross-checked against fixtures/AzureServiceConfig.snapshot.json (Canary cloud) for region/layout validity.",
+          "required": ["cloud", "layout", "regions", "stamps"],
+          "additionalProperties": true,
+          "properties": {
+            "cloud": {
+              "type": "string",
+              "description": "Cloud Name as it appears in AzureServiceConfig.json → Clouds[].Name.",
+              "default": "Canary",
+              "minLength": 1
+            },
+            "layout": {
+              "type": "string",
+              "description": "Cloud Layout (stamp-name middle segment) as it appears in AzureServiceConfig.json → Clouds[].Layout. Must match the cloud entry.",
+              "default": "can02",
+              "pattern": "^[a-z0-9]+$"
+            },
+            "regions": {
+              "type": "array",
+              "description": "ShortName values from AzureServiceConfig.json → Clouds[Canary].DataCenters[].ShortName that this service deploys into. Typically a single entry for canary.",
+              "items": { "type": "string", "pattern": "^[a-z0-9]+$" },
+              "minItems": 1,
+              "examples": [["ea"]]
+            },
+            "stamps": {
+              "type": "array",
+              "description": "All canary stamps for this service. Each entry MUST parse as `{shortName}-{layout}-{stampTag}{index}` where shortName ∈ regions, layout == this.layout, stampTag == service.stampTag.",
+              "items": {
+                "type": "object",
+                "required": ["stampName", "clusterType"],
+                "additionalProperties": true,
+                "properties": {
+                  "stampName": {
+                    "type": "string",
+                    "description": "Full stamp identifier as it appears in Kusto / EV2 (e.g. 'ea-can02-prot1').",
+                    "pattern": "^[a-z0-9]+-[a-z0-9]+-[a-z]+[a-z0-9]+$"
+                  },
+                  "clusterType": {
+                    "type": "string",
+                    "description": "Cluster type token consumed by pipeline-catalog.json → canaryRouting.clusterTypeMap (e.g. 'sfrp', 'sfmc', 'eap', 'aks').",
+                    "minLength": 1
+                  },
+                  "notes": {
+                    "type": "string",
+                    "description": "Free-text annotation (owner, decommission date, etc.)."
+                  }
+                }
+              },
+              "minItems": 1
+            }
+          }
+        }
       }
     },
 

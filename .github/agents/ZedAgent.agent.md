@@ -125,7 +125,9 @@ EventLogAllClusters
 
 ### Production Routing Mode
 
-`pipeline-catalog.json → productionRouting` controls how Step 10 (Roll-Forward — PROD pipelines targeting canary regions) picks which production pipelines to trigger. Same `mode` semantics as `canaryRouting` but reads from `production.*` and `productionRouting.clusterTypeMap`. This is **independent** from `canaryRouting` because services often have asymmetric topology (e.g., 2 canary keys + 1 prod key). Step 15 (production rollout to public regions) iterates ALL `production.*` entries and is unaffected by `productionRouting.mode`.
+`pipeline-catalog.json → productionRouting` controls how Step 10 (Roll-Forward — PROD pipelines targeting canary regions) **and Step 15 (production rollout to public regions)** pick which production pipelines to trigger. Same `mode` semantics as `canaryRouting` but reads from `production.*` and `productionRouting.clusterTypeMap`. This is **independent** from `canaryRouting` because services often have asymmetric topology (e.g., 2 canary keys + 1 prod key). Both steps call the same resolver — `.github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope production` — so they cannot diverge. Cluster type is a **pipeline-level** attribute, not a cloud-level one: a single production pipeline may target multiple clouds via `ev2CloudCoverage.<key>`, but its declared `clusterType` is the same across all of them, so the resolver runs **once per release** and each resolved pipeline pushes to its full cloud list via EV2 inside the pipeline (no per-cloud resolver fan-out).
+
+**Layer 2 — drift halt.** In `cluster-type` mode the resolver delegates Kusto + ASC join to `Get-StampInventory.ps1`. If any stamp returned by Kusto fails ASC validation (bad grammar, serviceTag mismatch, unknown layout, shortName not in the resolved cloud, or canary `cloudHint` mismatch), or if the owner-declared canary inventory and Kusto disagree, the resolver throws `DRIFT_HALT: …`. Steps 5/7/10/15 MUST halt the step `failed`, post the drift list to Teams, and wait for owner mitigation (fix `service-config.json` / Kusto query, OR re-run with `-IgnoreDrift` after writing an explicit `mitigated: <reason>` per row). Drift halt is a separate failure class from `failed` and is audit-logged as `event: "drift-halt"`. See "Cluster-type routing sub-procedure → a.1. Drift halt" under Step 5.
 
 ## Operational Parameters
 
@@ -569,6 +571,8 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `approve-crb` | Approve CRB review (dual-gate with SafeFly approval — unblocks step 14) |
 | `ack retry` | Retry a failed step |
 | `ack skip` | Skip a failed step and move on |
+| `mitigated` | Re-run the currently halted (`failed-drift`) step normally. Use after editing `service-config.json` canary inventory or fixing the Kusto cluster-type extraction. Resolver re-validates; if drift persists, the step halts again. |
+| `approve drift` | Re-run the currently halted (`failed-drift`) step with `-IgnoreDrift` on the resolver. Owner explicitly accepts the reported drift; agent writes an `event: "drift-approved"` audit row capturing the original drift list and the approver alias before triggering pipelines. |
 | `resume` | Manually resume pipeline and restart watcher if needed |
 | `stop` | Pause the release and stop the watcher |
 | `test N` or `test all` | Dry-run a step or all steps (no real API calls) |
@@ -1279,11 +1283,40 @@ When the release owner says `teardown`:
 
    > **Key insight**: cluster type is a property of the **pipeline**, not of the stamp short name. `ea-01` in `PROT-SFRP` always means an SFRP stamp (because that pipeline only deploys SFRP); the same short name in `PROT-SFMC` always means an SFMC stamp. The agent never translates short names to physical Kusto `StampName`s and never filters stamp lists at runtime. Kusto's runtime role is **pipeline selection only** — it returns the set of cluster types currently in canary, which resolves to a set of pipeline keys via `clusterTypeMap`. Each selected pipeline's `templateParameters` (collected and confirmed at `setup-service` time) are passed to ADO **verbatim**. Safety of the deployment therefore depends entirely on `pipeline-catalog.json` being correct.
 
-   a. **Pipeline selection via Kusto** — query `CONFIG[kusto.canary.cluster]` / `CONFIG[kusto.canary.database]` using the canary deployment-units query from Domain Knowledge. **Parse the response per the Kusto MCP Response Parsing rule** (`$resp.Tables[0].Rows` — never `$resp.tables | Where TableName -eq 'PrimaryResult'`; see the BVT Failure Analysis → Query Execution section). On any token error, **invoke `.github/skills/zed-agent/scripts/Repair-AzAuth.ps1 -Tenant 'microsoft.com' -Resource <kusto.canary.cluster>`** (3-attempt cascade: interactive login → WAM-disable + retry → device-code). Retry the Kusto query once after a successful remediation; if still failing, mark the step `failed` — do not proceed.
+   a. **Pipeline selection via the resolver** — invoke `.github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope canary` (Step 10 and Step 15 pass `-Scope production`). Cluster type is a pipeline-level attribute, so the resolver runs **once per scope per release**, not once per cloud — a production pipeline that targets multiple clouds in `ev2CloudCoverage.<key>` is still resolved by a single query. As of Layer 2 (capability B), the resolver delegates Kusto execution + ASC join to `Get-StampInventory.ps1` and returns `{ resolved, skipped, liveClusterTypes, stamps, drift, inventorySources, queryRanAt }`. `stamps` is the per-stamp evidence row for every entry that survived ASC validation; `drift` lists every stamp the inventory could NOT validate (bad grammar, serviceTag mismatch, layout unknown to ASC, shortName not in the resolved cloud, canary cloudHint mismatch, etc.). On any token error, **first** invoke `.github/skills/zed-agent/scripts/Repair-AzAuth.ps1 -Tenant 'microsoft.com' -Resource <kusto.{scope}.cluster>` (3-attempt cascade: interactive login → WAM-disable + retry → device-code), then re-invoke the resolver once; if it still throws, mark the step `failed` — do not proceed.
 
-      Collect the set of cluster types **currently in canary** by inspecting each row's `DeploymentUnit` values (`-sfmc` → `sfmc`; `-sf` without `-sfmc` → `sf` / `sfrp`; service-specific otherwise — owner has documented the suffix-to-clusterType mapping in `canaryRouting.clusterTypeMap` at setup time). The output of this step is a **set of cluster types**, e.g., `{ "sfmc", "sfrp" }` — **not** a per-stamp classification.
+   a.1. **Drift halt (Layer 2 + Layer 3 — Steps 5, 7, 10, 15)** — the resolver throws with message prefix `DRIFT_HALT:` followed by the drift list whenever `Get-StampInventory` reports any drift row in `cluster-type` mode. The agent MUST handle this by invoking the centralised handler:
 
-   b. **Select pipelines to trigger**: for each cluster type observed in (a), look it up in `canaryRouting.clusterTypeMap` (values may be a string key or an array of keys — coerce scalars to single-element arrays before iterating). Union all resolved pipeline keys → that is the trigger set. Cluster types with no mapping → log warning + skip.
+      ```powershell
+      try {
+          $res = & .github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope $scope
+      } catch {
+          if ($_.Exception.Message -like 'DRIFT_HALT:*') {
+              & .github/skills/zed-agent/scripts/Invoke-DriftHalt.ps1 `
+                  -ReleaseId $releaseId -StepNumber $stepNumber -StepName $stepName `
+                  -Scope $scope -ResolverError $_.Exception.Message `
+                  -Branch $branch -ReleaseOwner $releaseOwnerAlias
+              return  # halt the step
+          }
+          throw
+      }
+      ```
+
+      `Invoke-DriftHalt` performs the full protocol in one call:
+      1. Parses drift rows from the resolver exception message.
+      2. Flips `state.json → steps[$n].status` to `failed-drift` and attaches `steps[$n].driftPayload = { haltedAt, scope, count, rows[] }` via `Update-ReleaseState` (single state lock).
+      3. Writes `audit.jsonl` row `{ "event": "drift-halt", "step": <n>, "scope": "<scope>", "drift": [ { stampName, reason, source } ] }`.
+      4. Resolves Teams recipients via `Resolve-NotificationRecipients -EventKey "step-<n>-failed"` and posts `.github/skills/zed-agent/templates/drift-halt-message.html` (rendered with the drift table) to every resolved conversation.
+
+      After `Invoke-DriftHalt` returns, the agent MUST NOT trigger any pipelines for this step. It MUST send the owner-only step-transition email per Behavior Rule 11 (subject: "🛑 Drift halt — Step {n} — release halted"; body summarises the drift count and links to the Teams thread). The release then waits in `failed-drift` until the owner replies in the Teams thread.
+
+      **Owner reply commands** (recognised by the agent on re-entry; see "Owner Commands" section):
+      - `mitigated` — owner has edited `service-config.json → inventory.canary.stamps` (canary) or fixed the Kusto query / `kusto.production.clusterTypeExtraction` (production). The agent re-runs the step normally; the resolver re-validates and proceeds if drift has cleared. If the resolver throws `DRIFT_HALT:` again, `Invoke-DriftHalt` re-fires with the new drift list.
+      - `approve drift` — owner explicitly approves the current drift. The agent re-runs the step with `-IgnoreDrift` on the resolver call. An additional `audit.jsonl` row `{ "event": "drift-approved", "step": <n>, "scope": "<scope>", "approver": "<alias>", "originalDrift": [...] }` MUST be written before triggering pipelines.
+
+      Drift only halts in `cluster-type` mode. In `static` mode the resolver still attaches `stamps` / `drift` to its output (best-effort), but these are informational — Steps 5/10/15 should still surface them in the Teams summary message but do not halt and do not invoke `Invoke-DriftHalt`.
+
+   b. **Trigger set = `resolved` from the resolver output.** Each entry has `{ pipelineKey, clusterType, source: "kusto-resolved", evidence }`. Cluster types with no `clusterTypeMap` entry, and `clusterTypeMap` entries referencing keys missing from `{scope}.*`, appear in `skipped` with a `reason` field — log them at warn level. The resolver also surfaces `{scope}.*` entries whose declared `clusterType` is NOT in the live set as `skipped` with `reason: "no live cluster type matched at query time"`; those pipelines are deliberately omitted from the trigger set (this is the whole point of `cluster-type` mode). If the resolver throws because the live set is empty, halt the step — do not silently trigger nothing or everything.
 
    c. **Audit log entry** — write to `audit.jsonl` before triggering. Required fields:
       ```json
@@ -1303,6 +1336,7 @@ When the release owner says `teardown`:
 2. Trigger all resolved pipelines in **parallel** with their `templateParameters` (passed verbatim from `pipeline-catalog.json`).
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. Email notification via `SendEmailWithAttachments` MCP tool: "Canary deployment started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-5-completed'` (this is part of the Step 5 → Step 6 transition email per Behavior Rule 11; do not emit a separate "canary started" broadcast).
+4a. **Per-pipeline stamp summary** (Layer 3 — narrative addition): for each triggered pipeline key, call `Get-StampsForPipeline -PipelineKey $key -Scope canary` (Step 5/7) or `-Scope production` (Step 10/15) to expand the pipeline → stamp list, and render it into the Teams summary message under a "Deploying to" column. Format: `<pipelineName>: stamp1, stamp2, …` (or `(all routed stamps)` if the call returns the full set). This makes it visually obvious which DCs each pipeline will actually hit — caught a misrouted pipeline twice in dry-runs.
 5. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):
    ```powershell
    . .github\skills\zed-agent\scripts\Get-PipelineApprovalLinks.ps1
@@ -1413,9 +1447,7 @@ When the release owner says `teardown`:
 
 **Trigger**: Step 9 approved
 **Actions**:
-1. Read `pipeline-catalog.json → productionRouting` (default `{ mode: "static" }` if absent — **note: this is a SEPARATE block from `canaryRouting`** because services often have asymmetric canary vs production topology):
-   - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `production.*` (targeting canary regions) in parallel.
-   - **`mode: "cluster-type"`** — apply the **cluster-type routing sub-procedure defined in Step 5** against the `production.*` entries and `productionRouting.clusterTypeMap`. Kusto is mandatory (for pipeline selection only); on query failure halt with `failed`. Pass each selected pipeline's `templateParameters` to ADO **verbatim** (no stamp-list filtering). Write a `cluster-type-routing` audit row with `step: 10` and the list of triggered pipelines + params.
+1. **Resolve trigger set** via `Resolve-PipelinesByClusterType.ps1 -Scope production` (the resolver internally branches on `pipeline-catalog.json → productionRouting.mode` — `static` returns every `production.*` key, `cluster-type` queries Kusto and intersects with `productionRouting.clusterTypeMap`; see the **cluster-type routing sub-procedure defined in Step 5**). `productionRouting` is a SEPARATE block from `canaryRouting` because services often have asymmetric canary vs production topology. In `cluster-type` mode Kusto failure → halt with `failed` (no silent fallback). Trigger each resolved pipeline's `templateParameters` to ADO **verbatim** (no stamp-list filtering). Write a `cluster-type-routing` audit row with `step: 10` and the resolver output (resolved + skipped + liveClusterTypes).
 2. This validates that the PROD pipelines work correctly before using them for public regions.
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step10 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. **Capture BuildNumber**: After the PROD pipeline runs start, read the `buildNumber` from **any** of the triggered pipeline runs via ADO API (`GET /{project}/_apis/build/builds/{buildId}`) — all PROD pipelines build from the same release branch so `buildNumber` is identical across runs. The format is `<BranchName>-<RunCount>` (e.g., `Release-2604-2` means branch `Release-2604`, 2nd run). Store this in `release.json → buildNumber`. This value is used later by Step 13 for the SafeFly `DeploymentDetails.DeploymentToolInputs.BuildNumber` parameter.
@@ -1690,8 +1722,9 @@ This step polls SafeFly approval via the skill and waits for the release owner's
 **⚠️ Test Mode Override**: When `testMode` is `true`, execute the **trigger-and-cancel** flow instead of the normal Phase 1/Phase 2 below. See "Test Mode Overrides → Step 15" section for details. Summary: trigger all PROD pipelines → wait 30s → cancel all → send test summary email → auto-teardown.
 
 **Actions — Phase 1: Trigger Pipelines + Start EV2 Monitoring**:
-1. **Trigger all production pipelines** in parallel via ADO API (same pattern as Step 5 canary):
-   - Pipeline IDs from `CONFIG[pipelines.production.*]` (loaded from pipeline-catalog.json)
+1. **Resolve trigger set, then trigger pipelines** in parallel via ADO API (same pattern as Step 5 canary — cluster type is a pipeline attribute, not a per-cloud attribute, so the resolver runs once):
+   - Invoke `.github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope production`. In `productionRouting.mode == "static"` the resolver returns every `production.*` key; in `mode == "cluster-type"` the resolver runs `kusto.production.queryFile` and returns only the keys whose declared cluster type is currently live. Use `$res.resolved | ForEach-Object pipelineKey` as the Step 15 trigger set. Each resolved pipeline pushes to whichever clouds are listed under `CONFIG[pipelines.ev2CloudCoverage.<key>]` — cloud fan-out happens via EV2 inside the pipeline, NOT by triggering the same pipeline multiple times. Write one `cluster-type-routing` audit row plus a `production-trigger-set` row summarizing the resolved keys and their `ev2CloudCoverage`.
+   - Pipeline IDs from `CONFIG[pipelines.production.*]` (loaded from pipeline-catalog.json) for each resolved key.
    - Parameters from `pipeline-catalog.json`: `ArtifactsBranch` = current release branch, `PubRegions` = regions from SafeFly R2D scope, `PublicExcludestamps` = CCOA-excluded stamps, `SdpType` = derived SDP type (Standard/Conservative), `ValidateOnlyRollOut` = `"false"`
 2. **Record pipeline trigger timestamps**: Save `pipelineTriggerTimestamps.step15.<pipelineKey> = <current UTC ISO 8601>` to `state.json`
 3. **Write watcher directive**: `wait-timer` with `waitUntil` = 1 hour from now (UTC ISO 8601). EV2 rollouts start immediately when the pipeline triggers them, so we wait 1 hour before first poll to let initial SDP stages progress:

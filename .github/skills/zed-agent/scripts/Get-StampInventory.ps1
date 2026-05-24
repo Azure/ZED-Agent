@@ -1,0 +1,377 @@
+<#
+.SYNOPSIS
+    Resolves the authoritative stamp inventory for a service, scoped to
+    canary or production, by joining a stamp source with AzureServiceConfig.
+
+.DESCRIPTION
+    Layer 1 of the canary-stamp-resolution work (capability B). Produces a
+    single inventory object that downstream steps (canary deploy, rollback,
+    BVT routing, production fan-out) can consume without ever hand-coding
+    a region or layout string.
+
+    Stamp sources by scope:
+      canary      → service-config.json → inventory.canary.stamps
+                    (owner-curated; canary set is tiny and stable).
+      production  → service-config.json → kusto.production query
+                    (live; production fleet changes too often to curate).
+
+    Region/cloud enrichment is ALWAYS from AzureServiceConfig.json via
+    Get-AzureServiceConfig.ps1 (live → cache → snapshot).
+
+    Stamp-name grammar (per service-config.schema.json → inventory.canary):
+        {shortName}-{layout}-{stampTag}{index}
+        ex: ea-can02-prot1, eus-pod01-prot2, eus2-pod01-rec1d
+
+    Cluster-type extraction (production scope only) reuses the same
+    extraction modes as Resolve-PipelinesByClusterType.ps1
+    (deployment-unit-substring | column | custom), driven by
+    kusto.production.clusterTypeExtraction.
+
+.PARAMETER Scope
+    'canary' or 'production'.
+
+.PARAMETER Cloud
+    Optional filter on cloud Name (matches ASC Clouds[].Name).
+    - canary scope     : ignored (canary inventory pins its own cloud).
+    - production scope : if supplied, drops stamps whose resolved cloud
+                         is not this one. If omitted, all clouds returned.
+
+.PARAMETER NoCache
+    Forces a fresh Kusto query (production) and a fresh ASC fetch (both).
+    Does NOT invalidate the on-disk owner-curated canary inventory.
+
+.PARAMETER PreferCache
+    Opt-in for cache-first ASC resolution (acceptable when callers re-run
+    inside the same release window and <=MaxAgeHours staleness is fine).
+    Default behavior is LIVE-FIRST — ADO is the source of truth and the
+    on-disk cache + committed snapshot only serve as fallbacks for outages.
+
+.PARAMETER MaxAgeHours
+    Cache TTL applied to ASC and to production inventory cache. Default 24h.
+
+.OUTPUTS
+    PSCustomObject:
+      scope          = 'canary' | 'production'
+      cloud          = <name>  | $null (production unfiltered)
+      stampTag       = <service.stampTag>
+      stamps         = @(@{
+                         stampName, shortName, layout, stampTag, index,
+                         clusterType, cloud, ev2RegionName, ev2Geography,
+                         dcRole, source
+                      })
+      regions        = @(@{ shortName, ev2RegionName, ev2Geography, layout, cloud })
+      drift          = @(@{ stampName, reason, ... })
+      sources        = @{ stamps = 'config'|'kusto'; ascSource = 'live'|'cache'|'snapshot'; ascPath; fetchedAt }
+      kusto          = @{ ranAt; durationMs; rowCount } | $null
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][ValidateSet('canary','production')][string]$Scope,
+    [string]$Cloud,
+    [string]$ServiceConfigPath,
+    [string]$AscCachePath,
+    [string]$AscSnapshotPath,
+    [string]$QueriesDir,
+    [string]$InventoryCachePath,
+    [int]   $MaxAgeHours = 24,
+    [switch]$NoCache,
+    [switch]$PreferCache
+)
+
+$ErrorActionPreference = 'Stop'
+
+# ── Paths ──────────────────────────────────────────────────────────────
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..\')).Path
+if (-not $ServiceConfigPath)  { $ServiceConfigPath  = Join-Path $repoRoot '.github\skills\zed-agent\service-config.json' }
+if (-not $QueriesDir)         { $QueriesDir         = Join-Path $repoRoot '.github\skills\zed-agent\queries' }
+if (-not $InventoryCachePath) { $InventoryCachePath = Join-Path $repoRoot ".zed-agent\cache\inventory.$Scope.json" }
+$ascScript = Join-Path $PSScriptRoot 'Get-AzureServiceConfig.ps1'
+
+if (-not (Test-Path $ServiceConfigPath)) { throw "service-config.json not found at $ServiceConfigPath. Run 'setup-service' first." }
+if (-not (Test-Path $ascScript))         { throw "Get-AzureServiceConfig.ps1 sibling script missing at $ascScript." }
+
+$config = Get-Content $ServiceConfigPath -Raw | ConvertFrom-Json
+$stampTag = $config.service.stampTag
+if (-not $stampTag) { throw "service-config.json → service.stampTag is required (e.g. 'prot', 'rec'). Run 'setup-service group 1'." }
+
+# ── Stamp regex ────────────────────────────────────────────────────────
+# {shortName}-{layout}-{stampTag}{index}.  All lowercase; index may be alnum.
+$stampRegex = "^(?<shortName>[a-z0-9]+)-(?<layout>[a-z0-9]+)-(?<serviceTag>[a-z]+)(?<index>[a-z0-9]*)$"
+
+# ── Pull ASC (live → cache → snapshot) ────────────────────────────────
+$ascArgs = @{ MaxAgeHours = $MaxAgeHours }
+if ($NoCache)         { $ascArgs.NoCache       = $true }
+if ($PreferCache)     { $ascArgs.PreferCache   = $true }
+if ($AscCachePath)    { $ascArgs.CachePath     = $AscCachePath }
+if ($AscSnapshotPath) { $ascArgs.SnapshotPath  = $AscSnapshotPath }
+$asc = & $ascScript @ascArgs
+if (-not $asc -or -not $asc.data.Clouds) { throw "ASC load returned no Clouds. Investigate Get-AzureServiceConfig.ps1 output." }
+$ascData = $asc.data
+
+# Build cloud lookup tables
+# layoutIndex: layout → @(cloudEntry, ...)   (most layouts unique to one cloud, but allow many)
+# regionIndex: "$cloudName::$shortName" → DC entry
+$layoutIndex = @{}
+$regionIndex = @{}
+$allRegions  = New-Object System.Collections.Generic.List[object]
+foreach ($cl in $ascData.Clouds) {
+    $layout = "$($cl.Layout)".ToLowerInvariant()
+    if (-not $layoutIndex.ContainsKey($layout)) { $layoutIndex[$layout] = @() }
+    $layoutIndex[$layout] += $cl
+    foreach ($dc in @($cl.DataCenters)) {
+        $sn = "$($dc.ShortName)".ToLowerInvariant()
+        $regionIndex["$($cl.Name)::$sn"] = $dc
+        $allRegions.Add([PSCustomObject]@{
+            shortName     = $sn
+            ev2RegionName = $dc.Ev2RegionName
+            ev2Geography  = $dc.Ev2Geography
+            layout        = $layout
+            cloud         = $cl.Name
+            dcRole        = @($dc.DatacenterType) -join ','
+        })
+    }
+}
+
+function Resolve-StampParts {
+    param([string]$Name)
+    $n = "$Name".ToLowerInvariant()
+    if ($n -notmatch $stampRegex) { return $null }
+    [PSCustomObject]@{
+        stampName  = $n
+        shortName  = $Matches.shortName
+        layout     = $Matches.layout
+        serviceTag = $Matches.serviceTag
+        index      = $Matches.index
+    }
+}
+
+function Resolve-CloudForStamp {
+    param($Parts)
+    # 1) Layout uniquely identifies a candidate cloud in nearly all cases.
+    $candidates = @()
+    if ($layoutIndex.ContainsKey($Parts.layout)) { $candidates = @($layoutIndex[$Parts.layout]) }
+    # 2) Among layout-matching clouds, the one that ALSO has this shortName wins.
+    foreach ($cl in $candidates) {
+        if ($regionIndex.ContainsKey("$($cl.Name)::$($Parts.shortName)")) { return $cl }
+    }
+    # 3) Layout matches but region doesn't → return first candidate so caller can drift on region.
+    if ($candidates.Count -gt 0) { return $candidates[0] }
+    return $null
+}
+
+# ── Collect raw stamps (with optional clusterType) ────────────────────
+$rawStamps = New-Object System.Collections.Generic.List[object]
+$kustoMeta = $null
+
+if ($Scope -eq 'canary') {
+    $canaryInv = $config.inventory.canary
+    if (-not $canaryInv -or -not $canaryInv.stamps) {
+        throw "service-config.json → inventory.canary.stamps is empty. Run 'setup-service group 4b' to enumerate canary stamps."
+    }
+    # Pin the expected cloud/layout from the owner-curated block.
+    $expectedCloud  = $canaryInv.cloud
+    $expectedLayout = "$($canaryInv.layout)".ToLowerInvariant()
+    foreach ($s in $canaryInv.stamps) {
+        $rawStamps.Add([PSCustomObject]@{
+            stampName   = "$($s.stampName)".ToLowerInvariant()
+            clusterType = "$($s.clusterType)".ToLowerInvariant()
+            cloudHint   = $expectedCloud
+            layoutHint  = $expectedLayout
+            source      = 'config'
+        })
+    }
+}
+else {
+    # production: run kusto.production query
+    $k = $config.kusto.production
+    if (-not $k -or -not $k.cluster -or -not $k.database -or -not $k.queryFile) {
+        throw "service-config.json → kusto.production (cluster/database/queryFile) is required for Scope=production."
+    }
+    $queryPath = Join-Path $QueriesDir $k.queryFile
+    if (-not (Test-Path $queryPath)) { throw "Kusto query file not found: $queryPath" }
+    $queryText = Get-Content $queryPath -Raw
+
+    $serviceFilter = if ($k.serviceFilter) { $k.serviceFilter } else { '1 == 1' }
+    $stampPrefixFilter = '1 == 1'
+    if ($k.stampPrefixFilter -and @($k.stampPrefixFilter).Count -gt 0) {
+        $stampPrefixFilter = ($k.stampPrefixFilter | ForEach-Object { "StampName startswith '$_'" }) -join ' or '
+    }
+    $queryText = $queryText.Replace('{{SERVICE_FILTER}}', $serviceFilter)
+    $queryText = $queryText.Replace('{{STAMP_PREFIX_FILTER}}', $stampPrefixFilter)
+    if ($k.queryVariables) {
+        foreach ($qv in $k.queryVariables.PSObject.Properties) {
+            $queryText = $queryText.Replace("{{$($qv.Name)}}", "$($qv.Value)")
+        }
+    }
+
+    $token = az account get-access-token --resource $k.cluster --query accessToken -o tsv 2>$null
+    if (-not $token) { throw "Failed to acquire Kusto token for $($k.cluster). Run 'az login' (Repair-AzAuth.ps1)." }
+    $startedAt = Get-Date
+    $resp = Invoke-RestMethod -Uri (($k.cluster.TrimEnd('/')) + "/v1/rest/query") -Method POST `
+        -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } `
+        -Body (@{ db = $k.database; csl = $queryText } | ConvertTo-Json -Depth 4) -ErrorAction Stop
+    $primary = $resp.Tables[0]
+    $colNames = @($primary.Columns | ForEach-Object { $_.ColumnName })
+    $rows = foreach ($r in $primary.Rows) {
+        $obj = [ordered]@{}
+        for ($i = 0; $i -lt $colNames.Count; $i++) { $obj[$colNames[$i]] = $r[$i] }
+        [PSCustomObject]$obj
+    }
+    $kustoMeta = [PSCustomObject]@{
+        ranAt       = $startedAt.ToUniversalTime().ToString('o')
+        durationMs  = [int]((Get-Date) - $startedAt).TotalMilliseconds
+        rowCount    = @($rows).Count
+        cluster     = $k.cluster
+        database    = $k.database
+        queryFile   = $k.queryFile
+    }
+
+    if (-not $rows -or @($rows).Count -eq 0) {
+        throw "kusto.production query returned 0 rows. Refusing to publish an empty production inventory. Validate the query at $queryPath."
+    }
+
+    # Cluster-type extraction (per-row, not per-set).
+    $extraction = if ($k.clusterTypeExtraction) { $k.clusterTypeExtraction } else { [PSCustomObject]@{ mode = 'deployment-unit-substring' } }
+
+    foreach ($row in $rows) {
+        $stampName = "$($row.StampName)".ToLowerInvariant()
+        if (-not $stampName) { continue }
+        $ct = $null
+        switch ($extraction.mode) {
+            'deployment-unit-substring' {
+                # Row's DeploymentUnit may be a single value or set/array.
+                $units = @()
+                if ($row.PSObject.Properties['DeploymentUnit'])     { $units += @($row.DeploymentUnit) }
+                if ($row.PSObject.Properties['set_DeploymentUnit']) { $units += @($row.set_DeploymentUnit) }
+                foreach ($u in $units) {
+                    $s = "$u".ToLowerInvariant()
+                    if     ($s -match '-sfmc') { $ct = 'sfmc'; break }
+                    elseif ($s -match '-sfrp') { $ct = 'sfrp'; break }
+                    elseif ($s -match '-sf')   { $ct = 'sfrp'; break }
+                    elseif ($s -match '-eap')  { $ct = 'eap';  break }
+                    elseif ($s -match '-aks')  { $ct = 'aks';  break }
+                }
+            }
+            'column' {
+                if (-not $extraction.column) { throw "clusterTypeExtraction.mode='column' requires .column." }
+                $v = $row.($extraction.column)
+                if ($null -ne $v -and "$v".Length -gt 0) { $ct = "$v".ToLowerInvariant() }
+            }
+            'custom' {
+                throw "clusterTypeExtraction.mode='custom' not implemented. Owner notes: $($extraction.notes)"
+            }
+            default { throw "Unknown clusterTypeExtraction.mode '$($extraction.mode)'." }
+        }
+        $rawStamps.Add([PSCustomObject]@{
+            stampName   = $stampName
+            clusterType = $ct
+            cloudHint   = $null
+            layoutHint  = $null
+            source      = 'kusto'
+        })
+    }
+}
+
+# ── Enrich + drift detection ──────────────────────────────────────────
+$stamps = New-Object System.Collections.Generic.List[object]
+$drift  = New-Object System.Collections.Generic.List[object]
+$seen   = New-Object System.Collections.Generic.HashSet[string]
+
+foreach ($rs in $rawStamps) {
+    if (-not $seen.Add($rs.stampName)) { continue }
+    $parts = Resolve-StampParts -Name $rs.stampName
+    if (-not $parts) {
+        $drift.Add([PSCustomObject]@{ stampName = $rs.stampName; reason = "stamp name does not match grammar '{shortName}-{layout}-{stampTag}{index}'" })
+        continue
+    }
+    if ($parts.serviceTag -ne $stampTag) {
+        $drift.Add([PSCustomObject]@{ stampName = $rs.stampName; reason = "serviceTag '$($parts.serviceTag)' != service.stampTag '$stampTag'" })
+        continue
+    }
+    $cl = Resolve-CloudForStamp -Parts $parts
+    if (-not $cl) {
+        $drift.Add([PSCustomObject]@{ stampName = $rs.stampName; reason = "layout '$($parts.layout)' not found in any ASC cloud" })
+        continue
+    }
+    $dc = $regionIndex["$($cl.Name)::$($parts.shortName)"]
+    if (-not $dc) {
+        $drift.Add([PSCustomObject]@{ stampName = $rs.stampName; reason = "shortName '$($parts.shortName)' not in cloud '$($cl.Name)' (layout '$($parts.layout)')"; cloud = $cl.Name })
+        continue
+    }
+    # Canary scope: also validate cloud hint matches.
+    if ($Scope -eq 'canary' -and $rs.cloudHint -and $cl.Name -ne $rs.cloudHint) {
+        $drift.Add([PSCustomObject]@{ stampName = $rs.stampName; reason = "ASC-resolved cloud '$($cl.Name)' != owner-curated cloud '$($rs.cloudHint)'" })
+        continue
+    }
+    # Production scope: apply optional -Cloud filter.
+    if ($Scope -eq 'production' -and $Cloud -and $cl.Name -ne $Cloud) { continue }
+
+    $stamps.Add([PSCustomObject]@{
+        stampName     = $parts.stampName
+        shortName     = $parts.shortName
+        layout        = $parts.layout
+        stampTag      = $parts.serviceTag
+        index         = $parts.index
+        clusterType   = $rs.clusterType
+        cloud         = $cl.Name
+        ev2RegionName = $dc.Ev2RegionName
+        ev2Geography  = $dc.Ev2Geography
+        dcRole        = @($dc.DatacenterType) -join ','
+        source        = $rs.source
+    })
+}
+
+# ── Slice regions actually in use ─────────────────────────────────────
+$inUseKeys = @($stamps | ForEach-Object { "$($_.cloud)::$($_.shortName)" } | Sort-Object -Unique)
+$regions = @(
+    foreach ($k in $inUseKeys) {
+        $dc = $regionIndex[$k]
+        $parts = $k -split '::', 2
+        [PSCustomObject]@{
+            cloud         = $parts[0]
+            shortName     = $parts[1]
+            ev2RegionName = $dc.Ev2RegionName
+            ev2Geography  = $dc.Ev2Geography
+            layout        = ($ascData.Clouds | Where-Object { $_.Name -eq $parts[0] } | Select-Object -First 1).Layout
+            dcRole        = @($dc.DatacenterType) -join ','
+        }
+    }
+)
+
+# ── Effective cloud for the result envelope ───────────────────────────
+$effectiveCloud = $null
+if     ($Scope -eq 'canary')                { $effectiveCloud = $config.inventory.canary.cloud }
+elseif ($Scope -eq 'production' -and $Cloud) { $effectiveCloud = $Cloud }
+
+$stampSource = if ($Scope -eq 'canary') { 'config' } else { 'kusto' }
+$sourcesObj = [PSCustomObject]@{
+    stamps    = $stampSource
+    ascSource = $asc.source
+    ascPath   = $asc.path
+    fetchedAt = (Get-Date).ToUniversalTime().ToString('o')
+}
+# Generic.List -> Object[] must go via the pipeline; a bare @($list) cast can
+# trip "Argument types do not match" inside Add-Member / PSCustomObject in pwsh.
+$stampsOut  = @($stamps  | ForEach-Object { $_ })
+$regionsOut = @($regions | ForEach-Object { $_ })
+$driftOut   = @($drift   | ForEach-Object { $_ })
+$result = New-Object PSObject
+$result | Add-Member -NotePropertyName scope    -NotePropertyValue $Scope
+$result | Add-Member -NotePropertyName cloud    -NotePropertyValue $effectiveCloud
+$result | Add-Member -NotePropertyName stampTag -NotePropertyValue $stampTag
+$result | Add-Member -NotePropertyName stamps   -NotePropertyValue $stampsOut
+$result | Add-Member -NotePropertyName regions  -NotePropertyValue $regionsOut
+$result | Add-Member -NotePropertyName drift    -NotePropertyValue $driftOut
+$result | Add-Member -NotePropertyName sources  -NotePropertyValue $sourcesObj
+$result | Add-Member -NotePropertyName kusto    -NotePropertyValue $kustoMeta
+
+# ── Persist cache ─────────────────────────────────────────────────────
+try {
+    $cacheDir = Split-Path $InventoryCachePath -Parent
+    if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+    $result | ConvertTo-Json -Depth 8 | Set-Content -Path $InventoryCachePath -Encoding utf8
+} catch {
+    Write-Warning "Failed to write inventory cache to $InventoryCachePath : $($_.Exception.Message)"
+}
+
+return $result

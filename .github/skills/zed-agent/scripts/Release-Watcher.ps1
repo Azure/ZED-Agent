@@ -42,6 +42,49 @@ while ($true) {
     if (-not (Test-Path $stateFile)) { Start-Sleep -Seconds 30; continue }
     $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($state.status -in @('completed','stopped')) { break }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Drift-halt reminder (Layer 3) — any step in `failed-drift` is a soft halt
+    # waiting on the release owner to reply `mitigated` or `approve drift` in
+    # Teams. Re-post the Teams notification once after 24h with no progress,
+    # so the thread bubbles back up. Status stays `failed-drift` — the watcher
+    # does NOT auto-resume; the owner must drive re-entry via the agent.
+    # ─────────────────────────────────────────────────────────────────────────
+    $driftStep = $state.steps | Where-Object { $_.status -eq 'failed-drift' } | Select-Object -First 1
+    if ($driftStep -and $driftStep.driftPayload -and $driftStep.driftPayload.haltedAt -and -not $driftStep.driftPayload.reminderSentAt) {
+        $haltedAt = [datetime]$driftStep.driftPayload.haltedAt
+        if ((Get-Date).ToUniversalTime() -gt $haltedAt.ToUniversalTime().AddHours(24)) {
+            try {
+                $invokeDriftHalt = Join-Path (Get-Location) ".github/skills/zed-agent/scripts/Invoke-DriftHalt.ps1"
+                $rowsForReminder = @($driftStep.driftPayload.rows | ForEach-Object { @{ stampName = $_.stampName; reason = $_.reason; source = $_.source } })
+                & $invokeDriftHalt -ReleaseId $ReleaseId -StepNumber $driftStep.number `
+                    -StepName $driftStep.name -Scope $driftStep.driftPayload.scope `
+                    -DriftRows $rowsForReminder -ReleaseOwner $state.releaseOwner `
+                    -Branch $state.branch -SkipStateUpdate | Out-Null
+
+                Invoke-WithStateLock -LockFile $stateLock -Action ({
+                    $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $ds = $latest.steps | Where-Object { $_.number -eq $driftStep.number }
+                    if ($ds) {
+                        if (-not $ds.driftPayload.PSObject.Properties['reminderSentAt']) {
+                            Add-Member -InputObject $ds.driftPayload -MemberType NoteProperty -Name reminderSentAt -Value ((Get-Date).ToUniversalTime().ToString('o')) -Force
+                        } else { $ds.driftPayload.reminderSentAt = (Get-Date).ToUniversalTime().ToString('o') }
+                    }
+                    $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+                }.GetNewClosure())
+
+                $auditDrift = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+                @{ ts = (Get-Date -Format 'o'); event = 'drift-halt-reminder'; step = $driftStep.number; haltedAt = $driftStep.driftPayload.haltedAt } |
+                    ConvertTo-Json -Compress | Add-Content $auditDrift -Encoding UTF8
+            } catch {
+                # Reminder is best-effort; don't take down the watcher
+                $auditDrift = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+                @{ ts = (Get-Date -Format 'o'); event = 'drift-halt-reminder-failed'; step = $driftStep.number; error = $_.Exception.Message } |
+                    ConvertTo-Json -Compress | Add-Content $auditDrift -Encoding UTF8
+            }
+        }
+    }
+
     $dir = $state.watcherDirective
 
     # ─────────────────────────────────────────────────────────────────────────

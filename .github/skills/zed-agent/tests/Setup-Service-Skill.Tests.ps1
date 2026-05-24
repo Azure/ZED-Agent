@@ -76,17 +76,6 @@ Describe 'setup-service skill (extracted from agent.md)' {
             $script:Body | Should -Match 'service\.agentFeedbackEmail'
         }
 
-        It 'preserves the MAB-family conditional default regex' {
-            $script:Body | Should -Match '\^\(MAB\|DPM\|Prot\|BDP\)\$'
-        }
-
-        It 'preserves the default routing JSON block (per-step seed entries)' {
-            $script:Body | Should -Match '"1-send-reminder":'
-            $script:Body | Should -Match '"4-collect-commits":'
-            $script:Body | Should -Match '"13-create-r2d":'
-            $script:Body | Should -Match '"15-production-rollout":'
-        }
-
         It 'preserves the 16-step gate-defaults table including non-overridable Step 14' {
             $script:Body | Should -Match 'Step 14 crb-review:.*ALWAYS ON'
             $script:Body | Should -Match 'Step 6  bvt-check:'

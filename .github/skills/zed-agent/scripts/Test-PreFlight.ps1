@@ -262,11 +262,64 @@ function Test-PreFlight {
         $checks += @{ name = "EV2 API token"; status = "warn"; detail = "EV2 token check failed: $($_.Exception.Message)" }
     }
 
+    # ── 4d. AzureServiceConfig (live cloud/region directory) ──
+    # ADO source-of-truth for cloud/region/stamp topology, consumed by
+    # Get-StampInventory.ps1. Live fetch is the goal; cache + committed
+    # snapshot are degraded fallbacks that surface a warning here.
+    $ascSnapshot = Join-Path $skillDir 'fixtures\AzureServiceConfig.snapshot.json'
+    if (-not (Test-Path $ascSnapshot)) {
+        $checks += @{ name = "ASC snapshot"; status = "fail"; detail = "Missing offline fallback at $ascSnapshot. Restore from Mgmt-RecoverySvcs-DeploymentExtn." }
+    } else {
+        $checks += @{ name = "ASC snapshot"; status = "pass"; detail = "Offline fallback present ($([math]::Round((Get-Item $ascSnapshot).Length/1KB,1)) KB)" }
+    }
+    try {
+        $ascScript = Join-Path $PSScriptRoot 'Get-AzureServiceConfig.ps1'
+        if (-not (Test-Path $ascScript)) {
+            $checks += @{ name = "ASC live reachability"; status = "fail"; detail = "Get-AzureServiceConfig.ps1 missing at $ascScript" }
+        } else {
+            $asc = & $ascScript -NoCache -ErrorAction Stop 3>$null 4>$null
+            if ($asc -and $asc.source -eq 'live' -and @($asc.data.Clouds).Count -gt 0) {
+                $checks += @{ name = "ASC live reachability"; status = "pass"; detail = "Fetched $(@($asc.data.Clouds).Count) clouds live from Mgmt-RecoverySvcs-DeploymentExtn" }
+            } else {
+                $checks += @{ name = "ASC live reachability"; status = "fail"; detail = "Live fetch returned no Clouds. Investigate ADO permissions on Mgmt-RecoverySvcs-DeploymentExtn." }
+            }
+        }
+    } catch {
+        $msg = $_.Exception.Message
+        $checks += @{ name = "ASC live reachability"; status = "warn"; detail = "Live ASC fetch failed: $($msg.Substring(0, [Math]::Min(160, $msg.Length))). Get-StampInventory will fall back to cache/snapshot." }
+    }
+
+    # ── 4e. Stamp inventory cache freshness (Layer 2) ──
+    # Production inventory is sourced from Kusto by Get-StampInventory.ps1
+    # and persisted at .zed-agent/cache/inventory.production.json on each
+    # successful pull. Canary inventory comes from service-config and is not
+    # cached. Missing production cache is acceptable on first run; stale
+    # cache is a warn (release steps pass -NoCache anyway, but setup-service
+    # discovery loops read it).
+    try {
+        $repoRoot     = (git rev-parse --show-toplevel 2>$null)
+        $invCacheProd = if ($repoRoot) { Join-Path $repoRoot '.zed-agent/cache/inventory.production.json' } else { $null }
+        if (-not $invCacheProd -or -not (Test-Path $invCacheProd)) {
+            $checks += @{ name = "Inventory cache (production)"; status = "info"; detail = "Not yet populated. First cluster-type production resolver run will create $invCacheProd." }
+        } else {
+            $ageH = ((Get-Date).ToUniversalTime() - (Get-Item $invCacheProd).LastWriteTimeUtc).TotalHours
+            if ($ageH -gt 24) {
+                $checks += @{ name = "Inventory cache (production)"; status = "warn"; detail = "Cache is $([math]::Round($ageH,1))h old (>24h). Release steps will re-fetch live; setup-service discovery may read stale data." }
+            } else {
+                $checks += @{ name = "Inventory cache (production)"; status = "pass"; detail = "Fresh ($([math]::Round($ageH,1))h old) at $invCacheProd" }
+            }
+        }
+    } catch {
+        $checks += @{ name = "Inventory cache (production)"; status = "warn"; detail = "Could not check cache: $($_.Exception.Message)" }
+    }
+
     # ── 5. Skill scripts ──
     $requiredScripts = @(
         "Update-ReleaseState.ps1", "Expand-Template.ps1", "Send-TeamsMessage.ps1",
         "New-CommitExcel.ps1", "Upload-ToSharePoint.ps1",
         "Register-WatcherTask.ps1", "Release-Watcher.ps1", "Get-RegionMapping.ps1",
+        "Get-AzureServiceConfig.ps1", "Get-StampInventory.ps1", "Get-StampsForPipeline.ps1",
+        "Resolve-PipelinesByClusterType.ps1", "Invoke-DriftHalt.ps1",
         "SafeFly\New-SafeFlyRequest.ps1", "SafeFly\Get-SafeFlyApproval.ps1",
         "SafeFly\Get-SafeFlyLeases.ps1", "SafeFly\Test-SafeFlyConnection.ps1",
         "Add-Learning.ps1", "Apply-Learning.ps1", "Get-Learnings.ps1",

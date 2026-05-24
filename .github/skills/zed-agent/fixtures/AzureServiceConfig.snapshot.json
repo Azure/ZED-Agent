@@ -1,0 +1,2628 @@
+{
+  "$schema": "https://aka.ms/phobosweb/schema/2022/asc",
+  "Version": "2022",
+  "DefaultMacros": {
+    "__ASC_ATM_Prefix__": "mab",
+    "__ASC_Location__": "$location()",
+    "__ASC_DeploymentShortCode__": "pod01"
+  },
+  "Clouds": [
+    {
+      "Name": "BVTD3",
+      "Environment": "Test",
+      "Layout": "bvtd3",
+      "Macros": {
+        "__ASC_DsmsSuffix__": "core.windows.net",
+        "__ASC_MabDnsSuffix__": "backup.windowsazure.com",
+        "__ASC_DsmsRootFolder__": "recsvc-mab-test",
+        "__ASC_DeploymentShortCode__": "bvtd3",
+        "__ASC_TenantId__": "Microsoft",
+        "__ASC_AtmSuffix__": ".trafficmanager.net",
+        "__ASC_DnsDomain__": ".windowsazure.com"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "ea",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ea",
+            "__ASC_DC_FriendlyName__": "East Asia"
+          },
+          "FriendlyName": "East Asia",
+          "Ev2Geography": "Asia Pacific",
+          "Ev2RegionName": "eastasia"
+        }
+      ]
+    },
+    {
+      "Name": "Canary",
+      "Environment": "canary",
+      "Layout": "can02",
+      "Macros": {
+        "__ASC_AtmSuffix__": ".trafficmanager.net",
+        "__ASC_DsmsRootFolder__": "recsvc-mab",
+        "__ASC_DnsDomain__": ".windowsazure.com",
+        "__ASC_DsmsSuffix__": "core.windows.net",
+        "__ASC_MabDnsSuffix__": "backup.windowsazure.com",
+        "__ASC_DsmsRoot__": "recsvc-mab",
+        "__ASC_TenantId__": "AME",
+        "__ASC_DeploymentShortCode__": "can02"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "ea",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ea",
+            "__ASC_DC_FriendlyName__": "East Asia"
+          },
+          "FriendlyName": "East Asia",
+          "Ev2Geography": "Asia Pacific",
+          "Ev2RegionName": "eastasia"
+        }
+      ]
+    },
+    {
+      "Name": "Public",
+      "Environment": "Prod",
+      "Layout": "pod01",
+      "Macros": {
+        "__ASC_AtmSuffix__": ".trafficmanager.net",
+        "__ASC_DsmsSuffix__": "core.windows.net",
+        "__ASC_MabDnsSuffix__": "backup.windowsazure.com",
+        "__ASC_DsmsRoot__": "recsvc-mab",
+        "__ASC_DsmsRootFolder__": "recsvc-mab",
+        "__ASC_DnsDomain__": ".windowsazure.com",
+        "__ASC_DeploymentShortCode__": "pod01",
+        "__ASC_TenantId__": "AME"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "wus",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wus",
+            "__ASC_DC_FriendlyName__": "West US"
+          },
+          "FriendlyName": "West US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus"
+        },
+        {
+          "ShortName": "eus",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "eus",
+            "__ASC_DC_FriendlyName__": "East US"
+          },
+          "FriendlyName": "East US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "eastus"
+        },
+        {
+          "ShortName": "cus",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "cus",
+            "__ASC_DC_FriendlyName__": "Central US"
+          },
+          "FriendlyName": "Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "centralus"
+        },
+        {
+          "ShortName": "eus2",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "eus2",
+            "__ASC_DC_FriendlyName__": "East US 2"
+          },
+          "FriendlyName": "East US 2",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "eastus2"
+        },
+        {
+          "ShortName": "eus3",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "eus3",
+            "__ASC_DC_FriendlyName__": "East US 3"
+          },
+          "FriendlyName": "East US 3",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "eastus3"
+        },
+        {
+          "ShortName": "ncus",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ncus",
+            "__ASC_DC_FriendlyName__": "North Central US"
+          },
+          "FriendlyName": "North Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "northcentralus"
+        },
+        {
+          "ShortName": "scus",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "scus",
+            "__ASC_DC_FriendlyName__": "South Central US"
+          },
+          "FriendlyName": "South Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southcentralus"
+        },
+        {
+          "ShortName": "ne",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ne",
+            "__ASC_DC_FriendlyName__": "North Europe"
+          },
+          "FriendlyName": "North Europe",
+          "Ev2Geography": "Europe",
+          "Ev2RegionName": "northeurope"
+        },
+        {
+          "ShortName": "we",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "we",
+            "__ASC_DC_FriendlyName__": "West Europe"
+          },
+          "FriendlyName": "West Europe",
+          "Ev2Geography": "Europe",
+          "Ev2RegionName": "westeurope"
+        },
+        {
+          "ShortName": "ea",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ea",
+            "__ASC_DC_FriendlyName__": "East Asia"
+          },
+          "FriendlyName": "East Asia",
+          "Ev2Geography": "Asia Pacific",
+          "Ev2RegionName": "eastasia"
+        },
+        {
+          "ShortName": "sea",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sea",
+            "__ASC_DC_FriendlyName__": "Southeast Asia"
+          },
+          "FriendlyName": "Southeast Asia",
+          "Ev2Geography": "Asia Pacific",
+          "Ev2RegionName": "southeastasia"
+        },
+        {
+          "ShortName": "sg3",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sg3",
+            "__ASC_DC_FriendlyName__": "Southeast Asia 3"
+          },
+          "FriendlyName": "Southeast Asia 3",
+          "Ev2Geography": "Malaysia",
+          "Ev2RegionName": "southeastasia3"
+        },
+        {
+          "ShortName": "sae",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sae",
+            "__ASC_DC_FriendlyName__": "Saudi Arabia East"
+          },
+          "FriendlyName": "Saudi Arabia East",
+          "Ev2Geography": "Saudi Arabia",
+          "Ev2RegionName": "saudiarabiaeast"
+        },
+        {
+          "ShortName": "jpe",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jpe",
+            "__ASC_DC_FriendlyName__": "Japan East"
+          },
+          "FriendlyName": "Japan East",
+          "Ev2Geography": "Japan",
+          "Ev2RegionName": "japaneast"
+        },
+        {
+          "ShortName": "jpw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jpw",
+            "__ASC_DC_FriendlyName__": "Japan West"
+          },
+          "FriendlyName": "Japan West",
+          "Ev2Geography": "Japan",
+          "Ev2RegionName": "japanwest"
+        },
+        {
+          "ShortName": "brs",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "brs",
+            "__ASC_DC_FriendlyName__": "Brazil South"
+          },
+          "FriendlyName": "Brazil South",
+          "Ev2Geography": "Brazil",
+          "Ev2RegionName": "brazilsouth"
+        },
+        {
+          "ShortName": "ae",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ae",
+            "__ASC_DC_FriendlyName__": "Australia East"
+          },
+          "FriendlyName": "Australia East",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiaeast"
+        },
+        {
+          "ShortName": "ase",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ase",
+            "__ASC_DC_FriendlyName__": "Australia Southeast"
+          },
+          "FriendlyName": "Australia Southeast",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiasoutheast"
+        },
+        {
+          "ShortName": "inc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "inc",
+            "__ASC_DC_FriendlyName__": "Central India"
+          },
+          "FriendlyName": "Central India",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "centralindia"
+        },
+        {
+          "ShortName": "ins",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ins",
+            "__ASC_DC_FriendlyName__": "South India"
+          },
+          "FriendlyName": "South India",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "southindia"
+        },
+        {
+          "ShortName": "isc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "isc",
+            "__ASC_DC_FriendlyName__": "India South Central"
+          },
+          "FriendlyName": "India South Central",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "indiasouthcentral"
+        },
+        {
+          "ShortName": "cnc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "cnc",
+            "__ASC_DC_FriendlyName__": "Canada Central"
+          },
+          "FriendlyName": "Canada Central",
+          "Ev2Geography": "Canada",
+          "Ev2RegionName": "canadacentral"
+        },
+        {
+          "ShortName": "cne",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "cne",
+            "__ASC_DC_FriendlyName__": "Canada East"
+          },
+          "FriendlyName": "Canada East",
+          "Ev2Geography": "Canada",
+          "Ev2RegionName": "canadaeast"
+        },
+        {
+          "ShortName": "wcus",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wcus",
+            "__ASC_DC_FriendlyName__": "West Central US"
+          },
+          "FriendlyName": "West Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westcentralus"
+        },
+        {
+          "ShortName": "wfre",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wfre",
+            "__ASC_DC_FriendlyName__": "West Central US FRE"
+          },
+          "FriendlyName": "West Central US FRE",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westcentralusfre"
+        },
+        {
+          "ShortName": "wus2",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wus2",
+            "__ASC_DC_FriendlyName__": "West US 2"
+          },
+          "FriendlyName": "West US 2",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus2"
+        },
+        {
+          "ShortName": "ne5s",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ne5s",
+            "__ASC_DC_FriendlyName__": "Northeast US 5"
+          },
+          "FriendlyName": "Northeast US 5",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "northeastus5"
+        },
+        {
+          "ShortName": "ukw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ukw",
+            "__ASC_DC_FriendlyName__": "UK West"
+          },
+          "FriendlyName": "UK West",
+          "Ev2Geography": "United Kingdom",
+          "Ev2RegionName": "ukwest"
+        },
+        {
+          "ShortName": "uks",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uks",
+            "__ASC_DC_FriendlyName__": "UK South"
+          },
+          "FriendlyName": "UK South",
+          "Ev2Geography": "United Kingdom",
+          "Ev2RegionName": "uksouth"
+        },
+        {
+          "ShortName": "ccy",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ccy",
+            "__ASC_DC_FriendlyName__": "Central US EUAP"
+          },
+          "FriendlyName": "Central US EUAP",
+          "Ev2Geography": "Canary (US)",
+          "Ev2RegionName": "centraluseuap"
+        },
+        {
+          "ShortName": "ecy",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ecy",
+            "__ASC_DC_FriendlyName__": "East US 2 EUAP"
+          },
+          "FriendlyName": "East US 2 EUAP",
+          "Ev2Geography": "Canary (US)",
+          "Ev2RegionName": "eastus2euap"
+        },
+        {
+          "ShortName": "krs",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "krs",
+            "__ASC_DC_FriendlyName__": "Korea South"
+          },
+          "FriendlyName": "Korea South",
+          "Ev2Geography": "Korea",
+          "Ev2RegionName": "koreasouth"
+        },
+        {
+          "ShortName": "krc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "krc",
+            "__ASC_DC_FriendlyName__": "Korea Central"
+          },
+          "FriendlyName": "Korea Central",
+          "Ev2Geography": "Korea",
+          "Ev2RegionName": "koreacentral"
+        },
+        {
+          "ShortName": "frc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "frc",
+            "__ASC_DC_FriendlyName__": "France Central"
+          },
+          "FriendlyName": "France Central",
+          "Ev2Geography": "France",
+          "Ev2RegionName": "francecentral"
+        },
+        {
+          "ShortName": "frs",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "frs",
+            "__ASC_DC_FriendlyName__": "France South"
+          },
+          "FriendlyName": "France South",
+          "Ev2Geography": "France",
+          "Ev2RegionName": "francesouth"
+        },
+        {
+          "ShortName": "acl",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "acl",
+            "__ASC_DC_FriendlyName__": "Australia Central"
+          },
+          "FriendlyName": "Australia Central",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiacentral"
+        },
+        {
+          "ShortName": "acl2",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "acl2",
+            "__ASC_DC_FriendlyName__": "Australia Central 2"
+          },
+          "FriendlyName": "Australia Central 2",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiacentral2"
+        },
+        {
+          "ShortName": "uac",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uac",
+            "__ASC_DC_FriendlyName__": "UAE Central"
+          },
+          "FriendlyName": "UAE Central",
+          "Ev2Geography": "UAE",
+          "Ev2RegionName": "uaecentral"
+        },
+        {
+          "ShortName": "uan",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uan",
+            "__ASC_DC_FriendlyName__": "UAE North"
+          },
+          "FriendlyName": "UAE North",
+          "Ev2Geography": "UAE",
+          "Ev2RegionName": "uaenorth"
+        },
+        {
+          "ShortName": "san",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "san",
+            "__ASC_DC_FriendlyName__": "South Africa North"
+          },
+          "FriendlyName": "South Africa North",
+          "Ev2Geography": "South Africa",
+          "Ev2RegionName": "southafricanorth"
+        },
+        {
+          "ShortName": "saw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "saw",
+            "__ASC_DC_FriendlyName__": "South Africa West"
+          },
+          "FriendlyName": "South Africa West",
+          "Ev2Geography": "South Africa",
+          "Ev2RegionName": "southafricawest"
+        },
+        {
+          "ShortName": "inw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "inw",
+            "__ASC_DC_FriendlyName__": "West India"
+          },
+          "FriendlyName": "West India",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "westindia"
+        },
+        {
+          "ShortName": "nwe",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "nwe",
+            "__ASC_DC_FriendlyName__": "Norway East"
+          },
+          "FriendlyName": "Norway East",
+          "Ev2Geography": "Norway",
+          "Ev2RegionName": "norwayeast"
+        },
+        {
+          "ShortName": "nww",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "nww",
+            "__ASC_DC_FriendlyName__": "Norway West"
+          },
+          "FriendlyName": "Norway West",
+          "Ev2Geography": "Norway",
+          "Ev2RegionName": "norwaywest"
+        },
+        {
+          "ShortName": "szn",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "szn",
+            "__ASC_DC_FriendlyName__": "Switzerland North"
+          },
+          "FriendlyName": "Switzerland North",
+          "Ev2Geography": "Switzerland",
+          "Ev2RegionName": "switzerlandnorth"
+        },
+        {
+          "ShortName": "szw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "szw",
+            "__ASC_DC_FriendlyName__": "Switzerland West"
+          },
+          "FriendlyName": "Switzerland West",
+          "Ev2Geography": "Switzerland",
+          "Ev2RegionName": "switzerlandwest"
+        },
+        {
+          "ShortName": "gn",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "gn",
+            "__ASC_DC_FriendlyName__": "Germany North"
+          },
+          "FriendlyName": "Germany North",
+          "Ev2Geography": "Germany",
+          "Ev2RegionName": "germanynorth"
+        },
+        {
+          "ShortName": "gwc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "gwc",
+            "__ASC_DC_FriendlyName__": "Germany West Central"
+          },
+          "FriendlyName": "Germany West Central",
+          "Ev2Geography": "Germany",
+          "Ev2RegionName": "germanywestcentral"
+        },
+        {
+          "ShortName": "sdc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sdc",
+            "__ASC_DC_FriendlyName__": "Sweden Central"
+          },
+          "FriendlyName": "Sweden Central",
+          "Ev2Geography": "Sweden",
+          "Ev2RegionName": "swedencentral"
+        },
+        {
+          "ShortName": "sds",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sds",
+            "__ASC_DC_FriendlyName__": "Sweden South"
+          },
+          "FriendlyName": "Sweden South",
+          "Ev2Geography": "Sweden",
+          "Ev2RegionName": "swedensouth"
+        },
+        {
+          "ShortName": "bse",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bse",
+            "__ASC_DC_FriendlyName__": "Brazil Southeast"
+          },
+          "FriendlyName": "Brazil Southeast",
+          "Ev2Geography": "Brazil",
+          "Ev2RegionName": "brazilsoutheast"
+        },
+        {
+          "ShortName": "wus3",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wus3",
+            "__ASC_DC_FriendlyName__": "West US 3"
+          },
+          "FriendlyName": "West US 3",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus3"
+        },
+        {
+          "ShortName": "jic",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jic",
+            "__ASC_DC_FriendlyName__": "Jio India Central"
+          },
+          "FriendlyName": "Jio India Central",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "jioindiacentral"
+        },
+        {
+          "ShortName": "jiw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jiw",
+            "__ASC_DC_FriendlyName__": "Jio India West"
+          },
+          "FriendlyName": "Jio India West",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "jioindiawest"
+        },
+        {
+          "ShortName": "qac",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "qac",
+            "__ASC_DC_FriendlyName__": "Qatar Central"
+          },
+          "FriendlyName": "Qatar Central",
+          "Ev2Geography": "Qatar",
+          "Ev2RegionName": "qatarcentral"
+        },
+        {
+          "ShortName": "wusr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wusr",
+            "__ASC_DC_FriendlyName__": "East US"
+          },
+          "FriendlyName": "East US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "eastus"
+        },
+        {
+          "ShortName": "eusr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "eusr",
+            "__ASC_DC_FriendlyName__": "West US"
+          },
+          "FriendlyName": "West US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus"
+        },
+        {
+          "ShortName": "cusr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "cusr",
+            "__ASC_DC_FriendlyName__": "East US 2"
+          },
+          "FriendlyName": "East US 2",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "eastus2"
+        },
+        {
+          "ShortName": "eu3r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "eu3r",
+            "__ASC_DC_FriendlyName__": "West US 3"
+          },
+          "FriendlyName": "West US 3",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus3"
+        },
+        {
+          "ShortName": "eu2r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "eu2r",
+            "__ASC_DC_FriendlyName__": "Central US"
+          },
+          "FriendlyName": "Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "centralus"
+        },
+        {
+          "ShortName": "ncur",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ncur",
+            "__ASC_DC_FriendlyName__": "South Central US"
+          },
+          "FriendlyName": "South Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southcentralus"
+        },
+        {
+          "ShortName": "scur",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "scur",
+            "__ASC_DC_FriendlyName__": "North Central US"
+          },
+          "FriendlyName": "North Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "northcentralus"
+        },
+        {
+          "ShortName": "ner",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ner",
+            "__ASC_DC_FriendlyName__": "West Europe"
+          },
+          "FriendlyName": "West Europe",
+          "Ev2Geography": "Europe",
+          "Ev2RegionName": "westeurope"
+        },
+        {
+          "ShortName": "wer",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wer",
+            "__ASC_DC_FriendlyName__": "North Europe"
+          },
+          "FriendlyName": "North Europe",
+          "Ev2Geography": "Europe",
+          "Ev2RegionName": "northeurope"
+        },
+        {
+          "ShortName": "ear",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ear",
+            "__ASC_DC_FriendlyName__": "Southeast Asia"
+          },
+          "FriendlyName": "Southeast Asia",
+          "Ev2Geography": "Asia Pacific",
+          "Ev2RegionName": "southeastasia"
+        },
+        {
+          "ShortName": "sear",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sear",
+            "__ASC_DC_FriendlyName__": "East Asia"
+          },
+          "FriendlyName": "East Asia",
+          "Ev2Geography": "Asia Pacific",
+          "Ev2RegionName": "eastasia"
+        },
+        {
+          "ShortName": "sg3r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sg3r",
+            "__ASC_DC_FriendlyName__": "Malaysia West"
+          },
+          "FriendlyName": "Malaysia West",
+          "Ev2Geography": "Malaysia",
+          "Ev2RegionName": "malaysiawest"
+        },
+        {
+          "ShortName": "jper",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jper",
+            "__ASC_DC_FriendlyName__": "Japan West"
+          },
+          "FriendlyName": "Japan West",
+          "Ev2Geography": "Japan",
+          "Ev2RegionName": "japanwest"
+        },
+        {
+          "ShortName": "jpwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jpwr",
+            "__ASC_DC_FriendlyName__": "Japan East"
+          },
+          "FriendlyName": "Japan East",
+          "Ev2Geography": "Japan",
+          "Ev2RegionName": "japaneast"
+        },
+        {
+          "ShortName": "brsr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "brsr",
+            "__ASC_DC_FriendlyName__": "South Central US"
+          },
+          "FriendlyName": "South Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southcentralus"
+        },
+        {
+          "ShortName": "aer",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "aer",
+            "__ASC_DC_FriendlyName__": "Australia Southeast"
+          },
+          "FriendlyName": "Australia Southeast",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiasoutheast"
+        },
+        {
+          "ShortName": "aser",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "aser",
+            "__ASC_DC_FriendlyName__": "Australia East"
+          },
+          "FriendlyName": "Australia East",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiaeast"
+        },
+        {
+          "ShortName": "incr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "incr",
+            "__ASC_DC_FriendlyName__": "South India"
+          },
+          "FriendlyName": "South India",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "southindia"
+        },
+        {
+          "ShortName": "insr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "insr",
+            "__ASC_DC_FriendlyName__": "Central India"
+          },
+          "FriendlyName": "Central India",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "centralindia"
+        },
+        {
+          "ShortName": "cncr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "cncr",
+            "__ASC_DC_FriendlyName__": "Canada East"
+          },
+          "FriendlyName": "Canada East",
+          "Ev2Geography": "Canada",
+          "Ev2RegionName": "canadaeast"
+        },
+        {
+          "ShortName": "cner",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "cner",
+            "__ASC_DC_FriendlyName__": "Canada Central"
+          },
+          "FriendlyName": "Canada Central",
+          "Ev2Geography": "Canada",
+          "Ev2RegionName": "canadacentral"
+        },
+        {
+          "ShortName": "wcur",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wcur",
+            "__ASC_DC_FriendlyName__": "West US 2"
+          },
+          "FriendlyName": "West US 2",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus2"
+        },
+        {
+          "ShortName": "iscr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "iscr",
+            "__ASC_DC_FriendlyName__": "Central India"
+          },
+          "FriendlyName": "Central India",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "centralindia"
+        },
+        {
+          "ShortName": "ne5r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ne5r",
+            "__ASC_DC_FriendlyName__": "Central US"
+          },
+          "FriendlyName": "Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "centralus"
+        },
+        {
+          "ShortName": "wu2r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wu2r",
+            "__ASC_DC_FriendlyName__": "West Central US"
+          },
+          "FriendlyName": "West Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westcentralus"
+        },
+        {
+          "ShortName": "ukwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ukwr",
+            "__ASC_DC_FriendlyName__": "UK South"
+          },
+          "FriendlyName": "UK South",
+          "Ev2Geography": "United Kingdom",
+          "Ev2RegionName": "uksouth"
+        },
+        {
+          "ShortName": "uksr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uksr",
+            "__ASC_DC_FriendlyName__": "UK West"
+          },
+          "FriendlyName": "UK West",
+          "Ev2Geography": "United Kingdom",
+          "Ev2RegionName": "ukwest"
+        },
+        {
+          "ShortName": "ccyr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ccyr",
+            "__ASC_DC_FriendlyName__": "East US 2 EUAP"
+          },
+          "FriendlyName": "East US 2 EUAP",
+          "Ev2Geography": "Canary (US)",
+          "Ev2RegionName": "eastus2euap"
+        },
+        {
+          "ShortName": "ecyr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ecyr",
+            "__ASC_DC_FriendlyName__": "Central US EUAP"
+          },
+          "FriendlyName": "Central US EUAP",
+          "Ev2Geography": "Canary (US)",
+          "Ev2RegionName": "centraluseuap"
+        },
+        {
+          "ShortName": "krsr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "krsr",
+            "__ASC_DC_FriendlyName__": "Korea Central"
+          },
+          "FriendlyName": "Korea Central",
+          "Ev2Geography": "Korea",
+          "Ev2RegionName": "koreacentral"
+        },
+        {
+          "ShortName": "krcr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "krcr",
+            "__ASC_DC_FriendlyName__": "Korea South"
+          },
+          "FriendlyName": "Korea South",
+          "Ev2Geography": "Korea",
+          "Ev2RegionName": "koreasouth"
+        },
+        {
+          "ShortName": "frcr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "frcr",
+            "__ASC_DC_FriendlyName__": "France South"
+          },
+          "FriendlyName": "France South",
+          "Ev2Geography": "France",
+          "Ev2RegionName": "francesouth"
+        },
+        {
+          "ShortName": "frsr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "frsr",
+            "__ASC_DC_FriendlyName__": "France Central"
+          },
+          "FriendlyName": "France Central",
+          "Ev2Geography": "France",
+          "Ev2RegionName": "francecentral"
+        },
+        {
+          "ShortName": "aclr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "aclr",
+            "__ASC_DC_FriendlyName__": "Australia Central 2"
+          },
+          "FriendlyName": "Australia Central 2",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiacentral2"
+        },
+        {
+          "ShortName": "ac2r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ac2r",
+            "__ASC_DC_FriendlyName__": "Australia Central"
+          },
+          "FriendlyName": "Australia Central",
+          "Ev2Geography": "Australia",
+          "Ev2RegionName": "australiacentral"
+        },
+        {
+          "ShortName": "uacr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uacr",
+            "__ASC_DC_FriendlyName__": "UAE North"
+          },
+          "FriendlyName": "UAE North",
+          "Ev2Geography": "UAE",
+          "Ev2RegionName": "uaenorth"
+        },
+        {
+          "ShortName": "uanr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uanr",
+            "__ASC_DC_FriendlyName__": "UAE Central"
+          },
+          "FriendlyName": "UAE Central",
+          "Ev2Geography": "UAE",
+          "Ev2RegionName": "uaecentral"
+        },
+        {
+          "ShortName": "sanr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sanr",
+            "__ASC_DC_FriendlyName__": "South Africa West"
+          },
+          "FriendlyName": "South Africa West",
+          "Ev2Geography": "South Africa",
+          "Ev2RegionName": "southafricawest"
+        },
+        {
+          "ShortName": "sawr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sawr",
+            "__ASC_DC_FriendlyName__": "South Africa North"
+          },
+          "FriendlyName": "South Africa North",
+          "Ev2Geography": "South Africa",
+          "Ev2RegionName": "southafricanorth"
+        },
+        {
+          "ShortName": "inwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "inwr",
+            "__ASC_DC_FriendlyName__": "South India"
+          },
+          "FriendlyName": "South India",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "southindia"
+        },
+        {
+          "ShortName": "nwer",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "nwer",
+            "__ASC_DC_FriendlyName__": "Norway West"
+          },
+          "FriendlyName": "Norway West",
+          "Ev2Geography": "Norway",
+          "Ev2RegionName": "norwaywest"
+        },
+        {
+          "ShortName": "nwwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "nwwr",
+            "__ASC_DC_FriendlyName__": "Norway East"
+          },
+          "FriendlyName": "Norway East",
+          "Ev2Geography": "Norway",
+          "Ev2RegionName": "norwayeast"
+        },
+        {
+          "ShortName": "sznr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sznr",
+            "__ASC_DC_FriendlyName__": "Switzerland West"
+          },
+          "FriendlyName": "Switzerland West",
+          "Ev2Geography": "Switzerland",
+          "Ev2RegionName": "switzerlandwest"
+        },
+        {
+          "ShortName": "szwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "szwr",
+            "__ASC_DC_FriendlyName__": "Switzerland North"
+          },
+          "FriendlyName": "Switzerland North",
+          "Ev2Geography": "Switzerland",
+          "Ev2RegionName": "switzerlandnorth"
+        },
+        {
+          "ShortName": "gnr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "gnr",
+            "__ASC_DC_FriendlyName__": "Germany West Central"
+          },
+          "FriendlyName": "Germany West Central",
+          "Ev2Geography": "Germany",
+          "Ev2RegionName": "germanywestcentral"
+        },
+        {
+          "ShortName": "gwcr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "gwcr",
+            "__ASC_DC_FriendlyName__": "Germany North"
+          },
+          "FriendlyName": "Germany North",
+          "Ev2Geography": "Germany",
+          "Ev2RegionName": "germanynorth"
+        },
+        {
+          "ShortName": "sdcr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sdcr",
+            "__ASC_DC_FriendlyName__": "Sweden South"
+          },
+          "FriendlyName": "Sweden South",
+          "Ev2Geography": "Sweden",
+          "Ev2RegionName": "swedensouth"
+        },
+        {
+          "ShortName": "sdsr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sdsr",
+            "__ASC_DC_FriendlyName__": "Sweden Central"
+          },
+          "FriendlyName": "Sweden Central",
+          "Ev2Geography": "Sweden",
+          "Ev2RegionName": "swedencentral"
+        },
+        {
+          "ShortName": "bser",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bser",
+            "__ASC_DC_FriendlyName__": "Brazil South"
+          },
+          "FriendlyName": "Brazil South",
+          "Ev2Geography": "Brazil",
+          "Ev2RegionName": "brazilsouth"
+        },
+        {
+          "ShortName": "wu3r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "wu3r",
+            "__ASC_DC_FriendlyName__": "East US"
+          },
+          "FriendlyName": "East US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "eastus"
+        },
+        {
+          "ShortName": "jicr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jicr",
+            "__ASC_DC_FriendlyName__": "Jio India West"
+          },
+          "FriendlyName": "Jio India West",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "jioindiawest"
+        },
+        {
+          "ShortName": "jiwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "jiwr",
+            "__ASC_DC_FriendlyName__": "Jio India Central"
+          },
+          "FriendlyName": "Jio India Central",
+          "Ev2Geography": "India",
+          "Ev2RegionName": "jioindiacentral"
+        },
+        {
+          "ShortName": "plc",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "plc",
+            "__ASC_DC_FriendlyName__": "Poland Central"
+          },
+          "FriendlyName": "Poland Central",
+          "Ev2Geography": "Poland",
+          "Ev2RegionName": "polandcentral"
+        },
+        {
+          "ShortName": "mys",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "mys",
+            "__ASC_DC_FriendlyName__": "Malaysia South"
+          },
+          "FriendlyName": "Malaysia South",
+          "Ev2Geography": "Malaysia",
+          "Ev2RegionName": "malaysiasouth"
+        },
+        {
+          "ShortName": "mysr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "mysr",
+            "__ASC_DC_FriendlyName__": "Japan West"
+          },
+          "FriendlyName": "Japan West",
+          "Ev2Geography": "Japan",
+          "Ev2RegionName": "japanwest"
+        },
+        {
+          "ShortName": "twn",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "twn",
+            "__ASC_DC_FriendlyName__": "Taiwan North"
+          },
+          "FriendlyName": "Taiwan North",
+          "Ev2Geography": "Taiwan",
+          "Ev2RegionName": "taiwannorth"
+        },
+        {
+          "ShortName": "twnr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "twnr",
+            "__ASC_DC_FriendlyName__": "Taiwan Northwest"
+          },
+          "FriendlyName": "Taiwan Northwest",
+          "Ev2Geography": "Taiwan",
+          "Ev2RegionName": "taiwannorthwest"
+        },
+        {
+          "ShortName": "tnw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "tnw",
+            "__ASC_DC_FriendlyName__": "Taiwan Northwest"
+          },
+          "FriendlyName": "Taiwan Northwest",
+          "Ev2Geography": "Taiwan",
+          "Ev2RegionName": "taiwannorthwest"
+        },
+        {
+          "ShortName": "tnwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "tnwr",
+            "__ASC_DC_FriendlyName__": "Taiwan North"
+          },
+          "FriendlyName": "Taiwan North",
+          "Ev2Geography": "Taiwan",
+          "Ev2RegionName": "taiwannorth"
+        },
+        {
+          "ShortName": "ilc",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ilc",
+            "__ASC_DC_FriendlyName__": "Israel Central"
+          },
+          "FriendlyName": "Israel Central",
+          "Ev2Geography": "Israel",
+          "Ev2RegionName": "israelcentral"
+        },
+        {
+          "ShortName": "itn",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "itn",
+            "__ASC_DC_FriendlyName__": "Italy North"
+          },
+          "FriendlyName": "Italy North",
+          "Ev2Geography": "Italy",
+          "Ev2RegionName": "italynorth"
+        },
+        {
+          "ShortName": "mxc",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "mxc",
+            "__ASC_DC_FriendlyName__": "Mexico Central"
+          },
+          "FriendlyName": "Mexico Central",
+          "Ev2Geography": "Mexico",
+          "Ev2RegionName": "mexicocentral"
+        },
+        {
+          "ShortName": "spc",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "spc",
+            "__ASC_DC_FriendlyName__": "Spain Central"
+          },
+          "FriendlyName": "Spain Central",
+          "Ev2Geography": "Spain",
+          "Ev2RegionName": "spaincentral"
+        },
+        {
+          "ShortName": "clc",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "clc",
+            "__ASC_DC_FriendlyName__": "Chile Central"
+          },
+          "FriendlyName": "Chile Central",
+          "Ev2Geography": "Chile",
+          "Ev2RegionName": "chilecentral"
+        },
+        {
+          "ShortName": "nzn",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "nzn",
+            "__ASC_DC_FriendlyName__": "New Zealand North"
+          },
+          "FriendlyName": "New Zealand North",
+          "Ev2Geography": "New Zealand",
+          "Ev2RegionName": "newzealandnorth"
+        },
+        {
+          "ShortName": "myw",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "myw",
+            "__ASC_DC_FriendlyName__": "Malaysia West"
+          },
+          "FriendlyName": "Malaysia West",
+          "Ev2Geography": "Malaysia",
+          "Ev2RegionName": "malaysiawest"
+        },
+        {
+          "ShortName": "idc",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "idc",
+            "__ASC_DC_FriendlyName__": "Indonesia Central"
+          },
+          "FriendlyName": "Indonesia Central",
+          "Ev2Geography": "Indonesia",
+          "Ev2RegionName": "indonesiacentral"
+        },
+        {
+          "ShortName": "aue",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "aue",
+            "__ASC_DC_FriendlyName__": "Austria East"
+          },
+          "FriendlyName": "Austria East",
+          "Ev2Geography": "Austria",
+          "Ev2RegionName": "austriaeast"
+        },
+        {
+          "ShortName": "bec",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bec",
+            "__ASC_DC_FriendlyName__": "Belgium Central"
+          },
+          "FriendlyName": "Belgium Central",
+          "Ev2Geography": "Belgium",
+          "Ev2RegionName": "belgiumcentral"
+        },
+        {
+          "ShortName": "dke",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "dke",
+            "__ASC_DC_FriendlyName__": "Denmark East"
+          },
+          "FriendlyName": "Denmark East",
+          "Ev2Geography": "Denmark",
+          "Ev2RegionName": "denmarkeast"
+        },
+        {
+          "ShortName": "iln",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "iln",
+            "__ASC_DC_FriendlyName__": "Israel Northwest"
+          },
+          "FriendlyName": "Israel Northwest",
+          "Ev2Geography": "Israel",
+          "Ev2RegionName": "israelnorthwest"
+        },
+        {
+          "ShortName": "ilnr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ilnr",
+            "__ASC_DC_FriendlyName__": "Israel Central"
+          },
+          "FriendlyName": "Israel Central",
+          "Ev2Geography": "Israel",
+          "Ev2RegionName": "israelcentral"
+        },
+        {
+          "ShortName": "use",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "use",
+            "__ASC_DC_FriendlyName__": "Southeast US"
+          },
+          "FriendlyName": "Southeast US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southeastus"
+        },
+        {
+          "ShortName": "user",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "user",
+            "__ASC_DC_FriendlyName__": "West US 3"
+          },
+          "FriendlyName": "West US 3",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus3"
+        },
+        {
+          "ShortName": "usc2",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "usc2",
+            "__ASC_DC_FriendlyName__": "South Central US 2"
+          },
+          "FriendlyName": "South Central US 2",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southcentralus2"
+        },
+        {
+          "ShortName": "sc2r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sc2r",
+            "__ASC_DC_FriendlyName__": "West Central US"
+          },
+          "FriendlyName": "West Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westcentralus"
+        },
+        {
+          "ShortName": "use3",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "use3",
+            "__ASC_DC_FriendlyName__": "Southeast US 3"
+          },
+          "FriendlyName": "Southeast US 3",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southeastus3"
+        },
+        {
+          "ShortName": "se3r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "se3r",
+            "__ASC_DC_FriendlyName__": "West US 3"
+          },
+          "FriendlyName": "West US 3",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "westus3"
+        },
+        {
+          "ShortName": "use5",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "use5",
+            "__ASC_DC_FriendlyName__": "Southeast US 5"
+          },
+          "FriendlyName": "Southeast US 5",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southeastus5"
+        },
+        {
+          "ShortName": "se5r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "se5r",
+            "__ASC_DC_FriendlyName__": "Central US"
+          },
+          "FriendlyName": "Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "centralus"
+        },
+        {
+          "ShortName": "swus",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "swus",
+            "__ASC_DC_FriendlyName__": "Southwest US"
+          },
+          "FriendlyName": "Southwest US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "southwestus"
+        },
+        {
+          "ShortName": "swur",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE3"
+          ],
+          "Macros": {
+            "__ASC_DC__": "swur",
+            "__ASC_DC_FriendlyName__": "Central US"
+          },
+          "FriendlyName": "Central US",
+          "Ev2Geography": "United States",
+          "Ev2RegionName": "centralus"
+        },
+        {
+          "ShortName": "tst",
+          "DatacenterType": [
+            "ACTIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "tst",
+            "__ASC_DC_FriendlyName__": "UK South"
+          },
+          "FriendlyName": "UK South",
+          "Ev2Geography": "United Kingdom",
+          "Ev2RegionName": "uksouth"
+        }
+      ]
+    },
+    {
+      "Name": "Fairfax",
+      "Environment": "fairfax",
+      "Layout": "pod01",
+      "Macros": {
+        "__ASC_AtmSuffix__": ".trafficmanager.net",
+        "__ASC_DsmsSuffix__": "core.windows.net",
+        "__ASC_MabDnsSuffix__": "backup.windowsazure.com",
+        "__ASC_DsmsRoot__": "recsvc-mab",
+        "__ASC_DsmsRootFolder__": "recsvc-mab",
+        "__ASC_DnsDomain__": ".windowsazure.com",
+        "__ASC_DeploymentShortCode__": "pod01",
+        "__ASC_TenantId__": "USME"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "ugv",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ugv",
+            "__ASC_DC_FriendlyName__": "USGov Virginia"
+          },
+          "FriendlyName": "USGov Virginia",
+          "Ev2Geography": "USGov",
+          "Ev2RegionName": "usgovvirginia"
+        },
+        {
+          "ShortName": "uga",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uga",
+            "__ASC_DC_FriendlyName__": "USGov Arizona"
+          },
+          "FriendlyName": "USGov Arizona",
+          "Ev2Geography": "USGov",
+          "Ev2RegionName": "usgovarizona"
+        },
+        {
+          "ShortName": "ugt",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ugt",
+            "__ASC_DC_FriendlyName__": "USGov Texas"
+          },
+          "FriendlyName": "USGov Texas",
+          "Ev2Geography": "USGov",
+          "Ev2RegionName": "usgovtexas"
+        },
+        {
+          "ShortName": "udc",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "udc",
+            "__ASC_DC_FriendlyName__": "USDoD Central"
+          },
+          "FriendlyName": "USDoD Central",
+          "Ev2Geography": "USDoD",
+          "Ev2RegionName": "usdodcentral"
+        },
+        {
+          "ShortName": "ude",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ude",
+            "__ASC_DC_FriendlyName__": "USDoD East"
+          },
+          "FriendlyName": "USDoD East",
+          "Ev2Geography": "USDoD",
+          "Ev2RegionName": "usdodeast"
+        },
+        {
+          "ShortName": "ugvr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE2"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ugvr",
+            "__ASC_DC_FriendlyName__": "USGov Texas"
+          },
+          "FriendlyName": "USGov Texas",
+          "Ev2Geography": "USGov",
+          "Ev2RegionName": "usgovtexas"
+        },
+        {
+          "ShortName": "ugir",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ugir",
+            "__ASC_DC_FriendlyName__": "USGov Virginia"
+          },
+          "FriendlyName": "USGov Virginia",
+          "Ev2Geography": "USGov",
+          "Ev2RegionName": "usgovvirginia"
+        },
+        {
+          "ShortName": "ugar",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ugar",
+            "__ASC_DC_FriendlyName__": "USGov Texas"
+          },
+          "FriendlyName": "USGov Texas",
+          "Ev2Geography": "USGov",
+          "Ev2RegionName": "usgovtexas"
+        },
+        {
+          "ShortName": "ugtr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "ugtr",
+            "__ASC_DC_FriendlyName__": "USGov Arizona"
+          },
+          "FriendlyName": "USGov Arizona",
+          "Ev2Geography": "USGov",
+          "Ev2RegionName": "usgovarizona"
+        },
+        {
+          "ShortName": "udcr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "udcr",
+            "__ASC_DC_FriendlyName__": "USDoD East"
+          },
+          "FriendlyName": "USDoD East",
+          "Ev2Geography": "USDoD",
+          "Ev2RegionName": "usdodeast"
+        },
+        {
+          "ShortName": "uder",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "uder",
+            "__ASC_DC_FriendlyName__": "USDoD Central"
+          },
+          "FriendlyName": "USDoD Central",
+          "Ev2Geography": "USDoD",
+          "Ev2RegionName": "usdodcentral"
+        }
+      ]
+    },
+    {
+      "Name": "USSec",
+      "Environment": "ussec",
+      "Layout": "pod01",
+      "Macros": {
+        "__ASC_TenantId__": "RXME"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "rxe",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "rxe",
+            "__ASC_DC_FriendlyName__": "USSec East"
+          },
+          "FriendlyName": "USSec East",
+          "Ev2Geography": "USSec",
+          "Ev2RegionName": "usseceast"
+        },
+        {
+          "ShortName": "rxw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "rxw",
+            "__ASC_DC_FriendlyName__": "USSec West"
+          },
+          "FriendlyName": "USSec West",
+          "Ev2Geography": "USSec",
+          "Ev2RegionName": "ussecwest"
+        },
+        {
+          "ShortName": "rxer",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "rxer",
+            "__ASC_DC_FriendlyName__": "USSec West"
+          },
+          "FriendlyName": "USSec West",
+          "Ev2Geography": "USSec",
+          "Ev2RegionName": "ussecwest"
+        },
+        {
+          "ShortName": "rxwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "rxwr",
+            "__ASC_DC_FriendlyName__": "USSec East"
+          },
+          "FriendlyName": "USSec East",
+          "Ev2Geography": "USSec",
+          "Ev2RegionName": "usseceast"
+        }
+      ]
+    },
+    {
+      "Name": "USNat",
+      "Environment": "usnat",
+      "Layout": "pod01",
+      "Macros": {
+        "__ASC_TenantId__": "EXME"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "exe",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "exe",
+            "__ASC_DC_FriendlyName__": "USNat East"
+          },
+          "FriendlyName": "USNat East",
+          "Ev2Geography": "USNat",
+          "Ev2RegionName": "usnateast"
+        },
+        {
+          "ShortName": "exw",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "exw",
+            "__ASC_DC_FriendlyName__": "USNat West"
+          },
+          "FriendlyName": "USNat West",
+          "Ev2Geography": "USNat",
+          "Ev2RegionName": "usnatwest"
+        },
+        {
+          "ShortName": "exer",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "exer",
+            "__ASC_DC_FriendlyName__": "USNat West"
+          },
+          "FriendlyName": "USNat West",
+          "Ev2Geography": "USNat",
+          "Ev2RegionName": "usnatwest"
+        },
+        {
+          "ShortName": "exwr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "exwr",
+            "__ASC_DC_FriendlyName__": "USNat East"
+          },
+          "FriendlyName": "USNat East",
+          "Ev2Geography": "USNat",
+          "Ev2RegionName": "usnateast"
+        }
+      ]
+    },
+    {
+      "Name": "Mooncake",
+      "Environment": "mooncake",
+      "Layout": "pod01",
+      "Macros": {
+        "__ASC_TenantId__": "CME"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "bjb",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bjb",
+            "__ASC_DC_FriendlyName__": "China North"
+          },
+          "FriendlyName": "China North",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinanorth"
+        },
+        {
+          "ShortName": "sha",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sha",
+            "__ASC_DC_FriendlyName__": "China East"
+          },
+          "FriendlyName": "China East",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinaeast"
+        },
+        {
+          "ShortName": "bjb2",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bjb2",
+            "__ASC_DC_FriendlyName__": "China North 2"
+          },
+          "FriendlyName": "China North 2",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinanorth2"
+        },
+        {
+          "ShortName": "sha2",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sha2",
+            "__ASC_DC_FriendlyName__": "China East 2"
+          },
+          "FriendlyName": "China East 2",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinaeast2"
+        },
+        {
+          "ShortName": "bjb3",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bjb3",
+            "__ASC_DC_FriendlyName__": "China North 3"
+          },
+          "FriendlyName": "China North 3",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinanorth3"
+        },
+        {
+          "ShortName": "sha3",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sha3",
+            "__ASC_DC_FriendlyName__": "China East 3"
+          },
+          "FriendlyName": "China East 3",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinaeast3"
+        },
+        {
+          "ShortName": "bjbr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bjbr",
+            "__ASC_DC_FriendlyName__": "China East"
+          },
+          "FriendlyName": "China East",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinaeast"
+        },
+        {
+          "ShortName": "shar",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "shar",
+            "__ASC_DC_FriendlyName__": "China North"
+          },
+          "FriendlyName": "China North",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinanorth"
+        },
+        {
+          "ShortName": "bj2r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bj2r",
+            "__ASC_DC_FriendlyName__": "China East 2"
+          },
+          "FriendlyName": "China East 2",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinaeast2"
+        },
+        {
+          "ShortName": "sh2r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sh2r",
+            "__ASC_DC_FriendlyName__": "China North 2"
+          },
+          "FriendlyName": "China North 2",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinanorth2"
+        },
+        {
+          "ShortName": "bj3r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bj3r",
+            "__ASC_DC_FriendlyName__": "China East 3"
+          },
+          "FriendlyName": "China East 3",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinaeast3"
+        },
+        {
+          "ShortName": "sh3r",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "sh3r",
+            "__ASC_DC_FriendlyName__": "China North 3"
+          },
+          "FriendlyName": "China North 3",
+          "Ev2Geography": "China",
+          "Ev2RegionName": "chinanorth3"
+        }
+      ]
+    },
+    {
+      "Name": "Bleu",
+      "Environment": "Bleu",
+      "Layout": "pod01",
+      "Macros": {
+        "__ASC_AtmSuffix__": ".trafficmanager.sovcloud-api.fr",
+        "__ASC_DsmsRootFolder__": "recsvc-mab",
+        "__ASC_DnsDomain__": ".sovcloud-api.fr",
+        "__ASC_DsmsSuffix__": "identity.sovcloud-core.fr",
+        "__ASC_MabDnsSuffix__": "backup.sovcloud-api.fr",
+        "__ASC_DsmsRoot__": "recsvc-mab",
+        "__ASC_TenantId__": "FRME",
+        "__ASC_DeploymentShortCode__": "pod01"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "bcn",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bcn",
+            "__ASC_DC_FriendlyName__": "Blue France Central"
+          },
+          "FriendlyName": "Blue France Central",
+          "Ev2Geography": "France Gov",
+          "Ev2RegionName": "bleufrancecentral"
+        },
+        {
+          "ShortName": "bst",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bst",
+            "__ASC_DC_FriendlyName__": "Blue France South"
+          },
+          "FriendlyName": "Blue France South",
+          "Ev2Geography": "France Gov",
+          "Ev2RegionName": "bleufrancesouth"
+        },
+        {
+          "ShortName": "bcnr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bcnr",
+            "__ASC_DC_FriendlyName__": "Blue France South"
+          },
+          "FriendlyName": "Blue France South",
+          "Ev2Geography": "France Gov",
+          "Ev2RegionName": "bleufrancesouth"
+        },
+        {
+          "ShortName": "bstr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "bstr",
+            "__ASC_DC_FriendlyName__": "Blue France Central"
+          },
+          "FriendlyName": "Blue France Central",
+          "Ev2Geography": "France Gov",
+          "Ev2RegionName": "bleufrancecentral"
+        }
+      ]
+    },
+    {
+      "Name": "Delos",
+      "Environment": "Delos",
+      "Layout": "pod01",
+      "Macros": {
+        "__ASC_AtmSuffix__": ".trafficmanager.sovcloud-api.de",
+        "__ASC_DsmsSuffix__": "identity.sovcloud-core.de",
+        "__ASC_MabDnsSuffix__": "backup.sovcloud-api.de",
+        "__ASC_DsmsRoot__": "recsvc-mab",
+        "__ASC_TenantId__": "DEME",
+        "__ASC_DeploymentShortCode__": "pod01"
+      },
+      "DataCenters": [
+        {
+          "ShortName": "dcn",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "dcn",
+            "__ASC_DC_FriendlyName__": "Delos Cloud Germany Central"
+          },
+          "FriendlyName": "Delos Cloud Germany Central",
+          "Ev2Geography": "Germany Gov 2",
+          "Ev2RegionName": "deloscloudgermanycentral"
+        },
+        {
+          "ShortName": "dnt",
+          "DatacenterType": [
+            "ACTIVE",
+            "HAS_PASSIVE"
+          ],
+          "Macros": {
+            "__ASC_DC__": "dnt",
+            "__ASC_DC_FriendlyName__": "Delos Cloud Germany North"
+          },
+          "FriendlyName": "Delos Cloud Germany North",
+          "Ev2Geography": "Germany Gov 2",
+          "Ev2RegionName": "deloscloudgermanynorth"
+        },
+        {
+          "ShortName": "dcnr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "dcnr",
+            "__ASC_DC_FriendlyName__": "Delos Cloud Germany North"
+          },
+          "FriendlyName": "Delos Cloud Germany North",
+          "Ev2Geography": "Germany Gov 2",
+          "Ev2RegionName": "deloscloudgermanynorth"
+        },
+        {
+          "ShortName": "dntr",
+          "DatacenterType": [
+            "PASSIVE",
+            "PASSIVE1"
+          ],
+          "Macros": {
+            "__ASC_DC__": "dntr",
+            "__ASC_DC_FriendlyName__": "Delos Cloud Germany Central"
+          },
+          "FriendlyName": "Delos Cloud Germany Central",
+          "Ev2Geography": "Germany Gov 2",
+          "Ev2RegionName": "deloscloudgermanycentral"
+        }
+      ]
+    }
+  ]
+}

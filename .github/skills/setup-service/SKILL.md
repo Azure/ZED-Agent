@@ -9,7 +9,7 @@ description: |
   Use this skill whenever the release owner types any of:
     - `setup-service`               (full wizard from group 1)
     - `setup-service validate`      (run loader in strict mode, no prompts)
-    - `setup-service group <N>`     where N in {1, 2, 3, 4a, 4b, 5a, 5b, 6, 7, 8, 9, 10, 11}
+    - `setup-service group <N>`     where N in {1, 2, 3, 4a, 4b, 5a, 5b, 6, 7, 8, 9, 10, 11, 11.5, 11.6}
                                     (jump directly to a group)
 
   Also use this skill from inside the `setup` command when Test-PreFlight reports
@@ -86,7 +86,7 @@ If the release owner types `setup-service validate`, skip all prompting — go s
 | `2` | Group 2 — Azure DevOps |
 | `3` | Group 3 — Service Tree ID |
 | `4a` | Phase 4a — BVT Kusto (schema-aware) |
-| `4b` | Phase 4b — Canary Detection Kusto (schema-aware) — **executes AFTER Group 11** because it depends on `canaryRouting.mode` set there |
+| `4b` | Group 4b — Canary Stamp Inventory (cloud / layout / regions / stamps) |
 | `5a` | Group 5 — Notification Groups (DLs + Teams chats) |
 | `5b` | Group 5b — Notification Routing (4 default broadcasts + owner-added per-step / status entries) |
 | `6` | Group 6 — Operational defaults |
@@ -96,7 +96,7 @@ If the release owner types `setup-service validate`, skip all prompting — go s
 | `10` | Group 10 — Test mode |
 | `11` | Pipeline Catalog (Group 11 — pipeline-catalog.json entries) |
 
-> **Group 11 sub-identifiers**: `11.canary`, `11.prod`, `11.dryrun <pipelineKey>`, `11.discovery-only`, `11.ev2` — see the Group 11 section for behavior. Treat them as valid identifiers in step 2 of the dispatcher (do not reject as unknown).
+> **Group 11 sub-identifiers**: `11.canary`, `11.prod`, `11.dryrun <pipelineKey>`, `11.discovery-only`, `11.ev2`, `11.5` (canary cluster-type detection Kusto), `11.6` (production cluster-type detection Kusto) — see the Group 11 section for behavior. Treat them as valid identifiers in step 2 of the dispatcher (do not reject as unknown).
 
 Dispatcher behavior:
 1. Parse the trailing token after `setup-service group `.
@@ -109,6 +109,7 @@ Dispatcher behavior:
 Ask for:
 - `service.name` — Short canonical name (e.g., "Prot", "DPM", "MABS"). Used in file names, tags, and filters.
 - `service.displayName` — Human-readable name (e.g., "Protection Service", "Data Protection Manager")
+- `service.stampTag` — Lowercase per-service infix used in stamp names (e.g. `prot` for `ea-can02-prot1`, `rec` for `eus-pod01-rec2`). Drives canary stamp parsing in `Get-StampInventory.ps1` and stamp filtering in the canary inventory (Group 4b) and production Kusto query (Phase 11.6). Ask the release owner: *"Look at any one of your service's stamp names in EV2 or Kusto. The middle-segment letters between the layout and the trailing number — that's your stamp tag. Common values: `prot`, `rec`, `mab`, `bdp`."* Validate against `^[a-z]+$` and re-ask on invalid input.
 
 > **Do NOT prompt for `service.agentFeedbackEmail`.** This field is hardcoded to `gwazire@microsoft.com` (the ZED agent author). Always write that exact value to `service-config.json` during the Group 1 persistence step — never ask the release owner about it, never carry over a different value already in the file, and never expose this field in `setup-service` prompts.
 
@@ -136,7 +137,7 @@ Kusto powers several discovery and analysis tasks in this agent:
 - **Production stamp cluster-type detection** (Step 15) — same idea as canary, but across production stamps for every cloud the service runs in (Public, Mooncake, Fairfax, Bleu, USNat, USSec, …) so the agent picks the right production pipeline(s) per cloud.
 - **Region + stamp inventory per cloud** — enumerates the regions and stamp short names that belong to each cloud (Public / MC / FF / Bleu / …) for region scoping at production trigger time.
 
-Collect the connection + query settings in **Phase 4a (BVT)** here. The canary/production stamp-discovery Kusto config (**Phase 4b**) is collected **after Group 11** because it depends on `canaryRouting.mode` (set during pipeline catalog collection). If `canaryRouting.mode = "static"` or `"explicit"`, Phase 4b is skipped entirely — no Kusto query is needed.
+Collect the connection + query settings for BVT in **Phase 4a** here. The canary and production cluster-type detection Kusto config (**Phase 11.5** and **Phase 11.6**) is collected *inside* Group 11, AFTER routing modes and per-pipeline cluster types are known but BEFORE the dry-run fan-outs (11.2 / 11.3) that depend on the resolver. If `canaryRouting.mode == "static"`, Phase 11.5 is auto-skipped; if `productionRouting.mode == "static"`, Phase 11.6 is auto-skipped — in `static` mode the resolver returns every `{scope}.*` key without querying Kusto, so no Kusto config is needed.
 
 ---
 
@@ -203,7 +204,40 @@ The agent runs a built-in BVT failure-analysis query to decide whether canary BV
 
 5. After persistence, recap to the release owner what was saved (cluster, database, query file path, team filter value, display columns).
 
-> **Note**: Phase 4b runs **after Group 11** because its prompts depend on `canaryRouting.mode` from `pipeline-catalog.json`. Skip ahead to **Group 5a** next.
+---
+
+**Group 4b — Canary Stamp Inventory**
+
+The canary fleet is small, stable, and **owner-curated** — there is no live Kusto query for canary stamp discovery. This group captures the exact stamps the agent should target in Steps 5 / 7 / 10. The owner-curated list is cross-checked against the authoritative `AzureServiceConfig.json` (fetched live from `Mgmt-RecoverySvcs-DeploymentExtn` by `Get-AzureServiceConfig.ps1`; cache and committed snapshot are fallbacks only) so a typo in a stamp name fails fast in `setup-service validate` instead of at canary-deploy time.
+
+Prerequisite: `service.stampTag` must already be set (Group 1). If it is empty, jump back to Group 1 before continuing.
+
+1. **Fetch ASC** by calling:
+   ```powershell
+   $asc = & .\.github\skills\zed-agent\scripts\Get-AzureServiceConfig.ps1
+   ```
+   Default behavior is live-first. If the call surfaces a warning that it fell back to cache or snapshot, tell the release owner — they may want to fix `az login` before continuing so the validation below is grounded in truth.
+
+2. **Pick the canary cloud** via `ask_user` from the list of ASC clouds whose `Name` contains `Canary` or `BVTD3` (today: `Canary`, `BVTD3`). Persist to `inventory.canary.cloud`. Default to `Canary` and pre-select it.
+
+3. **Pick the layout** — auto-read `Clouds[<chosen>].Layout` from ASC (no prompt — there's only one). Persist to `inventory.canary.layout`.
+
+4. **Pick canary regions** via `ask_user` (multi-select) from `Clouds[<chosen>].DataCenters[].ShortName`. The canary cloud typically has one DC, so default to selecting all and let the owner deselect. Persist the chosen short names to `inventory.canary.regions`.
+
+5. **Enumerate canary stamps** — for each chosen region, ask:
+   > *"How many `{shortName}-{layout}-{stampTag}{index}` stamps does your service run in `<region>`? (Type a comma-separated list of indexes — e.g. `1, 1d, 2`. The agent will build the full stamp names for you.)"*
+   Construct each `stampName = "<shortName>-<layout>-<stampTag><index>"`. For each stamp, ask via `ask_user` for the `clusterType` token (free text; must match one of the keys in `pipeline-catalog.json → canaryRouting.clusterTypeMap` once Group 11 is filled — but accept any non-empty lowercase string here and let Group 11 validation catch mismatches). Persist the full list to `inventory.canary.stamps` as `[{ stampName, clusterType }, ...]`.
+
+6. **Validate immediately** by calling:
+   ```powershell
+   $inv = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 -Scope canary
+   ```
+   - If `$inv.drift` is non-empty, render the drift table to the owner (`stampName`, `reason`) and re-prompt for each drifted stamp. Common reasons: shortName not in cloud (typo), serviceTag does not match `service.stampTag` (wrong infix), stamp name does not match grammar.
+   - If `$inv.stamps.Count -eq 0`, halt and re-run Group 4b from step 5.
+
+7. **Recap** to the release owner: `Cloud: <name>, Layout: <layout>, Regions: <count>, Stamps: <count>, Drift: 0`. Remind them that Steps 5 / 7 / 10 will read this block verbatim and that any stamp added or decommissioned needs a re-run of `setup-service group 4b`.
+
+> **Note**: The canary/production cluster-type detection Kusto config is into Group 11 (Phase 11.5 / 11.6) so it sits next to `canaryRouting.mode` / `productionRouting.mode` and runs in the right order relative to the dry-runs. Skip ahead to **Group 5a** next.
 
 **Group 5a — Notifications (Groups)**
 Ask for:
@@ -376,19 +410,18 @@ Ask via `ask_user`, **in this order**, persisting after each answer:
 3. **Canary pipeline count**:
    > *"How many canary pipelines does your service have? (Just the count — I'll learn each one's parameters from ADO in a moment.)"*
 
-   For each, collect only **key, name, id** up front:
+   For each, collect only **key, name, id**, and (conditionally) **clusterType** up front:
    - **key** — service-defined identifier the agent uses internally (e.g., `SVC-SFMC`, `DM-EACAN`)
    - **name** — display name as it appears in ADO
    - **id** — the integer ID from the pipeline URL (`definitionId=XXXXXX`)
+   - **clusterType** — **ask only if `canaryRouting.mode == "cluster-type"`**:
+     > *"Which cluster type does this pipeline serve? (e.g., `sfmc`, `sfrp`, `eap`)"*
+
+     Persist to `canary.<key>.clusterType` and also append `<key>` to `canaryRouting.clusterTypeMap[<clusterType>]` (use array form if the type already maps to another key). Phase 11.1's inference step then becomes a **cross-check** rather than the source of truth — if YAML/prior-run evidence contradicts the owner-declared cluster type, surface it as a discrepancy. If `canaryRouting.mode == "static"`, skip this question entirely.
 
    Do **not** ask for `templateParameters` here — Phase 11.1 derives them.
 
-4. **Production pipeline count + key/name/id** — same pattern.
-
-5. **Dry-run consent banner** — show once, before entering Phase 11.2:
-   > *"For each pipeline I'm about to discover, I'll queue a real ADO run with the parameters I learned, then cancel it within 5 seconds — well before any agent picks it up. You'll see a cancelled run in ADO history; nothing actually deploys. This validates that the parameters I learned are correct and that I have the right ADO permissions. OK to proceed?"*
-
-   On `No`, halt and tell the owner they can re-run with `setup-service group 11.discovery-only` to skip the queue-and-cancel validation (less safe — parameter mistakes won't surface until the first real release).
+4. **Production pipeline count + key/name/id** — same pattern. Ask `clusterType` per pipeline only when `productionRouting.mode == "cluster-type"`; persist to `production.<key>.clusterType` and append to `productionRouting.clusterTypeMap[<clusterType>]`.
 
 ---
 
@@ -396,7 +429,22 @@ Ask via `ask_user`, **in this order**, persisting after each answer:
 
 For each canary pipeline collected in Phase 11.0 (and the official build, and later each production pipeline), **fan out in parallel** using `ForEach-Object -Parallel`:
 
-1. **Read the last 3 successful production runs** of the pipeline:
+1. **Read prior successful runs** of the pipeline. First, ask the owner via `ask_user` whether they want to hand-pick the reference runs (which gives them control over *which* historical truth the agent learns from — useful when recent runs were one-off hotfixes with non-representative parameters):
+
+   > *"For `{key}` (`{name}`), do you want to point me at specific successful runs to learn from, or should I just grab the last 3 successful production runs automatically?"*
+   > Choices: `I'll provide run IDs / URLs`, `Use last 3 successful runs (auto)`
+
+   **On `I'll provide run IDs / URLs`** — collect a comma-separated list of run IDs or full ADO run URLs via `ask_user`. Parse each entry (extract the integer `runId` from URLs of the form `…/_build/results?buildId=<id>`), then resolve each one through `Read-PriorRun.ps1` in single-run mode:
+   ```powershell
+   $runs = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
+       -Organization $cfg.ado.organization `
+       -Project $cfg.ado.project `
+       -PipelineId $entry.id `
+       -RunIds @(<ids parsed from owner input>)
+   ```
+   For each ID, verify it (a) belongs to this `PipelineId`, (b) has `result = succeeded`. If any fail those checks, surface the exact reason (*"Run 28471 belongs to pipeline 3528, not 3527"* / *"Run 28471 finished with `result = failed`"*) and re-prompt the owner — either correct the list or fall back to auto.
+
+   **On `Use last 3 successful runs (auto)`** — run the original auto-fetch:
    ```powershell
    $runs = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
        -Organization $cfg.ado.organization `
@@ -405,9 +453,11 @@ For each canary pipeline collected in Phase 11.0 (and the official build, and la
        -ResultFilter "succeeded" `
        -Top 3
    ```
+
    The script returns normalized objects: `{ runId, runUrl, finishedAt, sourceBranch, templateParameters }`. If fewer than 3 runs exist (new pipeline), return whatever's available; if zero, tell the owner *"No prior successful runs found for `{key}` — I'll rely on YAML only and lean more heavily on your review."*
 
-2. **Fetch the pipeline YAML** from its source repo's base branch:
+2. **Fetch the pipeline YAML** from its source repo's base branch. The owner never tells the agent where the YAML lives — **ADO already knows**. Every YAML-based pipeline definition stores its source repo + path under `configuration.repository` and `configuration.path`. The script reads that off the pipeline definition first and only prompts the owner for things ADO can't supply (the *branch* to read from, and only when the YAML repo differs from the wizard's repo).
+
    ```powershell
    $yamlInfo = & .github/skills/zed-agent/scripts/Read-PipelineYaml.ps1 `
        -Organization $cfg.ado.organization `
@@ -415,8 +465,15 @@ For each canary pipeline collected in Phase 11.0 (and the official build, and la
        -PipelineId $entry.id
    ```
    The script:
-   - Calls `GET /_apis/pipelines/{id}?api-version=7.1` to discover `configuration.repository` and `configuration.path`.
-   - If the YAML lives in a **different repo** than the wizard is running in, prompt the owner via `ask_user`:
+   - Calls `GET /_apis/pipelines/{id}?api-version=7.1` to discover `configuration.type`, `configuration.repository`, and `configuration.path` directly from ADO. **No owner input needed for the location.**
+   - **Fallback for classic / designer / non-YAML pipelines**: if `configuration.type != "yaml"` (e.g., a UI-built classic pipeline, or a pipeline whose definition predates YAML), auto-discovery returns nothing and the script falls back to prompting the owner via `ask_user`:
+     > *"Pipeline `{key}` (`{name}`) doesn't expose a YAML source in its ADO definition (looks like a classic/designer pipeline). Where is its parameter definition?*
+     > *  • Path to a YAML file in this repo (e.g., `pipelines/canary.yml`)*
+     > *  • Path to a YAML file in another repo (give `repo:branch:path` shorthand)*
+     > *  • `none` — no YAML source; rely on prior-run evidence only"*
+
+     On `none`, skip step 2 entirely and let Phase 11.1 step 3 work from prior-run values alone (record `_learnedFrom.yamlSource = "absent"`).
+   - If the YAML lives in a **different repo** than the wizard is running in (whether discovered from ADO or supplied via the classic-fallback), prompt the owner via `ask_user`:
      > *"Pipeline `{key}` (`{name}`) reads its YAML from `{repoName}` (not the current repo). What's the base branch I should pull from? (`develop`, `main`, etc.)"*
 
      Persist the answer to `yamlRepos.{repoName}.baseBranch` — **once per repo**. If the same repo comes up again later, reuse the persisted value without re-prompting.
@@ -428,10 +485,10 @@ For each canary pipeline collected in Phase 11.0 (and the official build, and la
    - **Baseline**: union of all parameters declared in the YAML.
    - **Concrete values**: prior-run values **per parameter**, mode-of-values across the 3 runs (most common wins). If the 3 runs disagree, flag the parameter as `mode-disagreement` in `agentGaps`.
    - **Reserved-token preservation**: if a prior-run value matches one of the reserved `{{...}}` tokens **or** the YAML's `default` is a reserved token, keep it as the token (do not substitute the literal from history).
-   - **Cluster-type tag**: if the routing mode is `cluster-type`, scan the YAML and prior runs for stamp-list / region-list parameters whose values cluster around a single suffix (e.g., all entries end in `-sfmc`). If a clear cluster type emerges, propose it as `entry.clusterType`. Otherwise leave blank and ask the owner.
+   - **Cluster-type cross-check**: if `canaryRouting.mode == "cluster-type"` and the owner already declared `entry.clusterType` in Phase 11.0, scan the YAML and prior runs for stamp-list / region-list parameters whose values cluster around a single suffix (e.g., all entries end in `-sfmc`). If the inferred suffix **disagrees** with the owner-declared cluster type, flag it in `agentGaps` as `clusterType-mismatch: declared <X>, evidence suggests <Y>` so the owner can resolve in the proposal review. If `clusterType` was NOT declared (older runs of the wizard, or owner skipped), fall back to using the inferred value as the proposal — same behavior as before.
    - **Unknown / new params**: parameters in YAML that have no prior-run value and no `default` → mark `requiresOwnerInput: true` in the proposal.
 
-4. **Render the proposal** to the owner in a single review block:
+4. **Render the proposal** to the owner in a single review block. This block is the **single point of human approval** between discovery and dry-run: the owner sees the exact `templateParameters` map the agent will POST to the ADO pipeline-runs API — first in Phase 11.2's queue-and-cancel dry-run, and then in every real release going forward. For each parameter, the block shows where the value came from (prior run / YAML default / reserved token) and lists every gap the agent could not resolve on its own. Nothing proceeds to Phase 11.2 (dry-run queue) without explicit owner sign-off here.
 
    ```
    ┌─ Pipeline: SVC-SFMC (3527) ──────────────────────────────────────┐
@@ -447,13 +504,19 @@ For each canary pipeline collected in Phase 11.0 (and the official build, and la
    │   ValidateOnlyRollOut= "{{validateOnly}}"  ← reserved token       │
    │   ExcludeStamps      = "{{excludeStamps}}" ← reserved token       │
    │                                                                  │
-   │ Inferred clusterType: "sfmc" (from PubCanaryStamps suffix)       │
+   │ clusterType: "sfmc" (declared in Phase 11.0 · ✓ matches evidence)│
    │                                                                  │
    │ Gaps the agent could not resolve:                                │
    │   • RolloutNotes — declared in YAML, no prior value, no default  │
    └──────────────────────────────────────────────────────────────────┘
    Choices: Accept, Edit a value, Reject, Show diff vs YAML defaults
    ```
+
+   Rules for rendering the `clusterType` line:
+   - If `canaryRouting.mode == "static"` → omit the line entirely.
+   - If owner **declared** it in Phase 11.0 and the cross-check agrees → show `clusterType: "<declared>" (declared in Phase 11.0 · ✓ matches evidence)`.
+   - If owner **declared** it but the cross-check disagrees → show `clusterType: "<declared>" (declared in Phase 11.0 · ⚠ evidence suggests "<inferred>")` and also list the discrepancy in the **Gaps** section so it must be resolved before `Accept` is allowed.
+   - If owner did **not** declare it (older catalog, owner skipped) → show `clusterType: "<inferred>" (inferred from <evidence source> — please confirm)` and treat as a gap.
 
    Loop on the choice until owner picks `Accept` or `Reject`. On `Edit a value` ask which key, collect new value via `ask_user`, re-render. On `Reject`, drop to the legacy paste-YAML / paste-JSON / manual flow as a fallback.
 
@@ -470,7 +533,25 @@ For each canary pipeline collected in Phase 11.0 (and the official build, and la
 
 #### Phase 11.2 — Dry-run validation (parallel)
 
-Once every canary pipeline has an accepted proposal on disk, fan out a dry-run for **all canary pipelines in parallel** using `ForEach-Object -Parallel`:
+Once every canary pipeline has an accepted proposal on disk — i.e., the owner has seen the prior-run + YAML evidence in the Phase 11.1 review block and clicked `Accept` — show the **dry-run consent banner** once, before queueing anything:
+
+> *"I've finished analyzing prior runs and YAML for every canary pipeline, and you've accepted the proposed parameters. Next, I'll queue a real ADO run per pipeline with those parameters and cancel each within 5 seconds — well before any agent picks it up. You'll see a cancelled run in ADO history; nothing actually deploys. This validates that the parameters I learned are correct and that I have the right ADO permissions. OK to proceed?"*
+
+On `No`, halt and tell the owner they can re-run with `setup-service group 11.discovery-only` to keep the accepted proposals on disk and skip the queue-and-cancel validation (less safe — parameter mistakes won't surface until the first real release).
+
+On `Yes`, **first resolve the trigger set** so dry-runs only fire for pipelines that would actually be triggered at runtime. This makes the dry-run fan-out cheaper and surfaces "declared in catalog but not currently live" gaps to the owner before they hit a real release:
+
+```powershell
+$res = & .github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope canary
+$canaryKeys = @($res.resolved | ForEach-Object { $_.pipelineKey })
+```
+
+- `canaryRouting.mode == "static"` → resolver returns every key under `canary.*`; behavior identical to the previous wizard pass.
+- `canaryRouting.mode == "cluster-type"` → resolver runs the Phase 11.5 Kusto query, intersects the live cluster-type set with `canaryRouting.clusterTypeMap`, and returns only the keys whose cluster type is currently live. Any `canary.*` entry whose declared `clusterType` is NOT in the live set is surfaced in `$res.skipped` with `reason: "no live cluster type matched at query time"` — record each as `canary.<key>._validated = { skipped: true, reason: "no live cluster type", resolvedAt: <UTC ISO> }` and tell the owner: *"Skipping {N} pipeline(s) in dry-run because no live cluster type: {list}. These remain in `pipeline-catalog.json` and will be dry-run automatically next time their cluster type appears in Kusto."*
+
+If the resolver throws (Kusto failure, empty live set, missing `clusterTypeMap` entry), halt Phase 11.2 and surface the error verbatim — do NOT fall back to dry-running everything; that defeats the purpose of `cluster-type` mode.
+
+Fan out a dry-run for the resolved set in parallel using `ForEach-Object -Parallel`:
 
 ```powershell
 $results = $canaryKeys | ForEach-Object -Parallel {
@@ -539,13 +620,32 @@ Persist a `_validated` stamp on each canary pipeline once its dry-run is clean: 
 
 ---
 
-#### Phase 11.3 — Production pipelines (same shape)
+#### Phase 11.3 — Production pipelines (same shape as canary)
 
 Repeat Phase 11.1 + Phase 11.2 for production pipelines:
 
-- Discovery reads the last 3 successful **production** runs (not canary). Production parameters typically include `BranchPrefix`, `SdpType`, `Pub*Stamps`, etc. — treat these as service-specific, **not** required.
-- Dry-runs queue and cancel real production pipeline runs. Reinforce the consent banner: *"Production pipelines will receive a queued-then-cancelled run each — same 5-second window. EV2 will NOT fire because cancellation happens before the agent picks up the work."*
-- Validation loop is identical.
+- **Discovery (11.1)** reads the last 3 successful **production** runs (not canary). Production parameters typically include `BranchPrefix`, `SdpType`, `Pub*Stamps`, etc. — treat these as service-specific, **not** required.
+- **Resolve before dry-run — once, not per cloud.** A pipeline's `clusterType` is a pipeline-level attribute, not a cloud-level one. A single production pipeline may push to multiple clouds (see `ev2CloudCoverage.<key>`), but its declared cluster type is the same everywhere it pushes — the resolver runs once and the dry-run fan-out happens at the **pipeline** level, exactly like canary:
+
+  ```powershell
+  $res = & .github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope production
+  $prodKeys = @($res.resolved | ForEach-Object { $_.pipelineKey })
+  $prodResults = $prodKeys | ForEach-Object -Parallel {
+      & .github/skills/zed-agent/scripts/Invoke-PipelineDryRun.ps1 `
+          -Organization $using:org `
+          -Project $using:project `
+          -PipelineKey "production:$_" `
+          -CatalogPath $using:catalogPath `
+          -CancelAfterSeconds 5
+  } -ThrottleLimit 8
+  ```
+
+  - `productionRouting.mode == "static"` → resolver returns every key under `production.*`; behavior identical to canary static mode.
+  - `productionRouting.mode == "cluster-type"` → resolver runs the Phase 11.6 Kusto query once, intersects the live cluster-type set with `productionRouting.clusterTypeMap`, and returns the resolved pipeline keys. Any `production.*` entry whose declared `clusterType` is NOT in the live set is surfaced in `$res.skipped` with `reason: "no live cluster type matched at query time"` — record each as `production.<key>._validated = { skipped: true, reason: "no live cluster type", resolvedAt: <UTC ISO> }` and tell the owner: *"Skipping {N} production pipeline(s) in dry-run because no live cluster type: {list}. They remain in `pipeline-catalog.json` and will be dry-run automatically next time their cluster type appears in Kusto."*
+  - If the resolver throws (Kusto failure, empty live set, missing `clusterTypeMap` entry), halt Phase 11.3 and surface the error verbatim — do NOT fall back to dry-running everything; that defeats the purpose of `cluster-type` mode.
+
+- **Dry-runs** queue and cancel real production pipeline runs (one per resolved pipeline). Reinforce the consent banner: *"Each resolved production pipeline will receive a queued-then-cancelled run — same 5-second window. EV2 will NOT fire because cancellation happens before the agent picks up the work. A production pipeline that targets multiple clouds is still dry-run only once — cloud-fan-out happens at real-release time in Step 15, not here."*
+- Validation loop is identical to Phase 11.2.
 - Persist `production.<key>._learnedFrom`, `_validated`, etc.
 
 If `productionRouting.mode == "cluster-type"`, the per-pipeline `clusterType` inference (Phase 11.1 step 3 bullet) runs again on production runs / YAML and populates `productionRouting.clusterTypeMap` the same way.
@@ -558,7 +658,8 @@ For each pipeline key (canary + production), collect:
 
 - **EV2 Service Groups** — `ev2ServiceGroups.<key>` = EV2 ServiceGroup name (e.g., `Microsoft.Azure.Backup.<Service>.<Component>.ACTIVE`)
 - **EV2 Cloud Coverage** — `ev2CloudCoverage.<key>` = array of clouds (`Prod`, `Fairfax`, `Mooncake`, `USNat`, `USSec`)
-- **EV2 Service Tree IDs** — `ev2ServiceTreeIds.<cloud>` = GUID (asked once per cloud, reused across pipelines)
+
+> **Do NOT prompt for `ev2ServiceTreeIds.<cloud>` here.** Group 3 already collected one Service Tree ID and persisted the same GUID to `serviceTreeIds.ev2.Prod`, `.Fairfax`, and `.Mooncake`. Phase 11.4 reuses those values verbatim — only ask the owner for an EV2 Service Tree ID if a cloud appears in `ev2CloudCoverage.<key>` that has no entry under `serviceTreeIds.ev2.*` (e.g., the owner enables `USNat` / `USSec` here and Group 3 never set those). In that case ask once per missing cloud and persist to `serviceTreeIds.ev2.<cloud>`.
 
 Tell the owner: *"This metadata isn't validatable by dry-run — it only matters at the EV2 monitoring stage of Step 15. If something's wrong here, it'll surface as a missing dashboard row, not a queue failure."*
 
@@ -572,7 +673,9 @@ The dispatcher recognizes these sub-identifiers in addition to plain `11`:
 |------------|-----------|
 | `11` | Phase 11.0 (full Group 11 from the top) |
 | `11.canary` | Phase 11.1 for canary pipelines only (skip official build + production) |
+| `11.5` | Phase 11.5 only — canary cluster-type detection Kusto config (auto-skipped when `canaryRouting.mode == "static"`) |
 | `11.prod` | Phase 11.3 (production discovery + dry-runs) |
+| `11.6` | Phase 11.6 only — production cluster-type detection Kusto config (auto-skipped when `productionRouting.mode == "static"`) |
 | `11.dryrun <pipelineKey>` | Re-run Phase 11.2 for a single pipeline (useful when YAML changed and the owner wants to re-validate) |
 | `11.discovery-only` | Run 11.0 + 11.1 + 11.3 discovery without any dry-run queue (skip 11.2 entirely; record `_validated.skipped = true`) |
 | `11.ev2` | Phase 11.4 only |
@@ -581,24 +684,24 @@ Each sub-identifier follows the same incremental-persistence rule and emits matc
 
 ---
 
-**Phase 4b — Canary Detection Kusto (schema-aware)**
+**Phase 11.5 — Canary cluster-type detection Kusto (schema-aware)**
 
 The agent uses this cluster for **pipeline selection only** — to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment. It does NOT classify individual stamp short names — once cluster-type-to-pipeline resolution is done, each selected pipeline's `templateParameters` (including stamp lists) are passed to ADO verbatim.
 
-> **Phase 4b runs after Group 11** because the questions below only make sense once `canaryRouting.mode` is known. Group 11 already collected it — Phase 4b just reads it and short-circuits when no Kusto is needed.
+> **Phase 11.5 runs inside Group 11**, after `canaryRouting.mode` is set in Phase 11.0 and before the Phase 11.2 canary dry-run fan-out so the resolver has Kusto config to work with. When `canaryRouting.mode == "static"` this phase auto-skips (the resolver returns every key without querying Kusto).
 
 0. **Read `pipeline-catalog.json → canaryRouting.mode`** (set during Group 11). Branch:
 
-   **If `mode == "static"`** — Phase 4b is not needed. Clear `service-config.json → kusto.canary.*` (cluster, database, queryFile, serviceFilter, stampPrefixFilter, clusterTypeExtraction) and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'static' — no canary-detection Kusto query is used"`. Recap to the owner: *"Phase 4b skipped — canary routing is `static`. Steps 5/7/10 will trigger every entry under `canary.*` / `production.*` in parallel."* Exit Phase 4b.
+   **If `mode == "static"`** — Phase 11.5 is not needed. Clear `service-config.json → kusto.canary.*` (cluster, database, queryFile, serviceFilter, stampPrefixFilter, clusterTypeExtraction) and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'static' — no canary-detection Kusto query is used"`. Recap to the owner: *"Phase 11.5 skipped — canary routing is `static`. Steps 5/7/10 will trigger every entry under `canary.*` / `production.*` in parallel."* Exit Phase 11.5.
 
-   **If `mode == "explicit"`** (or the `_pendingExplicitList` schema-fallback equivalent) — Phase 4b is not needed. Clear `kusto.canary.*` as above and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'explicit' — pipeline selection uses the static canaryStamps/canaryRegions list, no Kusto query"`. Show the brittleness reminder one more time:
-   > ⚠️ **Brittleness reminder**: the agent will trigger canary pipelines based on the static `canaryStamps` / `canaryRegions` list you declared in Group 11. Keep that list fresh when the org rebalances. To switch to dynamic Kusto-driven routing later, re-run `setup-service group 11` and change `canaryRouting.mode` to `cluster-type`, then re-run `setup-service group 4b` to collect the Kusto details.
+   **If `mode == "explicit"`** (or the `_pendingExplicitList` schema-fallback equivalent) — Phase 11.5 is not needed. Clear `kusto.canary.*` as above and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'explicit' — pipeline selection uses the static canaryStamps/canaryRegions list, no Kusto query"`. Show the brittleness reminder one more time:
+   > ⚠️ **Brittleness reminder**: the agent will trigger canary pipelines based on the static `canaryStamps` / `canaryRegions` list you declared in Group 11. Keep that list fresh when the org rebalances. To switch to dynamic Kusto-driven routing later, re-run `setup-service group 11` and change `canaryRouting.mode` to `cluster-type`, then re-run `setup-service group 11.5` to collect the Kusto details.
 
-   Exit Phase 4b.
+   Exit Phase 11.5.
 
    **If `mode == "cluster-type"`** — proceed with steps 1-5 below to collect the Kusto details.
 
-   **If `mode` is missing or unrecognized** — surface this as a configuration error: tell the owner to run `setup-service group 11` first to set `canaryRouting.mode`, then re-run `setup-service group 4b`. Do not prompt for any Kusto values yet.
+   **If `mode` is missing or unrecognized** — surface this as a configuration error: tell the owner to run `setup-service group 11` first to set `canaryRouting.mode`, then re-run `setup-service group 11.5`. Do not prompt for any Kusto values yet.
 
 1. **Show the default canary-detection query** — print verbatim in a fenced code block:
    ```kql
@@ -689,6 +792,65 @@ The agent uses this cluster for **pipeline selection only** — to discover whic
 5. After persistence, recap to the release owner what was saved (cluster, database, query file path, service filter value).
 
 > If the release owner uses the **same** Kusto cluster/database for both BVT and canary detection, the agent can still keep them as separate config keys — that's fine, just enter the same values.
+
+---
+
+**Phase 11.6 — Production cluster-type detection Kusto (schema-aware)**
+
+> **Phase 11.6 runs inside Group 11**, after `productionRouting.mode` is set in Phase 11.0 and before the Phase 11.3 production dry-run fan-out. When `productionRouting.mode == "static"` this phase auto-skips. Shape mirrors Phase 11.5 exactly — cluster-type is a pipeline-level attribute, so the resolver runs once per release (not per cloud) and the same query serves every cloud the pipeline pushes to.
+
+0. **Read `pipeline-catalog.json → productionRouting.mode`** (set during Phase 11.0). Branch:
+
+   **If `mode == "static"`** — Phase 11.6 is not needed. Clear `service-config.json → kusto.production.*` and record `kusto.production.scopingNotes = "productionRouting.mode is 'static' — no production-detection Kusto query is used; resolver returns all production.* keys"`. Recap to the owner: *"Phase 11.6 skipped — production routing is `static`. Step 10 and Step 15 will trigger every entry under `production.*` in parallel, and each pipeline pushes to whatever clouds are listed in `ev2CloudCoverage.<key>`."* Exit Phase 11.6.
+
+   **If `mode` is missing or unrecognized** — surface a configuration error: tell the owner to run `setup-service group 11` first to set `productionRouting.mode`, then re-run `setup-service group 11.6`.
+
+   **If `mode == "cluster-type"`** — proceed.
+
+1. **Show the default production-detection query** by reading `.github/skills/zed-agent/queries/Production-DeploymentUnits.kql` from disk and printing it verbatim. The default is identical in shape to the canary query — it reports which cluster types are currently live across the production fleet, regardless of cloud. (If your data is segregated such that you genuinely need a per-cloud query, switch to the custom-query path in step 4(B) and add the filter yourself — but the resolver itself is single-shot.)
+
+2. **Show the required column / placeholder contract**:
+   ```
+   Required columns in result rows:
+     StampName, DeploymentUnit (a set/array of deployment unit names)
+   Required placeholders in the query:
+     {{SERVICE_FILTER}}        (replaced with kusto.production.serviceFilter)
+     {{STAMP_PREFIX_FILTER}}   (replaced with kusto.production.stampPrefixFilter)
+   Downstream usage (Steps 10 and 15):
+     The resolver extracts the SET of live cluster types via
+     kusto.production.clusterTypeExtraction, intersects with
+     productionRouting.clusterTypeMap, and returns the pipeline keys
+     whose declared cluster type is currently live. Cloud fan-out
+     happens AFTER resolution — each resolved pipeline pushes to
+     whichever clouds are listed under ev2CloudCoverage.<key>.
+   Response parsing:
+     ALWAYS use $resp.Tables[0].Rows.
+   ```
+
+3. **Ask the schema-fit question** via `ask_user`:
+   > *"The default production query above is valid for services in **Azure Backup** (same `EventLogAllClusters` schema as canary). Does your service fall under Azure Backup?"*
+   > Choices: `Yes — Use default query`, `No — Use a different query`
+
+4. **Branch on the answer** — same shape as Phase 11.5:
+
+   **(A) `Yes — Use default query`** (default path):
+   - Persist `kusto.production.queryFile = "Production-DeploymentUnits.kql"`. If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version into it now.
+   - **Do NOT prompt for cluster/database** — use the same Azure Backup defaults as canary:
+     - `kusto.production.cluster` → `https://mabprod1.kusto.windows.net/`
+     - `kusto.production.database` → `MABKustoProd1`
+   - Persist `kusto.production.clusterTypeExtraction = { mode: "deployment-unit-substring" }`.
+   - Ask the **2 filter fields** (one at a time, persist after each):
+     - `kusto.production.serviceFilter` — same shape as canary `serviceFilter` (e.g., `ServiceName == 'prot'`). The owner can reuse the canary value or specify a broader one for production.
+     - `kusto.production.stampPrefixFilter` — list of stamp-name prefixes for production stamps. **Typically broader than canary** (production includes regions canary never touches). If `kusto.canary.stampPrefixFilter` is already set, offer it as a starting point via `ask_user` and let the owner extend.
+
+   **(B) `No — Use a different query`** — walk the owner through the same custom-query flow as Phase 11.5 step 4(B), but with these differences:
+   - Persist under `kusto.production.*` instead of `kusto.canary.*`.
+   - Collect `kusto.production.clusterTypeExtraction` the same way (modes: `deployment-unit-substring` | `column` | `custom`).
+
+5. **Hard reminder** before finishing:
+   > ⚠️ **Contract**: Step 10 (Roll-Forward) and Step 15 (Production Rollout) will invoke `Resolve-PipelinesByClusterType.ps1 -Scope production` **once per release** — not per cloud. The resolver runs this query verbatim, extracts cluster types via `kusto.production.clusterTypeExtraction`, and intersects with `productionRouting.clusterTypeMap` to decide which production pipeline(s) to trigger. Each resolved pipeline then pushes to whichever clouds are listed under `ev2CloudCoverage.<key>`. Make sure the suffix/key vocabulary in your query output lines up with `clusterTypeMap`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run.
+
+6. Recap to the release owner what was saved (cluster, database, query file path, service filter).
 
 ### Generation
 

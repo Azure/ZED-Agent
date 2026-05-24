@@ -19,16 +19,29 @@ $retryCount = 0; $maxRetries = 3; $baseDelay = 30
 $authFailNotified = $false
 
 function Get-AzToken([string]$Resource) {
-    # Returns token string or $null on auth error (caller decides how to handle)
-    $raw = az account get-access-token --resource $Resource --query accessToken -o tsv 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $msg = "$raw"
+    # Returns token string or $null on auth error (caller decides how to handle).
+    # Wrapped in a Start-Job with a 30s timeout so a hung `az` subprocess can't
+    # freeze the entire watcher loop (root cause of 2026-05 hibernation outage).
+    $job = Start-Job -ScriptBlock {
+        param($r)
+        $out = az account get-access-token --resource $r --query accessToken -o tsv 2>&1
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = "$out" }
+    } -ArgumentList $Resource
+    if (-not (Wait-Job $job -Timeout 30)) {
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+        throw 'az token acquisition timed out after 30s'
+    }
+    $r = Receive-Job $job
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    if ($r.ExitCode -ne 0) {
+        $msg = $r.Output
         if ($msg -match 'AADSTS|invalid_resource|Status_IncorrectConfiguration|InteractionRequired') {
             return $null  # Auth error — recoverable, don't throw
         }
         throw "az token error: $msg"  # Non-auth error — let caller's catch handle it
     }
-    return $raw
+    return $r.Output
 }
 
 function Write-AuthFailureAudit([string]$ReleaseId, [string]$Action) {
@@ -42,6 +55,19 @@ while ($true) {
     if (-not (Test-Path $stateFile)) { Start-Sleep -Seconds 30; continue }
     $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($state.status -in @('completed','stopped')) { break }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Heartbeat — always-on "I'm alive" audit entry at top of every iteration.
+    # Lets `status` / debugging answer "is the watcher actually running?" by
+    # tailing audit.jsonl, independent of whether any directive made progress.
+    # If the most recent heartbeat is older than ~2× the poll interval, the
+    # watcher is frozen (DevBox hibernation, hung I/O, etc.) — not just idle.
+    # ─────────────────────────────────────────────────────────────────────────
+    try {
+        $auditHb = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+        @{ ts = (Get-Date -Format 'o'); event = 'watcher-heartbeat'; pid = $PID; directive = $state.watcherDirective.action } |
+            ConvertTo-Json -Compress | Add-Content $auditHb -Encoding UTF8
+    } catch { <# heartbeat is best-effort; never fail the loop on it #> }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Drift-halt reminder (Layer 3) — any step in `failed-drift` is a soft halt
@@ -106,7 +132,7 @@ while ($true) {
             if ($tokenS4) {
                 $hdrS4 = @{ Authorization = "Bearer $tokenS4" }
                 $tmpS4 = Join-Path $env:TEMP "watcher_step4_excel_$ReleaseId.xlsx"
-                Invoke-RestMethod -Uri $state.step4ExcelUrl -Headers $hdrS4 -OutFile $tmpS4 -ErrorAction Stop
+                Invoke-RestMethod -Uri $state.step4ExcelUrl -Headers $hdrS4 -OutFile $tmpS4 -TimeoutSec 60 -ErrorAction Stop
                 if (-not (Get-Module -ListAvailable ImportExcel)) { Install-Module ImportExcel -Scope CurrentUser -Force }
                 $rowsS4 = Import-Excel $tmpS4 -ErrorAction Stop
                 $totalS4 = $rowsS4.Count
@@ -193,7 +219,7 @@ while ($true) {
             $allDone = $true; $anyFailed = $false
             foreach ($t in $dir.targets) {
                 if ($t.status -in @('completed','failed')) { continue }
-                $resp = Invoke-RestMethod -Uri $t.url -Headers $headers -ErrorAction Stop
+                $resp = Invoke-RestMethod -Uri $t.url -Headers $headers -TimeoutSec 60 -ErrorAction Stop
                 if ($resp.status -eq 'completed') {
                     $t.status = if ($resp.result -eq 'succeeded') { 'completed' } else { 'failed' }
                 }
@@ -295,7 +321,7 @@ while ($true) {
             $authFailNotified = $false
             $headers = @{ Authorization = "Bearer $token" }
             $tempFile = Join-Path $env:TEMP "watcher_excel_$ReleaseId.xlsx"
-            Invoke-RestMethod -Uri $dir.target -Headers $headers -OutFile $tempFile -ErrorAction Stop
+            Invoke-RestMethod -Uri $dir.target -Headers $headers -OutFile $tempFile -TimeoutSec 60 -ErrorAction Stop
             if (-not (Get-Module -ListAvailable ImportExcel)) { Install-Module ImportExcel -Scope CurrentUser -Force }
             $rows = Import-Excel $tempFile -ErrorAction Stop
             $total = $rows.Count
@@ -396,7 +422,7 @@ while ($true) {
             }
             $authFailNotified = $false
             $headers = @{ Authorization = "Bearer $token" }
-            $resp = Invoke-RestMethod -Uri $dir.target -Headers $headers -ErrorAction Stop
+            $resp = Invoke-RestMethod -Uri $dir.target -Headers $headers -TimeoutSec 60 -ErrorAction Stop
             if ($dir.successCondition -match '^\$\.(\w+)\s*==\s*''(.+)''$') {
                 $conditionMet = ($resp.$($Matches[1]) -eq $Matches[2])
             } elseif ($dir.successCondition -match '^\$\.(\w+)\s*>\s*''(.+)''$') {
@@ -437,6 +463,22 @@ while ($true) {
             if ($release.testMode -eq $true) { $interval = [math]::Min($interval, $testModeIntervalCap) }
         }
     } catch { <# Ignore — use default interval on parse failure #> }
-    Start-Sleep -Seconds $interval
+    # Chunked sleep: break the (possibly hour-long) poll interval into 60s
+    # slices so the loop stays interruptible and a hibernation event can't
+    # freeze the process mid-sleep for the full interval. Each tick also
+    # checks for an external stop signal (release status flipped to
+    # completed/stopped) without waiting for the full interval to elapse.
+    $remaining = $interval
+    while ($remaining -gt 0) {
+        $chunk = [math]::Min($remaining, 60)
+        Start-Sleep -Seconds $chunk
+        $remaining -= $chunk
+        if (Test-Path $stateFile) {
+            try {
+                $peek = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($peek.status -in @('completed','stopped')) { $remaining = 0 }
+            } catch { <# transient read race — keep sleeping #> }
+        }
+    }
 }
 Remove-Item $lockFile -Force -ErrorAction SilentlyContinue

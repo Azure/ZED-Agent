@@ -54,6 +54,55 @@
         "overridden":       { "type": "boolean", "default": false }
       },
       "required": ["ranAt", "status"]
+    },
+    "inventory": {
+      "type": "object",
+      "description": "Last Get-StampInventory.ps1 outcome for the current release. Gates Step 10 (Roll-Forward) and Step 15 (Production Rollout) when service-config.json → inventory.production.approvalRequired is true. Refreshed each time the inventory is recomputed.",
+      "additionalProperties": false,
+      "properties": {
+        "ranAt":          { "type": "string", "format": "date-time" },
+        "status":         { "type": "string", "enum": ["pass", "drift", "fail"], "description": "'pass' when SDS and Kusto agree within driftToleranceCount; 'drift' when reconciliation produced unmatched stamps above tolerance; 'fail' when the inventory could not be produced at all." },
+        "pipelineKey":    { "type": "string", "description": "Pipeline key from pipeline-catalog.json that this inventory snapshot was scoped to." },
+        "cloud":          { "type": "string", "description": "Cloud the snapshot was scoped to (e.g. 'Public', 'Fairfax'). Empty when the run covered all clouds." },
+        "stampCount":     { "type": "integer", "minimum": 0 },
+        "sds": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hash":        { "type": "string", "description": "SHA-256 of the canonical stamp list parsed from SDS. Used by the gate to detect SDS drift between approval and execution." },
+            "source":      { "type": "string", "description": "Absolute path or repo+branch+path the SDS was read from." },
+            "stampCount":  { "type": "integer", "minimum": 0 }
+          }
+        },
+        "kusto": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ranAt":      { "type": "string", "format": "date-time" },
+            "rowCount":   { "type": "integer", "minimum": 0 },
+            "stampCount": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "drift": {
+          "type": "array",
+          "description": "Reconciliation drift entries. Empty array means SDS and Kusto agree.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "stampName": { "type": "string" },
+              "side":      { "type": "string", "enum": ["sdsOnly", "kustoOnly", "grammar", "asc"] },
+              "reason":    { "type": "string" }
+            },
+            "required": ["stampName", "side"]
+          }
+        },
+        "approved":   { "type": "boolean", "description": "True when the owner has explicitly approved this inventory snapshot for use by Step 10 / Step 15.", "default": false },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "approvedBy": { "type": "string", "description": "Email/UPN of the owner who approved." },
+        "overridden": { "type": "boolean", "description": "True when the owner approved despite status='drift'.", "default": false }
+      },
+      "required": ["ranAt", "status"]
     }
   }
 }

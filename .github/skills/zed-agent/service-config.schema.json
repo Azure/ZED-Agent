@@ -208,7 +208,7 @@
             "serviceFilter":     { "type": "string",  "description": "KQL where-clause fragment substituted into {{SERVICE_FILTER}}. May be empty when scopingNotes records that the query is pre-scoped." },
             "stampPrefixFilter": {
               "type": "array",
-              "description": "List of stamp-name prefixes joined into a `StampName startswith '<p1>' or …` predicate and substituted into {{STAMP_PREFIX_FILTER}} — typically broader than canary.",
+              "description": "List of stamp-name prefixes joined into a `StampName startswith '<p1>' or …` predicate and substituted into {{STAMP_PREFIX_FILTER}}. Auto-derived by setup-service group 11.3a from the distinct lower-cased ShortName values under AzureServiceConfig.json → Clouds[Public].DataCenters[] — covers Public-cloud stamps only. Sovereign clouds (Fairfax/Mooncake/USNat/USSec) require AME-tenant Kusto and are handled out-of-band. Owners may hand-edit this list any time; the wizard will not overwrite a non-empty value on re-run.",
               "items": { "type": "string", "minLength": 1 }
             },
             "clusterTypeExtraction": {
@@ -504,11 +504,66 @@
       }
     },
 
+    "sds": {
+      "type": "object",
+      "description": "Service Datacenter Settings (Phobos 2022 schema, https://aka.ms/phobosweb/schema/2022/sds) location, keyed by pipeline key from pipeline-catalog.json. Populated by setup-service group 11.3b after the owner confirms the file the wizard located by following the pipeline YAML's `-SdsFiles <name>` hint. Consumed by Get-StampInventory.ps1 (SDS reconciliation for Public cloud, SDS-only inventory for sovereign clouds) and the inventory approval gate. Multiple pipeline keys may point at the same SDS file when one repo backs many pipelines.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["repo", "branch", "path", "fileName"],
+        "additionalProperties": true,
+        "properties": {
+          "repo":        { "type": "string", "description": "ADO repository name that hosts the SDS file (e.g. 'Mgmt-RecoverySvcs-DataMover').", "minLength": 1 },
+          "branch":      { "type": "string", "description": "Branch on which the SDS file is authoritative (matches the pipeline YAML's `resources.repositories` ref).", "minLength": 1, "default": "develop" },
+          "path":        { "type": "string", "description": "Path within the repo, ending in the filename (e.g. 'src/ServiceFabric/Deployment/ServiceDatacenterSettingsConfig.json').", "minLength": 1 },
+          "fileName":    { "type": "string", "description": "Bare filename as referenced by the pipeline's `-SdsFiles <name>` argument (e.g. 'ServiceDatacenterSettingsConfig.json' or 'ServiceDatacenterSettingsConfigActPass.json').", "minLength": 1 },
+          "confirmedAt": { "type": "string", "format": "date-time", "description": "UTC timestamp when the owner confirmed (via setup-service group 11.3b) that this is the SDS that contains all stamps for this service." },
+          "confirmedBy": { "type": "string", "description": "Email/UPN of the owner who confirmed the SDS location." },
+          "localClonePath": { "type": "string", "description": "Optional absolute path to a local clone of `repo`. When present, Get-StampInventory.ps1 reads the SDS from disk instead of fetching from ADO — faster and works offline." }
+        }
+      }
+    },
+
+    "sdsFieldMapping": {
+      "type": "object",
+      "description": "Overrides the Phobos 2022 default dotted paths Get-StampInventoryFromSds.ps1 walks when parsing the SDS. Built-in defaults match the schema at https://aka.ms/phobosweb/schema/2022/sds. Set this block only when the service's SDS uses a non-standard shape; setup-service group 11.3b detects the shape and writes the override once with owner confirmation. Any subset of keys may be supplied — missing keys fall back to the built-in defaults.",
+      "additionalProperties": false,
+      "properties": {
+        "cloudArrayPath":     { "type": "string", "description": "Dotted path from SDS root to the array of cloud entries. Default 'CloudSettings'.", "default": "CloudSettings" },
+        "cloudNameField":     { "type": "string", "description": "Field on each cloud entry that holds its name (e.g. 'Public', 'Canary', 'Fairfax'). Default 'CloudName'.", "default": "CloudName" },
+        "stampsArrayField":   { "type": "string", "description": "Field on each cloud entry that holds the array of stamps. Default 'StampSettings'.", "default": "StampSettings" },
+        "stampIdField":       { "type": "string", "description": "Field on each stamp entry holding the canonical stamp id (e.g. 'ea-01'). Default 'StampId'.", "default": "StampId" },
+        "stampNamePath":      { "type": "string", "description": "Dotted path from a stamp entry to the full stamp name (e.g. 'ea-can02-dm1'). Default 'Macros.__StampName__'.", "default": "Macros.__StampName__" },
+        "clusterNamePath":    { "type": "string", "description": "Default 'Macros.__ClusterName__'.", "default": "Macros.__ClusterName__" },
+        "dcShortNamePath":    { "type": "string", "description": "Default 'Macros.__DatacenterShortName__'.", "default": "Macros.__DatacenterShortName__" },
+        "regionPath":         { "type": "string", "description": "Default 'Macros.__ClusterLocation__'.", "default": "Macros.__ClusterLocation__" },
+        "deploymentNamePath": { "type": "string", "description": "Default 'Macros.__DeploymentName__'.", "default": "Macros.__DeploymentName__" },
+        "dsmsRegionPath":     { "type": "string", "description": "Default 'Macros.__DsmsRegion__'.", "default": "Macros.__DsmsRegion__" }
+      }
+    },
+
     "inventory": {
       "type": "object",
-      "description": "Stamp/region inventory overrides. Populated by setup-service. The production inventory is always live-queried from Kusto by Get-StampInventory.ps1; the canary inventory is owner-curated here (canary set is small and stable — one DC in the Canary cloud, today).",
+      "description": "Stamp/region inventory overrides. Populated by setup-service. The production inventory is live-queried from Kusto by Get-StampInventory.ps1 and (when sds is configured) cross-checked against SDS; the canary inventory is owner-curated here (canary set is small and stable — one DC in the Canary cloud, today). Sovereign clouds (Fairfax/Mooncake/USNat/USSec) are sourced from SDS only — Get-StampInventory.ps1 refuses Kusto for them because AME-tenant access is unavailable from setup-service.",
       "additionalProperties": true,
       "properties": {
+        "driftToleranceCount": {
+          "type": "integer",
+          "description": "Maximum number of unmatched stamps (Kusto-only or SDS-only) tolerated before Get-StampInventory.ps1 marks the run as 'drift' and the inventory approval gate refuses Step 10 / Step 15. 0 means any drift requires re-approval.",
+          "minimum": 0,
+          "default": 0
+        },
+        "production": {
+          "type": "object",
+          "description": "Production inventory gate settings.",
+          "additionalProperties": true,
+          "properties": {
+            "approvalRequired": {
+              "type": "boolean",
+              "description": "When true (default), readiness.inventory.approved must be true AND readiness.inventory.sds.hash must match the latest SDS hash before Step 10 (Roll-Forward) and Step 15 (Production Rollout) are allowed to fire.",
+              "default": true
+            }
+          }
+        },
         "canary": {
           "type": "object",
           "description": "Owner-curated canary stamp inventory. Get-StampInventory.ps1 (-Scope canary) reads this block instead of querying Kusto. Cross-checked against fixtures/AzureServiceConfig.snapshot.json (Canary cloud) for region/layout validity.",

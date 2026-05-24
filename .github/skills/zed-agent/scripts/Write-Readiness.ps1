@@ -6,7 +6,7 @@
     re-run the underlying check.
 
 .PARAMETER Stage
-    Which top-level section to update: 'preflight' | 'setupService' | 'setup'.
+    Which top-level section to update: 'preflight' | 'setupService' | 'setup' | 'inventory'.
 
 .PARAMETER Data
     Hashtable of fields to merge into that section. Whatever keys are
@@ -19,7 +19,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('preflight', 'setupService', 'setup')]
+    [ValidateSet('preflight', 'setupService', 'setup', 'inventory')]
     [string]$Stage,
 
     [Parameter(Mandatory)]

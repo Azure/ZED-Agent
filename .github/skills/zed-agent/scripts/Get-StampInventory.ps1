@@ -46,6 +46,17 @@
     Default behavior is LIVE-FIRST — ADO is the source of truth and the
     on-disk cache + committed snapshot only serve as fallbacks for outages.
 
+.PARAMETER PipelineKey
+    Names which entry under service-config.json → sds.<key> to use for SDS
+    reconciliation. When omitted and exactly one key is configured, that one
+    is auto-selected. Required when -Cloud is sovereign (Fairfax/Mooncake/
+    USNat/USSec) because Kusto is unavailable and SDS is the sole source.
+
+.PARAMETER SdsReconcile
+    Force-enables the SDS cross-check pass even when only one source
+    (Kusto) would otherwise be consulted. The pass runs automatically when
+    a matching sds.<PipelineKey> block exists in service-config.json.
+
 .PARAMETER MaxAgeHours
     Cache TTL applied to ASC and to production inventory cache. Default 24h.
 
@@ -73,9 +84,11 @@ param(
     [string]$AscSnapshotPath,
     [string]$QueriesDir,
     [string]$InventoryCachePath,
+    [string]$PipelineKey,
     [int]   $MaxAgeHours = 24,
     [switch]$NoCache,
-    [switch]$PreferCache
+    [switch]$PreferCache,
+    [switch]$SdsReconcile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,6 +106,36 @@ if (-not (Test-Path $ascScript))         { throw "Get-AzureServiceConfig.ps1 sib
 $config = Get-Content $ServiceConfigPath -Raw | ConvertFrom-Json
 $stampTag = $config.service.stampTag
 if (-not $stampTag) { throw "service-config.json → service.stampTag is required (e.g. 'prot', 'rec'). Run 'setup-service group 1'." }
+
+# ── SDS configuration resolution ──────────────────────────────────────────
+# Sovereign clouds cannot be reached from setup-service's PME tenant Kusto.
+# Get-StampInventoryFromSds.ps1 is the sole source for those clouds.
+$sovereignClouds = @('Fairfax','Mooncake','USNat','USSec','Bleu','BVTD3','EXP')
+$isSovereignCloud = ($Cloud -and ($sovereignClouds -contains $Cloud))
+
+$sdsEntry = $null
+if ($Scope -eq 'production' -and $config.sds) {
+    $sdsBlock = $config.sds
+    $sdsKeys = @($sdsBlock.PSObject.Properties.Name)
+    if ($PipelineKey) {
+        if ($sdsBlock.PSObject.Properties[$PipelineKey]) {
+            $sdsEntry = $sdsBlock.$PipelineKey
+        } else {
+            throw "service-config.json → sds.$PipelineKey not found. Available keys: $($sdsKeys -join ', '). Run 'setup-service group 11.3b'."
+        }
+    } elseif ($sdsKeys.Count -eq 1) {
+        $PipelineKey = $sdsKeys[0]
+        $sdsEntry    = $sdsBlock.$PipelineKey
+    } elseif ($sdsKeys.Count -gt 1) {
+        if ($isSovereignCloud -or $SdsReconcile) {
+            throw "-PipelineKey is required when service-config.json → sds has multiple keys: $($sdsKeys -join ', ')."
+        }
+    }
+}
+if ($isSovereignCloud -and -not $sdsEntry) {
+    throw "Cloud '$Cloud' is sovereign and requires service-config.json → sds.<PipelineKey> to be populated. Run 'setup-service group 11.3b'."
+}
+$sdsReconcileEnabled = [bool]$sdsEntry -and ($Scope -eq 'production') -and ($SdsReconcile -or $sdsEntry)
 
 # ── Stamp regex ────────────────────────────────────────────────────────
 # {shortName}-{layout}-{stampTag}{index}.  All lowercase; index may be alnum.
@@ -181,8 +224,29 @@ if ($Scope -eq 'canary') {
         })
     }
 }
+elseif ($isSovereignCloud) {
+    # Sovereign cloud: SDS is the sole source. Build raw stamps directly from
+    # the parsed SDS, scoped to this cloud. Kusto is not consulted.
+    $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
+    if (-not (Test-Path $sdsScript)) { throw "Get-StampInventoryFromSds.ps1 sibling script missing at $sdsScript." }
+    $sdsPath = if ($sdsEntry.localClonePath) { Join-Path $sdsEntry.localClonePath $sdsEntry.path } else { $sdsEntry.path }
+    if (-not (Test-Path $sdsPath)) { throw "SDS file not found at '$sdsPath'. Set sds.$PipelineKey.localClonePath or sync the local clone." }
+    $sdsInv = & $sdsScript -SdsPath $sdsPath -Cloud $Cloud -ServiceConfigPath $ServiceConfigPath
+    if (-not $sdsInv.stamps -or @($sdsInv.stamps).Count -eq 0) {
+        throw "SDS at '$sdsPath' returned 0 stamps for cloud '$Cloud'. Verify sds.$PipelineKey is correct."
+    }
+    foreach ($s in $sdsInv.stamps) {
+        $rawStamps.Add([PSCustomObject]@{
+            stampName   = "$($s.stampName)".ToLowerInvariant()
+            clusterType = $null
+            cloudHint   = $Cloud
+            layoutHint  = $null
+            source      = 'sds'
+        })
+    }
+}
 else {
-    # production: run kusto.production query
+    # production (public cloud): run kusto.production query
     $k = $config.kusto.production
     if (-not $k -or -not $k.cluster -or -not $k.database -or -not $k.queryFile) {
         throw "service-config.json → kusto.production (cluster/database/queryFile) is required for Scope=production."
@@ -343,7 +407,7 @@ $effectiveCloud = $null
 if     ($Scope -eq 'canary')                { $effectiveCloud = $config.inventory.canary.cloud }
 elseif ($Scope -eq 'production' -and $Cloud) { $effectiveCloud = $Cloud }
 
-$stampSource = if ($Scope -eq 'canary') { 'config' } else { 'kusto' }
+$stampSource = if ($Scope -eq 'canary') { 'config' } elseif ($isSovereignCloud) { 'sds' } else { 'kusto' }
 $sourcesObj = [PSCustomObject]@{
     stamps    = $stampSource
     ascSource = $asc.source
@@ -356,14 +420,70 @@ $stampsOut  = @($stamps  | ForEach-Object { $_ })
 $regionsOut = @($regions | ForEach-Object { $_ })
 $driftOut   = @($drift   | ForEach-Object { $_ })
 $result = New-Object PSObject
-$result | Add-Member -NotePropertyName scope    -NotePropertyValue $Scope
-$result | Add-Member -NotePropertyName cloud    -NotePropertyValue $effectiveCloud
-$result | Add-Member -NotePropertyName stampTag -NotePropertyValue $stampTag
-$result | Add-Member -NotePropertyName stamps   -NotePropertyValue $stampsOut
-$result | Add-Member -NotePropertyName regions  -NotePropertyValue $regionsOut
-$result | Add-Member -NotePropertyName drift    -NotePropertyValue $driftOut
-$result | Add-Member -NotePropertyName sources  -NotePropertyValue $sourcesObj
-$result | Add-Member -NotePropertyName kusto    -NotePropertyValue $kustoMeta
+$result | Add-Member -NotePropertyName scope        -NotePropertyValue $Scope
+$result | Add-Member -NotePropertyName cloud        -NotePropertyValue $effectiveCloud
+$result | Add-Member -NotePropertyName pipelineKey  -NotePropertyValue $PipelineKey
+$result | Add-Member -NotePropertyName stampTag     -NotePropertyValue $stampTag
+$result | Add-Member -NotePropertyName stamps       -NotePropertyValue $stampsOut
+$result | Add-Member -NotePropertyName regions      -NotePropertyValue $regionsOut
+$result | Add-Member -NotePropertyName drift        -NotePropertyValue $driftOut
+$result | Add-Member -NotePropertyName sources      -NotePropertyValue $sourcesObj
+$result | Add-Member -NotePropertyName kusto        -NotePropertyValue $kustoMeta
+
+# ── SDS reconciliation (production scope only) ───────────────────────────────
+if ($sdsReconcileEnabled) {
+    $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
+    if (-not (Test-Path $sdsScript)) { throw "Get-StampInventoryFromSds.ps1 sibling script missing at $sdsScript." }
+    $sdsPath = if ($sdsEntry.localClonePath) { Join-Path $sdsEntry.localClonePath $sdsEntry.path } else { $sdsEntry.path }
+    if (-not (Test-Path $sdsPath)) {
+        Write-Warning "SDS reconciliation skipped — file not found at '$sdsPath'. Set sds.$PipelineKey.localClonePath or sync the local clone."
+    } else {
+        $sdsArgs = @{ SdsPath = $sdsPath; ServiceConfigPath = $ServiceConfigPath }
+        $sdsCloudForReconcile = if ($Cloud) { $Cloud } elseif ($isSovereignCloud) { $Cloud } else { 'Public' }
+        if ($sdsCloudForReconcile) { $sdsArgs.Cloud = $sdsCloudForReconcile }
+        $sdsInv = & $sdsScript @sdsArgs
+        $sdsNames   = @($sdsInv.stamps | ForEach-Object { "$($_.stampName)".ToLowerInvariant() }) | Sort-Object -Unique
+        $kustoNames = @($stampsOut | ForEach-Object { $_.stampName }) | Sort-Object -Unique
+        $sdsSet   = [System.Collections.Generic.HashSet[string]]::new([string[]]$sdsNames, [System.StringComparer]::OrdinalIgnoreCase)
+        $kustoSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$kustoNames, [System.StringComparer]::OrdinalIgnoreCase)
+        $sdsOnly   = @($sdsNames   | Where-Object { -not $kustoSet.Contains($_) })
+        $kustoOnly = @($kustoNames | Where-Object { -not $sdsSet.Contains($_) })
+        $tolerance = if ($null -ne $config.inventory.driftToleranceCount) { [int]$config.inventory.driftToleranceCount } else { 0 }
+        $driftCount = $sdsOnly.Count + $kustoOnly.Count
+        $reconcile = [PSCustomObject]@{
+            hash             = $sdsInv.hash
+            source           = $sdsPath
+            stampCount       = @($sdsInv.stamps).Count
+            cloud            = $sdsCloudForReconcile
+            sdsOnly          = $sdsOnly
+            kustoOnly        = $kustoOnly
+            driftCount       = $driftCount
+            toleranceCount   = $tolerance
+            withinTolerance  = ($driftCount -le $tolerance)
+        }
+        $result | Add-Member -NotePropertyName sdsReconciliation -NotePropertyValue $reconcile
+        foreach ($n in $sdsOnly)   { $driftOut += [PSCustomObject]@{ stampName = $n; side = 'sdsOnly';   reason = "present in SDS but not in Kusto result" } }
+        foreach ($n in $kustoOnly) { $driftOut += [PSCustomObject]@{ stampName = $n; side = 'kustoOnly'; reason = "present in Kusto but not in SDS"        } }
+        $result.drift = $driftOut
+    }
+} elseif ($isSovereignCloud) {
+    # Sovereign cloud path already used SDS as the source; surface the hash so
+    # the inventory approval gate has something to compare against.
+    $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
+    $sdsPath = if ($sdsEntry.localClonePath) { Join-Path $sdsEntry.localClonePath $sdsEntry.path } else { $sdsEntry.path }
+    $sdsInv = & $sdsScript -SdsPath $sdsPath -Cloud $Cloud -ServiceConfigPath $ServiceConfigPath
+    $result | Add-Member -NotePropertyName sdsReconciliation -NotePropertyValue ([PSCustomObject]@{
+        hash            = $sdsInv.hash
+        source          = $sdsPath
+        stampCount      = @($sdsInv.stamps).Count
+        cloud           = $Cloud
+        sdsOnly         = @()
+        kustoOnly       = @()
+        driftCount      = 0
+        toleranceCount  = 0
+        withinTolerance = $true
+    })
+}
 
 # ── Persist cache ─────────────────────────────────────────────────────
 try {

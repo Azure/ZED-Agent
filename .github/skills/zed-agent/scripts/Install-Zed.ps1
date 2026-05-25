@@ -42,9 +42,7 @@
          about empty fields)
       5. Force-add and commit:
             git add -f .github/agents/ZedAgent.agent.md
-            git add -f .github/skills/zed-agent/
-            git add -f .github/skills/teams-chat/
-            git add -f .github/skills/setup-service/
+            git add -f .github/skills/
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -68,14 +66,34 @@ if (-not $SourcePath) {
 }
 
 $srcAgentMd          = Join-Path $SourcePath '.github\agents\ZedAgent.agent.md'
-$srcSkillDir         = Join-Path $SourcePath '.github\skills\zed-agent'
-$srcTeamsChatDir     = Join-Path $SourcePath '.github\skills\teams-chat'
-$srcSetupServiceDir  = Join-Path $SourcePath '.github\skills\setup-service'
+$srcSkillsRoot       = Join-Path $SourcePath '.github\skills'
+$srcSkillDir         = Join-Path $srcSkillsRoot 'zed-agent'
 
-if (-not (Test-Path $srcAgentMd))  { throw "Source agent file not found: $srcAgentMd" }
-if (-not (Test-Path $srcSkillDir)) { throw "Source skill directory not found: $srcSkillDir" }
-if (-not (Test-Path $srcTeamsChatDir)) { throw "Source teams-chat skill not found: $srcTeamsChatDir (required dependency for Send-TeamsMessage)" }
-if (-not (Test-Path $srcSetupServiceDir)) { throw "Source setup-service skill not found: $srcSetupServiceDir (required for the setup-service onboarding wizard)" }
+if (-not (Test-Path $srcAgentMd))    { throw "Source agent file not found: $srcAgentMd" }
+if (-not (Test-Path $srcSkillsRoot)) { throw "Source skills root not found: $srcSkillsRoot" }
+if (-not (Test-Path $srcSkillDir))   { throw "Source zed-agent skill directory not found: $srcSkillDir" }
+
+# Auto-discover every sibling skill folder under .github\skills\ that has a
+# SKILL.md (excluding 'zed-agent' which has its own copy block with
+# empty-config-skeleton handling). Adding a new skill = a new folder with
+# SKILL.md = automatically copied by this installer. No code change required.
+$srcSiblingSkills = Get-ChildItem -Path $srcSkillsRoot -Directory |
+    Where-Object { $_.Name -ne 'zed-agent' -and (Test-Path (Join-Path $_.FullName 'SKILL.md')) } |
+    Sort-Object Name
+if ($srcSiblingSkills.Count -eq 0) {
+    Write-Warning "No sibling skill folders with SKILL.md found under $srcSkillsRoot. Continuing — only zed-agent will be installed."
+} else {
+    Write-Verbose ("Sibling skills discovered: " + ($srcSiblingSkills.Name -join ', '))
+}
+
+# Hard-required sibling skills — Install-Zed must refuse to scaffold if any
+# of these is missing from source (they are tightly coupled to the agent body).
+$requiredSiblingSkills = @('teams-chat', 'setup-service', 'setup', 'test-preflight')
+foreach ($req in $requiredSiblingSkills) {
+    if (-not ($srcSiblingSkills | Where-Object Name -eq $req)) {
+        throw "Required sibling skill '$req' not found at $srcSkillsRoot\$req\SKILL.md. Cannot install — the agent references this skill."
+    }
+}
 
 # ─── Resolve target ──────────────────────────────────────────────────────────
 if (-not (Test-Path $TargetRepoPath)) { throw "Target repo path does not exist: $TargetRepoPath" }
@@ -86,9 +104,8 @@ if (-not (Test-Path (Join-Path $TargetRepoPath '.git'))) {
 }
 
 $tgtAgentMd          = Join-Path $TargetRepoPath '.github\agents\ZedAgent.agent.md'
-$tgtSkillDir         = Join-Path $TargetRepoPath '.github\skills\zed-agent'
-$tgtTeamsChatDir     = Join-Path $TargetRepoPath '.github\skills\teams-chat'
-$tgtSetupServiceDir  = Join-Path $TargetRepoPath '.github\skills\setup-service'
+$tgtSkillsRoot       = Join-Path $TargetRepoPath '.github\skills'
+$tgtSkillDir         = Join-Path $tgtSkillsRoot 'zed-agent'
 
 # Files we never copy from source (runtime artifacts or live configs we'll
 # replace with embedded empty skeletons below).
@@ -149,49 +166,37 @@ Get-ChildItem -Path $srcSkillDir -Recurse -File | ForEach-Object {
     }
 }
 
-# ─── Copy teams-chat sibling skill (hard dependency for Send-TeamsMessage) ───
-if ($PSCmdlet.ShouldProcess($tgtTeamsChatDir, 'Create directory')) {
-    New-Item -Type Directory -Path $tgtTeamsChatDir -Force | Out-Null
-}
-Get-ChildItem -Path $srcTeamsChatDir -Recurse -File | ForEach-Object {
-    $rel    = $_.FullName.Substring($srcTeamsChatDir.Length).TrimStart('\','/')
-    $segs   = $rel -split '[\\/]'
-    if ($segs | Where-Object { $excludedDirs -contains $_ }) {
-        Write-Verbose "Skipping runtime dir entry: $rel"
-        return
-    }
-    $dst    = Join-Path $tgtTeamsChatDir $rel
-    $dstDir = Split-Path -Parent $dst
-    if (-not (Test-Path $dstDir)) {
-        if ($PSCmdlet.ShouldProcess($dstDir, 'Create directory')) {
-            New-Item -Type Directory -Path $dstDir -Force | Out-Null
-        }
-    }
-    if ($PSCmdlet.ShouldProcess($dst, "Copy teams-chat/$rel")) {
-        Copy-Item -Path $_.FullName -Destination $dst -Force:$Force
-    }
-}
+# ─── Copy every sibling skill auto-discovered above ──────────────────────────
+# Every folder under .github\skills\ with a SKILL.md (except zed-agent, which
+# is handled separately above) is copied verbatim. This is the single source
+# of truth for sibling-skill installation — adding a new skill folder needs
+# no edits here.
+foreach ($srcSkill in $srcSiblingSkills) {
+    $skillName = $srcSkill.Name
+    $srcDir    = $srcSkill.FullName
+    $tgtDir    = Join-Path $tgtSkillsRoot $skillName
 
-# ─── Copy setup-service sibling skill (one-time onboarding wizard) ───────────
-if ($PSCmdlet.ShouldProcess($tgtSetupServiceDir, 'Create directory')) {
-    New-Item -Type Directory -Path $tgtSetupServiceDir -Force | Out-Null
-}
-Get-ChildItem -Path $srcSetupServiceDir -Recurse -File | ForEach-Object {
-    $rel    = $_.FullName.Substring($srcSetupServiceDir.Length).TrimStart('\','/')
-    $segs   = $rel -split '[\\/]'
-    if ($segs | Where-Object { $excludedDirs -contains $_ }) {
-        Write-Verbose "Skipping runtime dir entry: $rel"
-        return
+    if ($PSCmdlet.ShouldProcess($tgtDir, "Create directory for skill '$skillName'")) {
+        New-Item -Type Directory -Path $tgtDir -Force | Out-Null
     }
-    $dst    = Join-Path $tgtSetupServiceDir $rel
-    $dstDir = Split-Path -Parent $dst
-    if (-not (Test-Path $dstDir)) {
-        if ($PSCmdlet.ShouldProcess($dstDir, 'Create directory')) {
-            New-Item -Type Directory -Path $dstDir -Force | Out-Null
+
+    Get-ChildItem -Path $srcDir -Recurse -File | ForEach-Object {
+        $rel    = $_.FullName.Substring($srcDir.Length).TrimStart('\','/')
+        $segs   = $rel -split '[\\/]'
+        if ($segs | Where-Object { $excludedDirs -contains $_ }) {
+            Write-Verbose "Skipping runtime dir entry: $skillName/$rel"
+            return
         }
-    }
-    if ($PSCmdlet.ShouldProcess($dst, "Copy setup-service/$rel")) {
-        Copy-Item -Path $_.FullName -Destination $dst -Force:$Force
+        $dst    = Join-Path $tgtDir $rel
+        $dstDir = Split-Path -Parent $dst
+        if (-not (Test-Path $dstDir)) {
+            if ($PSCmdlet.ShouldProcess($dstDir, 'Create directory')) {
+                New-Item -Type Directory -Path $dstDir -Force | Out-Null
+            }
+        }
+        if ($PSCmdlet.ShouldProcess($dst, "Copy $skillName/$rel")) {
+            Copy-Item -Path $_.FullName -Destination $dst -Force:$Force
+        }
     }
 }
 
@@ -223,8 +228,9 @@ Write-Host ""
 Write-Host "Files placed:" -ForegroundColor White
 Write-Host "  .github/agents/ZedAgent.agent.md"
 Write-Host "  .github/skills/zed-agent/  (scripts, schema, queries, templates)"
-Write-Host "  .github/skills/teams-chat/ (CDP-based Teams messaging — auto-discovers conversation IDs)"
-Write-Host "  .github/skills/setup-service/ (one-time onboarding wizard — Copilot CLI skill)"
+foreach ($s in $srcSiblingSkills) {
+    Write-Host ("  .github/skills/{0}/" -f $s.Name)
+}
 Write-Host "  .github/skills/zed-agent/service-config.json    [empty]"
 Write-Host "  .github/skills/zed-agent/pipeline-catalog.json  [empty]"
 Write-Host ""
@@ -238,8 +244,6 @@ Write-Host "  3. Use `@ZedAgent setup-service validate` to re-check at any time.
 Write-Host ""
 Write-Host "Then commit (note -f because .github/ is often gitignored):" -ForegroundColor Cyan
 Write-Host "  git add -f .github/agents/ZedAgent.agent.md"
-Write-Host "  git add -f .github/skills/zed-agent/"
-Write-Host "  git add -f .github/skills/teams-chat/"
-Write-Host "  git add -f .github/skills/setup-service/"
+Write-Host "  git add -f .github/skills/"
 Write-Host "  git commit -m `"feat(zed): onboard ZED Agent`""
 Write-Host ""

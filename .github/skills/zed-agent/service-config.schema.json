@@ -566,45 +566,56 @@
         },
         "canary": {
           "type": "object",
-          "description": "Owner-curated canary stamp inventory. Get-StampInventory.ps1 (-Scope canary) reads this block instead of querying Kusto. Cross-checked against fixtures/AzureServiceConfig.snapshot.json (Canary cloud) for region/layout validity.",
-          "required": ["cloud", "layout", "regions", "stamps"],
+          "description": "Owner-curated canary stamp inventory. Multi-cloud: each stamp carries its own cloud / region / layout so services whose canary stamps span Public + sovereign clouds (or live entirely in Public, e.g. 'ecy', 'ccy') are represented natively. Get-StampInventory.ps1 (-Scope canary) reads this block instead of enumerating ASC datacenters, and lazily resolves clusterType via the Kusto query collected in Phase 4b when entries have clusterType=null and canaryRouting.mode == 'cluster-type'.",
+          "required": ["stamps"],
           "additionalProperties": true,
           "properties": {
             "cloud": {
               "type": "string",
-              "description": "Cloud Name as it appears in AzureServiceConfig.json → Clouds[].Name.",
-              "default": "Canary",
+              "description": "DEPRECATED single-cloud cloud Name. Kept only so older configs still load; new fields live on each stamp. New configs should omit.",
               "minLength": 1
             },
             "layout": {
               "type": "string",
-              "description": "Cloud Layout (stamp-name middle segment) as it appears in AzureServiceConfig.json → Clouds[].Layout. Must match the cloud entry.",
-              "default": "can02",
+              "description": "DEPRECATED single-cloud Layout. Kept only so older configs still load; new fields live on each stamp.",
               "pattern": "^[a-z0-9]+$"
             },
             "regions": {
               "type": "array",
-              "description": "ShortName values from AzureServiceConfig.json → Clouds[Canary].DataCenters[].ShortName that this service deploys into. Typically a single entry for canary.",
-              "items": { "type": "string", "pattern": "^[a-z0-9]+$" },
-              "minItems": 1,
-              "examples": [["ea"]]
+              "description": "DEPRECATED single-cloud regions list. Kept only so older configs still load; new fields live on each stamp.",
+              "items": { "type": "string", "pattern": "^[a-z0-9]+$" }
             },
             "stamps": {
               "type": "array",
-              "description": "All canary stamps for this service. Each entry MUST parse as `{shortName}-{layout}-{stampTag}{index}` where shortName ∈ regions, layout == this.layout, stampTag == service.stampTag.",
+              "description": "Canary stamps for this service across all clouds. Each entry carries its own cloud / region / layout so the agent does not assume a single canary cloud. clusterType may be null at setup time — Get-StampInventory.ps1 fills it lazily via the Phase 4b Kusto query when canaryRouting.mode == 'cluster-type'.",
               "items": {
                 "type": "object",
-                "required": ["stampName", "clusterType"],
+                "required": ["stampName"],
                 "additionalProperties": true,
                 "properties": {
                   "stampName": {
                     "type": "string",
-                    "description": "Full stamp identifier as it appears in Kusto / EV2 (e.g. 'ea-can02-prot1').",
+                    "description": "Full stamp identifier as it appears in Kusto / EV2 (e.g. 'ea-can02-prot1', 'ecy-prod-prot1').",
                     "pattern": "^[a-z0-9]+-[a-z0-9]+-[a-z]+[a-z0-9]+$"
                   },
-                  "clusterType": {
+                  "cloud": {
                     "type": "string",
-                    "description": "Cluster type token consumed by pipeline-catalog.json → canaryRouting.clusterTypeMap (e.g. 'sfrp', 'sfmc', 'eap', 'aks').",
+                    "description": "Cloud Name from AzureServiceConfig.json → Clouds[].Name (e.g. 'Public', 'Canary', 'BVTD3'). Optional for back-compat — when omitted, falls back to inventory.canary.cloud (deprecated singular).",
+                    "minLength": 1
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "DataCenter ShortName from ASC (e.g. 'ea', 'ecy', 'ccy'). Optional for back-compat — when omitted, derived from stampName prefix.",
+                    "pattern": "^[a-z0-9]+$"
+                  },
+                  "layout": {
+                    "type": "string",
+                    "description": "Cloud Layout (stamp-name middle segment) for this stamp's cloud (e.g. 'can02', 'prod'). Optional for back-compat — when omitted, falls back to inventory.canary.layout (deprecated singular).",
+                    "pattern": "^[a-z0-9]+$"
+                  },
+                  "clusterType": {
+                    "type": ["string", "null"],
+                    "description": "Cluster type token consumed by pipeline-catalog.json → canaryRouting.clusterTypeMap (e.g. 'sfrp', 'sfmc', 'eap', 'aks'). May be null at setup time — Get-StampInventory.ps1 fills it lazily by running kusto.canary when canaryRouting.mode == 'cluster-type'. setup-service Group 4c never prompts for this value.",
                     "minLength": 1
                   },
                   "notes": {

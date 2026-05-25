@@ -209,17 +209,22 @@ $kustoMeta = $null
 if ($Scope -eq 'canary') {
     $canaryInv = $config.inventory.canary
     if (-not $canaryInv -or -not $canaryInv.stamps) {
-        throw "service-config.json → inventory.canary.stamps is empty. Run 'setup-service group 4b' to enumerate canary stamps."
+        throw "service-config.json → inventory.canary.stamps is empty. Run 'setup-service group 4c' to enumerate canary stamps."
     }
-    # Pin the expected cloud/layout from the owner-curated block.
-    $expectedCloud  = $canaryInv.cloud
-    $expectedLayout = "$($canaryInv.layout)".ToLowerInvariant()
+    # Multi-cloud canary: each stamp carries its own cloud/region/layout.
+    # Deprecated singular fields (canaryInv.cloud / canaryInv.layout) are used
+    # only as a fallback so older configs still load without re-running setup.
+    $fallbackCloud  = if ($canaryInv.cloud)  { "$($canaryInv.cloud)" }  else { $null }
+    $fallbackLayout = if ($canaryInv.layout) { "$($canaryInv.layout)".ToLowerInvariant() } else { $null }
     foreach ($s in $canaryInv.stamps) {
+        $perCloud  = if ($s.PSObject.Properties['cloud']  -and $s.cloud)  { "$($s.cloud)" }  else { $fallbackCloud }
+        $perLayout = if ($s.PSObject.Properties['layout'] -and $s.layout) { "$($s.layout)".ToLowerInvariant() } else { $fallbackLayout }
+        $ct        = if ($s.PSObject.Properties['clusterType'] -and $s.clusterType) { "$($s.clusterType)".ToLowerInvariant() } else { $null }
         $rawStamps.Add([PSCustomObject]@{
             stampName   = "$($s.stampName)".ToLowerInvariant()
-            clusterType = "$($s.clusterType)".ToLowerInvariant()
-            cloudHint   = $expectedCloud
-            layoutHint  = $expectedLayout
+            clusterType = $ct
+            cloudHint   = $perCloud
+            layoutHint  = $perLayout
             source      = 'config'
         })
     }
@@ -385,6 +390,124 @@ foreach ($rs in $rawStamps) {
     })
 }
 
+# ── Lazy clusterType resolution for canary (multi-cloud) ──────────────
+# When inventory.canary.stamps[].clusterType is null AND
+# pipeline-catalog.json → canaryRouting.mode == 'cluster-type' AND
+# service-config.json → kusto.canary.{cluster,database,queryFile} are set,
+# run the Phase 4b detection query and join by stampName so the resolver
+# in Steps 5/7/10 gets clusterType-tagged stamps without setup-service ever
+# prompting the owner for it.
+if ($Scope -eq 'canary' -and $stamps.Count -gt 0) {
+    $needsResolve = @($stamps | Where-Object { -not $_.clusterType -or "$($_.clusterType)".Trim().Length -eq 0 })
+    if ($needsResolve.Count -gt 0) {
+        $kc = $config.kusto.canary
+        $catalogPath = Join-Path $repoRoot '.github\skills\zed-agent\pipeline-catalog.json'
+        $canaryMode = $null
+        if (Test-Path $catalogPath) {
+            try {
+                $catalog = Get-Content $catalogPath -Raw | ConvertFrom-Json
+                if ($catalog.canaryRouting -and $catalog.canaryRouting.mode) {
+                    $canaryMode = "$($catalog.canaryRouting.mode)".ToLowerInvariant()
+                }
+            } catch {
+                Write-Verbose "Get-StampInventory: pipeline-catalog.json parse failed; skipping lazy canary clusterType resolve. $_"
+            }
+        }
+        $kustoConfigured = $kc -and $kc.cluster -and $kc.database -and $kc.queryFile
+        if ($canaryMode -eq 'cluster-type' -and $kustoConfigured) {
+            $queryPath = Join-Path $QueriesDir $kc.queryFile
+            if (-not (Test-Path $queryPath)) {
+                Write-Warning "Phase 4b query file not found: $queryPath — leaving canary clusterType unresolved."
+            } else {
+                $queryText = Get-Content $queryPath -Raw
+                $serviceFilter = if ($kc.serviceFilter) { $kc.serviceFilter } else { '1 == 1' }
+                $stampPrefixFilter = '1 == 1'
+                if ($kc.stampPrefixFilter) {
+                    if ($kc.stampPrefixFilter -is [string]) {
+                        $stampPrefixFilter = $kc.stampPrefixFilter
+                    } elseif (@($kc.stampPrefixFilter).Count -gt 0) {
+                        $stampPrefixFilter = ($kc.stampPrefixFilter | ForEach-Object { "StampName startswith '$_'" }) -join ' or '
+                    }
+                }
+                $queryText = $queryText.Replace('{{SERVICE_FILTER}}', $serviceFilter)
+                $queryText = $queryText.Replace('{{STAMP_PREFIX_FILTER}}', $stampPrefixFilter)
+                if ($kc.queryVariables) {
+                    foreach ($qv in $kc.queryVariables.PSObject.Properties) {
+                        $queryText = $queryText.Replace("{{$($qv.Name)}}", "$($qv.Value)")
+                    }
+                }
+                $token = az account get-access-token --resource $kc.cluster --query accessToken -o tsv 2>$null
+                if (-not $token) {
+                    Write-Warning "Failed to acquire Kusto token for $($kc.cluster) — leaving canary clusterType unresolved. Run 'az login' (Repair-AzAuth.ps1)."
+                } else {
+                    $kStarted = Get-Date
+                    try {
+                        $kResp = Invoke-RestMethod -Uri (($kc.cluster.TrimEnd('/')) + "/v1/rest/query") -Method POST `
+                            -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } `
+                            -Body (@{ db = $kc.database; csl = $queryText } | ConvertTo-Json -Depth 4) -ErrorAction Stop
+                    } catch {
+                        Write-Warning "Phase 4b Kusto query failed — leaving canary clusterType unresolved. $_"
+                        $kResp = $null
+                    }
+                    if ($kResp) {
+                        $kPrimary = $kResp.Tables[0]
+                        $kCols = @($kPrimary.Columns | ForEach-Object { $_.ColumnName })
+                        $kRows = foreach ($r in $kPrimary.Rows) {
+                            $obj = [ordered]@{}
+                            for ($i = 0; $i -lt $kCols.Count; $i++) { $obj[$kCols[$i]] = $r[$i] }
+                            [PSCustomObject]$obj
+                        }
+                        $extraction = if ($kc.clusterTypeExtraction) { $kc.clusterTypeExtraction } else { [PSCustomObject]@{ mode = 'deployment-unit-substring' } }
+                        $stampMap = @{}
+                        foreach ($row in $kRows) {
+                            $rowStamp = "$($row.StampName)".ToLowerInvariant()
+                            if (-not $rowStamp) { continue }
+                            $rowCt = $null
+                            switch ($extraction.mode) {
+                                'deployment-unit-substring' {
+                                    $units = @()
+                                    if ($row.PSObject.Properties['DeploymentUnit'])     { $units += @($row.DeploymentUnit) }
+                                    if ($row.PSObject.Properties['set_DeploymentUnit']) { $units += @($row.set_DeploymentUnit) }
+                                    foreach ($u in $units) {
+                                        $s = "$u".ToLowerInvariant()
+                                        if     ($s -match '-sfmc') { $rowCt = 'sfmc'; break }
+                                        elseif ($s -match '-sfrp') { $rowCt = 'sfrp'; break }
+                                        elseif ($s -match '-sf')   { $rowCt = 'sfrp'; break }
+                                        elseif ($s -match '-eap')  { $rowCt = 'eap';  break }
+                                        elseif ($s -match '-aks')  { $rowCt = 'aks';  break }
+                                    }
+                                }
+                                'column' {
+                                    if ($extraction.column) {
+                                        $v = $row.($extraction.column)
+                                        if ($null -ne $v -and "$v".Length -gt 0) { $rowCt = "$v".ToLowerInvariant() }
+                                    }
+                                }
+                                default { }
+                            }
+                            if ($rowCt) { $stampMap[$rowStamp] = $rowCt }
+                        }
+                        foreach ($st in $stamps) {
+                            if ((-not $st.clusterType -or "$($st.clusterType)".Trim().Length -eq 0) -and $stampMap.ContainsKey($st.stampName)) {
+                                $st.clusterType = $stampMap[$st.stampName]
+                            }
+                        }
+                        $kustoMeta = [PSCustomObject]@{
+                            ranAt      = $kStarted.ToUniversalTime().ToString('o')
+                            durationMs = [int]((Get-Date) - $kStarted).TotalMilliseconds
+                            rowCount   = @($kRows).Count
+                            cluster    = $kc.cluster
+                            database   = $kc.database
+                            queryFile  = $kc.queryFile
+                            purpose    = 'canary-lazy-clusterType-resolve'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 # ── Slice regions actually in use ─────────────────────────────────────
 $inUseKeys = @($stamps | ForEach-Object { "$($_.cloud)::$($_.shortName)" } | Sort-Object -Unique)
 $regions = @(
@@ -404,7 +527,12 @@ $regions = @(
 
 # ── Effective cloud for the result envelope ───────────────────────────
 $effectiveCloud = $null
-if     ($Scope -eq 'canary')                { $effectiveCloud = $config.inventory.canary.cloud }
+if ($Scope -eq 'canary') {
+    # Multi-cloud canary: return the distinct set of clouds that the resolved
+    # stamps actually live in. Single-cloud services produce a one-element array.
+    $effectiveCloud = @($stamps | ForEach-Object { $_.cloud } | Sort-Object -Unique)
+    if ($effectiveCloud.Count -eq 1) { $effectiveCloud = $effectiveCloud[0] }
+}
 elseif ($Scope -eq 'production' -and $Cloud) { $effectiveCloud = $Cloud }
 
 $stampSource = if ($Scope -eq 'canary') { 'config' } elseif ($isSovereignCloud) { 'sds' } else { 'kusto' }

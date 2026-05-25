@@ -95,8 +95,10 @@ If the release owner types `setup-service validate`, skip all prompting — go s
 | `2` | Group 2 — Azure DevOps |
 | `3` | Group 3 — Service Tree ID |
 | `4a` | Phase 4a — BVT Kusto (schema-aware) |
-| `4b` | Group 4b — Canary Stamp Inventory (cloud / layout / regions / stamps) |
-| `4c` | Group 4c — Production Stamp/Region Inventory (per-cloud ASC snapshot) |
+| `4b` | Phase 4b — Canary Detection Kusto (cluster-type discovery query) |
+| `4c` | Group 4c — Canary Stamp Inventory (multi-cloud per-stamp `{ stampName, cloud, region, layout }`) |
+| `4d` | Group 4d — Production Stamp/Region Inventory (per-cloud ASC snapshot) |
+| `4e` | Phase 4e — Production Detection Kusto (cluster-type discovery query) |
 | `5a` | Group 5 — Notification Groups (DLs + Teams chats) |
 | `5b` | Group 5b — Notification Routing (4 default broadcasts + owner-added per-step / status entries) |
 | `6` | Group 6 — Operational defaults |
@@ -106,7 +108,7 @@ If the release owner types `setup-service validate`, skip all prompting — go s
 | `10` | Group 10 — Test mode |
 | `11` | Pipeline Catalog (Group 11 — pipeline-catalog.json entries) |
 
-> **Group 11 sub-identifiers**: `11.canary`, `11.prod`, `11.dryrun <pipelineKey>`, `11.discovery-only`, `11.ev2`, `11.1a` (canary cluster-type detection Kusto — runs between 11.1 and 11.2), `11.3a` (production cluster-type detection Kusto — runs inside 11.3, between production discovery and production dry-run), `11.3b` (SDS discovery + inventory generation — runs inside 11.3, after 11.3a and before 11.4), `11.4a` (pipeline YAML introspection — runs inside 11.4, before EV2 metadata is collected) — see the Group 11 section for behavior. Treat them as valid identifiers in step 2 of the dispatcher (do not reject as unknown).
+> **Group 11 sub-identifiers**: `11.canary`, `11.prod`, `11.dryrun <pipelineKey>`, `11.discovery-only`, `11.ev2`, `11.1a` (canary cluster-type resolver invocation — Kusto config itself now lives in **Phase 4b**), `11.3a` (production cluster-type resolver invocation — Kusto config itself now lives in **Phase 4e**), `11.3b` (SDS discovery + inventory generation — runs inside 11.3, after 11.3a and before 11.4), `11.4a` (pipeline YAML introspection — runs inside 11.4, before EV2 metadata is collected) — see the Group 11 section for behavior. Treat them as valid identifiers in step 2 of the dispatcher (do not reject as unknown).
 
 Dispatcher behavior:
 1. Parse the trailing token after `setup-service group `.
@@ -119,7 +121,7 @@ Dispatcher behavior:
 Ask for:
 - `service.name` — Short canonical name (e.g., "Prot", "DPM", "MABS"). Used in file names, tags, and filters.
 - `service.displayName` — Human-readable name (e.g., "Protection Service", "Data Protection Manager")
-- `service.stampTag` — Lowercase per-service infix used in stamp names (e.g. `prot` for `ea-can02-prot1`, `rec` for `eus-pod01-rec2`). Drives canary stamp parsing in `Get-StampInventory.ps1` and stamp filtering in the canary inventory (Group 4b) and production Kusto query (Phase 11.3a). Ask the release owner: *"Look at any one of your service's stamp names in EV2 or Kusto. The middle-segment letters between the layout and the trailing number — that's your stamp tag. Common values: `prot`, `rec`, `mab`, `bdp`."* Validate against `^[a-z]+$` and re-ask on invalid input.
+- `service.stampTag` — Lowercase per-service infix used in stamp names (e.g. `prot` for `ea-can02-prot1`, `rec` for `eus-pod01-rec2`). Drives canary stamp parsing in `Get-StampInventory.ps1` and stamp filtering in the canary inventory (Group 4c) and production Kusto query (Phase 4e). Ask the release owner: *"Look at any one of your service's stamp names in EV2 or Kusto. The middle-segment letters between the layout and the trailing number — that's your stamp tag. Common values: `prot`, `rec`, `mab`, `bdp`."* Validate against `^[a-z]+$` and re-ask on invalid input.
 
 > **Do NOT prompt for `service.agentFeedbackEmail`.** This field is hardcoded to `gwazire@microsoft.com` (the ZED agent author). Always write that exact value to `service-config.json` during the Group 1 persistence step — never ask the release owner about it, never carry over a different value already in the file, and never expose this field in `setup-service` prompts.
 
@@ -147,7 +149,7 @@ Kusto powers several discovery and analysis tasks in this agent:
 - **Production stamp cluster-type detection** (Step 15) — same idea as canary, but across production stamps for every cloud the service runs in (Public, Mooncake, Fairfax, Bleu, USNat, USSec, …) so the agent picks the right production pipeline(s) per cloud.
 - **Region + stamp inventory per cloud** — enumerates the regions and stamp short names that belong to each cloud (Public / MC / FF / Bleu / …) for region scoping at production trigger time.
 
-Collect the connection + query settings for BVT in **Phase 4a** here. The canary and production cluster-type detection Kusto config is collected *inside* Group 11 as **Phase 11.1a** (canary, runs between 11.1 and 11.2) and **Phase 11.3a** (production, runs inside 11.3 between discovery and dry-run) — both sit AFTER routing modes and per-pipeline cluster types are known but BEFORE the dry-run fan-outs that depend on the resolver. If `canaryRouting.mode == "static"`, Phase 11.1a is auto-skipped; if `productionRouting.mode == "static"`, Phase 11.3a is auto-skipped — in `static` mode the resolver returns every `{scope}.*` key without querying Kusto, so no Kusto config is needed.
+Collect the connection + query settings for BVT in **Phase 4a**, canary cluster-type detection in **Phase 4b**, the multi-cloud canary stamp inventory itself in **Group 4c**, the per-cloud production stamp snapshot in **Group 4d**, and production cluster-type detection in **Phase 4e**. The Phase 4b / Phase 4e Kusto values are stored under `kusto.canary.*` and `kusto.production.*` and used by `Resolve-PipelinesByClusterType.ps1` + the lazy clusterType resolver in `Get-StampInventory.ps1` whenever `pipeline-catalog.json → canaryRouting.mode` (or `productionRouting.mode`) is `cluster-type`. When routing mode is `static` or `explicit`, the resolver invocation (Phase 11.1a / Phase 11.3a inside Group 11) just no-ops — no Kusto call is made — but the Phase 4b / Phase 4e config still loads cleanly so flipping the mode later does not require a setup re-run.
 
 ---
 
@@ -216,9 +218,81 @@ The agent runs a built-in BVT failure-analysis query to decide whether canary BV
 
 ---
 
-**Group 4b — Canary Stamp Inventory**
+**Phase 4b — Canary Detection Kusto (schema-aware)**
 
-The canary fleet is small, stable, and **owner-curated** — there is no live Kusto query for canary stamp discovery. This group captures the exact stamps the agent should target in Steps 5 / 7 / 10. The owner-curated list is cross-checked against the authoritative `AzureServiceConfig.json` (fetched live from `Mgmt-RecoverySvcs-DeploymentExtn` by `Get-AzureServiceConfig.ps1`; cache and committed snapshot are fallbacks only) so a typo in a stamp name fails fast in `setup-service validate` instead of at canary-deploy time.
+The agent uses this Kusto query for **canary pipeline selection** — to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment. The same query also resolves `clusterType` for individual stamps in `inventory.canary.stamps[]` (Group 4c never prompts for `clusterType` — `Get-StampInventory.ps1` lazily runs this query on first canary read and joins by `StampName`). When `canaryRouting.mode != "cluster-type"` (set in Phase 11.0 later), the resolver invocation (Phase 11.1a) and the lazy join both no-op — but collecting the config here is cheap and lets owners flip the mode later without re-running setup.
+
+1. **Show the default canary-detection query** — print verbatim in a fenced code block:
+   ```kql
+   EventLogAllClusters
+   | where TIMESTAMP > ago(1d)
+   | where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
+   | where {{STAMP_PREFIX_FILTER}}
+   | summarize make_set(DeploymentUnit) by StampName
+   | order by StampName asc
+   ```
+2. **Show the required column contract**:
+   ```
+   Required columns in result rows:
+     StampName, DeploymentUnit (a set/array of deployment unit names)
+   Required placeholders in the query:
+     {{SERVICE_FILTER}}        (replaced with kusto.canary.serviceFilter at runtime,
+                                e.g., ServiceName == 'prot')
+     {{STAMP_PREFIX_FILTER}}   (replaced with kusto.canary.stampPrefixFilter at runtime,
+                                e.g., StampName startswith 'ea-can' or
+                                      StampName startswith 'ecy' or
+                                      StampName startswith 'ccy')
+   Downstream usage:
+     1) Pipeline selection (Steps 5/7/10): the agent collects the SET of cluster
+        types observed across all rows (by inspecting DeploymentUnit substrings —
+        e.g., '-sfmc' → 'sfmc', '-sf' without '-sfmc' → 'sfrp'). This set is
+        intersected with canaryRouting.clusterTypeMap to pick which pipelines to fire.
+     2) Per-stamp clusterType (Group 4c stamps): rows are joined back by StampName
+        and the inferred clusterType is written to inventory.canary.stamps[*].clusterType
+        on first read by Get-StampInventory.ps1. Group 4c never prompts the owner
+        for clusterType — Kusto is the single source of truth.
+   Response parsing:
+     ALWAYS use $resp.Tables[0].Rows.
+   ```
+3. **Ask the schema-fit question** via `ask_user`:
+   > *"The default query above is valid for services in **Azure Backup**. Does your service fall under Azure Backup?"*
+   > Choices: `Yes — Use default query`, `No — Use a different query`
+4. **Branch on the answer**:
+
+   **(A) `Yes — Use default query`** (default path):
+   - Persist `kusto.canary.queryFile = "Canary-DeploymentUnits.kql"`. If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version above into it now. **Do NOT prompt for the filename.**
+   - **Do NOT prompt for `kusto.canary.cluster` or `kusto.canary.database`** — write the Azure Backup defaults directly:
+     - `kusto.canary.cluster` → `https://mabprod1.kusto.windows.net/`
+     - `kusto.canary.database` → `MABKustoProd1`
+   - Persist `kusto.canary.clusterTypeExtraction = { mode: "deployment-unit-substring" }`.
+   - Ask only the **2 filter fields** (one at a time, persist after each):
+     - `kusto.canary.serviceFilter` — KQL `where` predicate that selects rows belonging to your service (e.g., `ServiceName == 'prot'`). Substituted into `{{SERVICE_FILTER}}` at runtime.
+     - `kusto.canary.stampPrefixFilter` — KQL `where` predicate that narrows `StampName` to your service's canary stamps. Substituted into `{{STAMP_PREFIX_FILTER}}` at runtime.
+
+       **Canary stamp filter shape (service-agnostic guidance):** This value is a KQL `where`-clause fragment over the `StampName` column. The general shape is `StampName startswith '<prefix1>' or StampName startswith '<prefix2>' …`. Replace `<prefix...>` with the short-name prefixes your service uses for canary stamps. Leave empty if your custom `.kql` file does not use the `{{STAMP_PREFIX_FILTER}}` placeholder.
+
+       **Conditional default offer:** If `service.name` matches a known MAB-family service (case-insensitive regex `^(WBCM|DM|Prot)$`), offer the MAB-historical predicate `StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'` as a suggested default via `ask_user` — but make clear this is a snapshot and the owner is free to edit. For all other services, present `ask_user` with **no pre-filled value** and the shape guidance above; do not bake one service's stamp prefixes into another service's setup.
+
+   **(B) `No — Use a different query`**:
+   - Walk the owner through the same guided setup as Phase 4a step 4(B) (custom query path), but persisting under `kusto.canary.*`:
+     1. Ask `kusto.canary.cluster` and `kusto.canary.database`.
+     2. Ask `Paste KQL now` vs `Point me at a .kql file in this repo`; capture the file into `.github/skills/zed-agent/queries/<service-name>-canary.kql` (paste path) or validate the existing file path. Persist to `kusto.canary.queryFile`.
+     3. Reconcile timestamp window, service-scoping (`Uses a {{SERVICE_FILTER}}-style column filter` / `Uses a different mechanism` / `No scoping needed`), and stamp-prefix scoping (`{{STAMP_PREFIX_FILTER}}` or not). Persist `kusto.canary.serviceFilter`, `kusto.canary.stampPrefixFilter`, `kusto.canary.scopingNotes`, and any custom placeholders under `kusto.canary.queryVariables.<NAME>`.
+     4. Confirm cluster-type extraction via `ask_user`: `Set/array column named DeploymentUnit (parse substrings like -sfmc, -sf)`, `Dedicated column (e.g., ClusterType)` (ask for column name), or `Other` (free text). Persist to `kusto.canary.clusterTypeExtraction`.
+     5. Confirm result columns include at least `StampName` plus the cluster-type column; persist to `kusto.canary.resultColumns`.
+
+5. **Hard reminder** before finishing:
+   > ⚠️ **Contract**: Steps 5/7/10 will run this query verbatim, substituting `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}` / any custom placeholders. The agent then (a) extracts the SET of cluster types via `kusto.canary.clusterTypeExtraction` and intersects with `canaryRouting.clusterTypeMap` (Group 11) to pick canary pipelines, and (b) joins rows back by `StampName` to fill `inventory.canary.stamps[*].clusterType`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run.
+
+6. Recap to the release owner what was saved (cluster, database, query file path, service filter value).
+
+---
+
+**Group 4c — Canary Stamp Inventory**
+
+The canary fleet is small, stable, and **owner-curated** — but it spans multiple clouds. Some services have all canary stamps in one purpose-built cloud (e.g. `Canary`); others have canary stamps inside the **Public** cloud (e.g. `ecy`, `ccy` regions for Prot). Each stamp carries its own `{ cloud, region, layout }`, so the inventory works for either shape.
+
+This group captures the exact stamps the agent targets in Steps 5 / 7 / 10. The owner-curated list is cross-checked against the authoritative `AzureServiceConfig.json` (fetched live from `Mgmt-RecoverySvcs-DeploymentExtn` by `Get-AzureServiceConfig.ps1`; cache and committed snapshot are fallbacks only) so a typo in a stamp name fails fast in `setup-service validate` instead of at canary-deploy time. **`clusterType` is never prompted** — it is filled lazily by `Get-StampInventory.ps1` running the Phase 4b query and joining by `StampName`.
 
 Prerequisite: `service.stampTag` must already be set (Group 1). If it is empty, jump back to Group 1 before continuing.
 
@@ -226,41 +300,61 @@ Prerequisite: `service.stampTag` must already be set (Group 1). If it is empty, 
    ```powershell
    $asc = & .\.github\skills\zed-agent\scripts\Get-AzureServiceConfig.ps1
    ```
-   Default behavior is live-first. If the call surfaces a warning that it fell back to cache or snapshot, tell the release owner — they may want to fix `az login` before continuing so the validation below is grounded in truth.
+   Default behavior is live-first. If the call surfaces a warning that it fell back to cache or snapshot, tell the release owner — they may want to fix `az login` before continuing so validation is grounded in truth.
 
-2. **Pick the canary cloud** via `ask_user` from the list of ASC clouds whose `Name` contains `Canary` or `BVTD3` (today: `Canary`, `BVTD3`). Persist to `inventory.canary.cloud`. Default to `Canary` and pre-select it.
+2. **Present ALL clouds × DataCenters as one flat multi-select** via `ask_user`. Build the choice list by iterating every `$asc.data.Clouds[*]` and every `DataCenters[*]` underneath — do NOT filter by cloud name. For each row, render:
 
-3. **Pick the layout** — auto-read `Clouds[<chosen>].Layout` from ASC (no prompt — there's only one). Persist to `inventory.canary.layout`.
+   ```
+   [x] Public / ecy   (DatacenterType: EarlyRollout)
+   [x] Public / ccy   (DatacenterType: Pilot)
+   [ ] Public / eus   (DatacenterType: Production)
+   [x] Canary / ea    (DatacenterType: Canary)
+   [ ] Fairfax / usva (DatacenterType: Production)
+   …
+   ```
 
-4. **Pick canary regions** via `ask_user` (multi-select) from `Clouds[<chosen>].DataCenters[].ShortName`. The canary cloud typically has one DC, so default to selecting all and let the owner deselect. Persist the chosen short names to `inventory.canary.regions`.
+   **Default-check** any DataCenter whose `DatacenterType` (case-insensitive) contains `Pilot`, `Canary`, or `EarlyRollout`. Leave everything else unchecked. The owner can flip any checkbox.
 
-5. **Enumerate canary stamps** — for each chosen region, ask:
-   > *"How many `{shortName}-{layout}-{stampTag}{index}` stamps does your service run in `<region>`? (Type a comma-separated list of indexes — e.g. `1, 1d, 2`. The agent will build the full stamp names for you.)"*
-   Construct each `stampName = "<shortName>-<layout>-<stampTag><index>"`. For each stamp, ask via `ask_user` for the `clusterType` token (free text; must match one of the keys in `pipeline-catalog.json → canaryRouting.clusterTypeMap` once Group 11 is filled — but accept any non-empty lowercase string here and let Group 11 validation catch mismatches). Persist the full list to `inventory.canary.stamps` as `[{ stampName, clusterType }, ...]`.
+3. **For each selected `(cloudName, shortName)` pair**, read that cloud's layout from ASC: `$layout = $asc.data.Clouds | Where-Object Name -eq $cloudName | Select-Object -ExpandProperty Layout`. Do NOT prompt for layout — it is a per-cloud constant.
 
-6. **Validate immediately** by calling:
+4. **Enumerate canary stamps per selection**, asking only for the index list:
+   > *"How many `{shortName}-{layout}-{stampTag}{index}` stamps does your service run in `<cloudName> / <shortName>`? (Comma-separated indexes — e.g. `1, 1d, 2`. The agent builds the full stamp names.)"*
+   For each index, build `stampName = "<shortName>-<layout>-<stampTag><index>"` and push `{ stampName, cloud: <cloudName>, region: <shortName>, layout: <layout>, clusterType: null }` to `inventory.canary.stamps`. **Never prompt for clusterType.**
+
+5. **Validate immediately** by calling:
    ```powershell
    $inv = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 -Scope canary
    ```
-   - If `$inv.drift` is non-empty, render the drift table to the owner (`stampName`, `reason`) and re-prompt for each drifted stamp. Common reasons: shortName not in cloud (typo), serviceTag does not match `service.stampTag` (wrong infix), stamp name does not match grammar.
-   - If `$inv.stamps.Count -eq 0`, halt and re-run Group 4b from step 5.
+   - If `$inv.drift` is non-empty, render the drift table (`stampName`, `reason`) and re-prompt for each drifted stamp. Common reasons: shortName not in that cloud, serviceTag mismatch, grammar mismatch.
+   - If `$inv.stamps.Count -eq 0`, halt and re-run Group 4c from step 2.
+   - If `canaryRouting.mode == "cluster-type"` (set later in Phase 11.0) AND `kusto.canary.cluster` is configured (Phase 4b), `Get-StampInventory.ps1` runs the canary detection query lazily and writes resolved `clusterType` values back into each stamp. The recap below shows the resolved values.
 
-7. **Recap** to the release owner: `Cloud: <name>, Layout: <layout>, Regions: <count>, Stamps: <count>, Drift: 0`. Remind them that Steps 5 / 7 / 10 will read this block verbatim and that any stamp added or decommissioned needs a re-run of `setup-service group 4b`.
+6. **Recap + confirm**. Render the full inventory as a table to the release owner:
 
-> **Note**: The canary/production cluster-type detection Kusto config lives inside Group 11 as Phase 11.1a (canary) and Phase 11.3a (production) so it sits next to `canaryRouting.mode` / `productionRouting.mode` and runs in the right order relative to the dry-runs. Continue to **Group 4c** next for the production fleet snapshot.
+   | Cloud | Region | Layout | Stamps | Resolved clusterType |
+   |-------|--------|--------|--------|----------------------|
+   | Public | ecy | prod | ecy-prod-prot1, ecy-prod-prot2 | sfmc, sfrp |
+   | Public | ccy | prod | ccy-prod-prot1 | sfrp |
+   | Canary | ea | can02 | ea-can02-prot1 | sfmc |
+
+   Then `ask_user`:
+   > *"Does this canary inventory look right? Picking `Edit` lets you redo the selection from step 2. Picking `Yes — looks good` finalizes the inventory and continues to Group 4d."*
+   > Choices: `Yes — looks good`, `Edit`
+
+   On `Edit`, jump back to step 2. On `Yes — looks good`, persist the inventory and remind the owner that any stamp added or decommissioned needs a re-run of `setup-service group 4c`.
 
 ---
 
-**Group 4c — Production Stamp/Region Inventory (per-cloud ASC snapshot)**
+**Group 4d — Production Stamp/Region Inventory (per-cloud ASC snapshot)**
 
-The production fleet is too large to enumerate stamp-by-stamp the way Group 4b does for canary, but at *setup time* the agent CAN compute the full per-cloud inventory directly from ASC and persist a snapshot. This snapshot has two jobs:
+The production fleet is too large to enumerate stamp-by-stamp the way Group 4c does for canary, but at *setup time* the agent CAN compute the full per-cloud inventory directly from ASC and persist a snapshot. This snapshot has two jobs:
 
 1. **Phase 11.3 dry-runs** substitute `{{pubRegions}}`, `{{ffRegions}}`, `{{ffStamps}}` (and any cloud-prefixed equivalents) from this snapshot, so the production dry-run POST body looks like a real maximum-scope release — not an empty-string placeholder.
 2. **Step 15 (real release)** re-fetches ASC live and **diffs against this snapshot**. Added regions/stamps are flagged as `+drift`, removed as `-drift`, and the owner sees the diff before the production POST is queued. On `Accept`, the diff is auto-merged back into `inventory.production.<cloud>` so the next release starts from the new baseline.
 
-Prerequisite: `service.stampTag` (Group 1) and a successful Group 4b run (so the agent knows the stamp grammar). If `service.stampTag` is empty, jump back to Group 1.
+Prerequisite: `service.stampTag` (Group 1) and a successful Group 4c run (so the agent knows the stamp grammar). If `service.stampTag` is empty, jump back to Group 1.
 
-1. **Fetch ASC** (re-uses the call from Group 4b if already loaded this session):
+1. **Fetch ASC** (re-uses the call from Group 4c if already loaded this session):
    ```powershell
    $asc = & .\.github\skills\zed-agent\scripts\Get-AzureServiceConfig.ps1
    ```
@@ -304,7 +398,7 @@ Prerequisite: `service.stampTag` (Group 1) and a successful Group 4b run (so the
 6. **Recap** to the release owner:
    - *"Snapshot saved for {N} clouds, {total regions}, {total stamps}."*
    - *"This is what Phase 11.3 will POST to your production pipelines for `{{pubRegions}}` / `{{ffRegions}}` / `{{ffStamps}}`-style parameters — no CCOA filtering, no exclusion list (those don't exist at setup time). Dry-run is a **maximum-scope** preview."*
-   - *"At Step 15 of every real release, the agent re-fetches ASC live and diffs against this snapshot. If a region or stamp was added/removed since you ran Group 4c, you'll see a drift table and approve the new scope before the production POST goes out. On approval, this snapshot is updated automatically. Re-run `setup-service group 4c` any time to force-refresh the baseline."*
+   - *"At Step 15 of every real release, the agent re-fetches ASC live and diffs against this snapshot. If a region or stamp was added/removed since you ran Group 4d, you'll see a drift table and approve the new scope before the production POST goes out. On approval, this snapshot is updated automatically. Re-run `setup-service group 4d` any time to force-refresh the baseline."*
 
 > **Drift contract for runtime**: `Resolve-RegionScope.ps1` (called at Step 15) MUST:
 > 1. Call `Get-AzureServiceConfig.ps1` live.
@@ -312,6 +406,63 @@ Prerequisite: `service.stampTag` (Group 1) and a successful Group 4b run (so the
 > 3. If either set is non-empty, render the diff to the owner and require explicit `Accept` before substituting tokens.
 > 4. On `Accept`, merge the live values into `inventory.production.<cloud>` and bump `_snapshotFrom.at`.
 > 5. On `Reject`, halt Step 15 with a clear message — don't fall back to either side silently.
+
+---
+
+**Phase 4e — Production Detection Kusto (schema-aware)**
+
+Mirrors Phase 4b exactly, but persists under `kusto.production.*` and is used by Step 10 / Step 15 to pick production pipelines when `productionRouting.mode == "cluster-type"`. Cluster-type is a pipeline-level attribute, so the resolver runs once per release (not per cloud) and the same query serves every cloud the pipeline pushes to. When `productionRouting.mode != "cluster-type"`, the resolver invocation (Phase 11.3a) and any lazy join no-op — but collecting the config here lets owners flip the mode later without re-running setup.
+
+1. **Show the default production-detection query** by reading `.github/skills/zed-agent/queries/Production-DeploymentUnits.kql` from disk (or print the canonical canary-shaped query verbatim if the file is absent). The default is shape-identical to Phase 4b — it reports which cluster types are currently live across the production fleet, regardless of cloud.
+
+2. **Show the required column / placeholder contract** (same shape as Phase 4b):
+   ```
+   Required columns in result rows:
+     StampName, DeploymentUnit (a set/array of deployment unit names)
+   Required placeholders in the query:
+     {{SERVICE_FILTER}}        (replaced with kusto.production.serviceFilter)
+     {{STAMP_PREFIX_FILTER}}   (replaced with kusto.production.stampPrefixFilter)
+   Downstream usage:
+     Resolve-PipelinesByClusterType.ps1 -Scope production extracts the SET of
+     live cluster types via kusto.production.clusterTypeExtraction, intersects
+     with productionRouting.clusterTypeMap, and returns the pipeline keys whose
+     declared cluster type is currently live. Cloud fan-out happens AFTER
+     resolution — each resolved pipeline pushes to whichever clouds are listed
+     under ev2CloudCoverage.<key>.
+   Response parsing:
+     ALWAYS use $resp.Tables[0].Rows.
+   ```
+
+3. **Ask the schema-fit question** via `ask_user`:
+   > *"The default production query above is valid for services in **Azure Backup** (same `EventLogAllClusters` schema as canary). Does your service fall under Azure Backup?"*
+   > Choices: `Yes — Use default query`, `No — Use a different query`
+
+4. **Branch on the answer** — shape mirrors Phase 4b:
+
+   **(A) `Yes — Use default query`** (default path):
+   - Persist `kusto.production.queryFile = "Production-DeploymentUnits.kql"`. If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version into it now.
+   - **Do NOT prompt for cluster/database** — use the same Azure Backup defaults as canary:
+     - `kusto.production.cluster` → `https://mabprod1.kusto.windows.net/`
+     - `kusto.production.database` → `MABKustoProd1`
+   - Persist `kusto.production.clusterTypeExtraction = { mode: "deployment-unit-substring" }`.
+   - **Auto-derive `kusto.production.stampPrefixFilter` from ASC — do NOT prompt**:
+     1. Run `.\.github\skills\zed-agent\scripts\Get-AzureServiceConfig.ps1` to load the ASC snapshot.
+     2. Select the `Public` cloud entry (`$asc.data.Clouds | Where-Object { $_.Name -eq 'Public' }`) and collect the distinct lower-cased `ShortName` values from `DataCenters[]` (e.g., `eus`, `wus`, `weu`, `sea`, …).
+     3. Persist the sorted distinct list to `kusto.production.stampPrefixFilter` verbatim. At runtime `Get-StampInventory.ps1` joins them into `StampName startswith 'eus' or StampName startswith 'wus' or …` and substitutes into `{{STAMP_PREFIX_FILTER}}`.
+     4. Recap: *"Auto-filled `kusto.production.stampPrefixFilter` from ASC Public cloud (N short names). Edit `service-config.json` directly any time to add/remove entries — the wizard will not overwrite a non-empty value on re-run."* If `kusto.production.stampPrefixFilter` is already non-empty on re-run, leave it alone.
+     5. **Sovereign clouds note**: this query covers Public only — Fairfax / Mooncake / USNat / USSec stamps require AME-tenant Kusto access this agent does not have. Their handling is out-of-band (mechanism TBD).
+   - Ask only `kusto.production.serviceFilter` — same shape as `kusto.canary.serviceFilter`. Owner can reuse the canary value or specify a broader one for production.
+
+   **(B) `No — Use a different query`** — walk the owner through the same custom-query flow as Phase 4b step 4(B), but persisting under `kusto.production.*` and asking for `kusto.production.clusterTypeExtraction` the same way (modes: `deployment-unit-substring` | `column` | `custom`).
+
+5. **Hard reminder** before finishing:
+   > ⚠️ **Contract**: Step 10 (Roll-Forward) and Step 15 (Production Rollout) will invoke `Resolve-PipelinesByClusterType.ps1 -Scope production` **once per release** — not per cloud. The resolver runs this query verbatim, extracts cluster types via `kusto.production.clusterTypeExtraction`, and intersects with `productionRouting.clusterTypeMap` to decide which production pipeline(s) to trigger. Each resolved pipeline then pushes to whichever clouds are listed under `ev2CloudCoverage.<key>`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run.
+
+6. Recap to the release owner what was saved (cluster, database, query file path, service filter).
+
+> If the release owner uses the **same** Kusto cluster/database for canary and production, keep them as separate config keys — that's fine, just enter the same values.
+
+---
 
 **Group 5a — Notifications (Groups)**
 Ask for:
@@ -451,11 +602,11 @@ The official build pipeline (Phase 11.0a) follows the same discovery + dry-run p
 The agent reserves these `{{...}}` tokens and substitutes them at runtime — **never** ask the owner to provide a value for them, and **never** drop them when they appear inside `templateParameters` discovered from prior runs or YAML:
 
 - `{{currentBranch}}` — replaced with the active release branch (e.g., `releases/svc2604`)
-- `{{canaryStamps}}`, `{{canaryRegions}}` — replaced with the live `inventory.canary.stamps` / `inventory.canary.regions` from `service-config.json` (Group 4b). For `cluster-type` routing, the agent further filters `inventory.canary.stamps` to entries whose `clusterType` matches the pipeline's declared `clusterType` before joining into the parameter format the pipeline expects (CSV, JSON array, etc. — auto-detected from prior-run shape in `canary.<key>.discoveryNotes.stampNameStyle`).
-- `{{excludeStamps}}`, `{{pubRegions}}`, `{{ffStamps}}`, `{{ffRegions}}` (and any cloud-prefixed analogues like `{{mcRegions}}`, `{{mcStamps}}`) — at **real release time** (Step 15), replaced with CCOA / SafeFly-narrowed region scope minus the live exclusion list. Source universe is `inventory.production.<cloud>` (Group 4c); CCOA filter and exclusion list narrow it. At **dry-run time** (Phase 11.3), only the universe applies — see the Phase 11.2 substitution table for the exact mapping.
+- `{{canaryStamps}}`, `{{canaryRegions}}` — replaced with the live `inventory.canary.stamps[].stampName` / distinct `inventory.canary.stamps[].region` from `service-config.json` (Group 4c). For `cluster-type` routing, the agent further filters `inventory.canary.stamps` to entries whose `clusterType` (resolved lazily via the Phase 4b Kusto query) matches the pipeline's declared `clusterType` before joining into the parameter format the pipeline expects (CSV, JSON array, etc. — auto-detected from prior-run shape in `canary.<key>.discoveryNotes.stampNameStyle`).
+- `{{excludeStamps}}`, `{{pubRegions}}`, `{{ffStamps}}`, `{{ffRegions}}` (and any cloud-prefixed analogues like `{{mcRegions}}`, `{{mcStamps}}`) — at **real release time** (Step 15), replaced with CCOA / SafeFly-narrowed region scope minus the live exclusion list. Source universe is `inventory.production.<cloud>` (Group 4d); CCOA filter and exclusion list narrow it. At **dry-run time** (Phase 11.3), only the universe applies — see the Phase 11.2 substitution table for the exact mapping.
 - `{{sdpType}}`, `{{validateOnly}}` — replaced based on rollout mode
 
-> **Why canary stamps are tokenized, not literal**: prior runs are stale by definition — a stamp added or decommissioned since the last successful run would silently rot into `templateParameters` and only surface at real-release time. Group 4b is the owner-curated source of truth, validated against ASC. Treating canary stamp/region values as reserved tokens makes the dry-run an honest preview of what the next real run will send: shape learned from prior runs, values pulled live from Group 4b.
+> **Why canary stamps are tokenized, not literal**: prior runs are stale by definition — a stamp added or decommissioned since the last successful run would silently rot into `templateParameters` and only surface at real-release time. Group 4c is the owner-curated source of truth, validated against ASC. Treating canary stamp/region values as reserved tokens makes the dry-run an honest preview of what the next real run will send: shape learned from prior runs, values pulled live from Group 4c.
 
 When the agent shows owner-facing diffs, render these as **highlighted tokens with a one-line tooltip** explaining the runtime substitution.
 
@@ -573,7 +724,7 @@ For each canary pipeline collected in Phase 11.0 (and the official build, and la
    - **Baseline**: union of all parameters declared in the YAML.
    - **Concrete values**: prior-run values **per parameter**, mode-of-values across the 3 runs (most common wins). If the 3 runs disagree, flag the parameter as `mode-disagreement` in `agentGaps`.
    - **Reserved-token preservation**: if a prior-run value matches one of the reserved `{{...}}` tokens **or** the YAML's `default` is a reserved token, keep it as the token (do not substitute the literal from history).
-   - **Canary stamp / region detection (token replaces literal)**: prior-run values are excellent for *teaching the agent the parameter shape* (CSV vs JSON array, naming style, count) but they are **not** trusted as the actual values to send — Group 4b's `inventory.canary.stamps` is the truth. For each parameter whose prior-run value looks like a canary stamp list or canary region list (i.e., the values are a subset of `inventory.canary.stamps[].stampName` / `inventory.canary.regions`, or look like `<region>-<layout>-<stampTag><index>` triples), **replace the literal with the matching reserved token** (`{{canaryStamps}}` or `{{canaryRegions}}`) in the proposal. Record the detected delivery shape (CSV / semicolon-list / JSON array) under `canary.<key>.discoveryNotes.stampNameStyle` so the runtime substitution knows how to join the inventory values. If detection is ambiguous (e.g., the prior-run value contains stamps that are NOT in `inventory.canary.stamps`), flag as `agentGaps: stamp-list-drift: [<stamps not in inventory>]` and surface in the proposal review so the owner either updates Group 4b or confirms the literal.
+   - **Canary stamp / region detection (token replaces literal)**: prior-run values are excellent for *teaching the agent the parameter shape* (CSV vs JSON array, naming style, count) but they are **not** trusted as the actual values to send — Group 4c's `inventory.canary.stamps` is the truth. For each parameter whose prior-run value looks like a canary stamp list or canary region list (i.e., the values are a subset of `inventory.canary.stamps[].stampName` / distinct `inventory.canary.stamps[].region`, or look like `<region>-<layout>-<stampTag><index>` triples), **replace the literal with the matching reserved token** (`{{canaryStamps}}` or `{{canaryRegions}}`) in the proposal. Record the detected delivery shape (CSV / semicolon-list / JSON array) under `canary.<key>.discoveryNotes.stampNameStyle` so the runtime substitution knows how to join the inventory values. If detection is ambiguous (e.g., the prior-run value contains stamps that are NOT in `inventory.canary.stamps`), flag as `agentGaps: stamp-list-drift: [<stamps not in inventory>]` and surface in the proposal review so the owner either updates Group 4c or confirms the literal.
    - **Cluster-type cross-check**: if `canaryRouting.mode == "cluster-type"` and the owner already declared `entry.clusterType` in Phase 11.0, scan the YAML and prior runs for stamp-list / region-list parameters whose values cluster around a single suffix (e.g., all entries end in `-sfmc`). If the inferred suffix **disagrees** with the owner-declared cluster type, flag it in `agentGaps` as `clusterType-mismatch: declared <X>, evidence suggests <Y>` so the owner can resolve in the proposal review. If `clusterType` was NOT declared (older runs of the wizard, or owner skipped), fall back to using the inferred value as the proposal — same behavior as before.
    - **Unknown / new params**: parameters in YAML that have no prior-run value and no `default` → mark `requiresOwnerInput: true` in the proposal.
 
@@ -620,114 +771,32 @@ For each canary pipeline collected in Phase 11.0 (and the official build, and la
 
 ---
 
-#### Phase 11.1a — Canary cluster-type detection Kusto (schema-aware)
+#### Phase 11.1a — Canary cluster-type resolver invocation (config now lives in Phase 4b)
 
-The agent uses this cluster for **pipeline selection only** — to discover which cluster types (e.g., `sfmc`, `sfrp`) are currently in canary deployment. It does NOT classify individual stamp short names — once cluster-type-to-pipeline resolution is done, each selected pipeline's `templateParameters` (including stamp lists) are passed to ADO verbatim.
+> **Phase 11.1a is a resolver invocation only.** The Kusto cluster / database / query file / filters used to discover which cluster types are currently live in canary are collected up-front in **Phase 4b — Canary Detection Kusto** (Group 4). This phase exists solely to invoke `Resolve-PipelinesByClusterType.ps1 -Scope canary` between Phase 11.1 (per-pipeline discovery) and Phase 11.2 (dry-run validation) so the dry-run fan-out only fires for currently-live pipelines.
 
-> **Phase 11.1a runs inside Group 11**, after `canaryRouting.mode` is set in Phase 11.0 and before the Phase 11.2 canary dry-run fan-out so the resolver has Kusto config to work with. When `canaryRouting.mode == "static"` this phase auto-skips (the resolver returns every key without querying Kusto).
+1. **Read `pipeline-catalog.json → canaryRouting.mode`** (set during Phase 11.0). Branch:
 
-0. **Read `pipeline-catalog.json → canaryRouting.mode`** (set during Group 11). Branch:
+   **If `mode == "static"`** — no resolution needed. The resolver returns every `canary.*` key, so every canary pipeline is dry-run-queued by Phase 11.2. Recap: *"Phase 11.1a: canary routing is `static`, all canary pipelines participate in the dry-run fan-out."* Exit.
 
-   **If `mode == "static"`** — Phase 11.1a is not needed. Clear `service-config.json → kusto.canary.*` (cluster, database, queryFile, serviceFilter, stampPrefixFilter, clusterTypeExtraction) and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'static' — no canary-detection Kusto query is used"`. Recap to the owner: *"Phase 11.1a skipped — canary routing is `static`. Steps 5/7/10 will trigger every entry under `canary.*` / `production.*` in parallel."* Exit Phase 11.1a.
+   **If `mode == "explicit"`** (or `_pendingExplicitList` schema-fallback equivalent) — no resolution needed. The resolver returns every `canary.*` key; per-key triggering is then narrowed by the static `canaryStamps` / `canaryRegions` list at real-release time. Show the brittleness reminder one more time:
+   > ⚠️ **Brittleness reminder**: the agent will trigger canary pipelines based on the static `canaryStamps` / `canaryRegions` list you declared in Group 11. Keep that list fresh when the org rebalances. To switch to dynamic Kusto-driven routing later, re-run `setup-service group 11` and change `canaryRouting.mode` to `cluster-type`. The Phase 4b Kusto config is already in `service-config.json` and will be used automatically.
 
-   **If `mode == "explicit"`** (or the `_pendingExplicitList` schema-fallback equivalent) — Phase 11.1a is not needed. Clear `kusto.canary.*` as above and record `kusto.canary.scopingNotes = "canaryRouting.mode is 'explicit' — pipeline selection uses the static canaryStamps/canaryRegions list, no Kusto query"`. Show the brittleness reminder one more time:
-   > ⚠️ **Brittleness reminder**: the agent will trigger canary pipelines based on the static `canaryStamps` / `canaryRegions` list you declared in Group 11. Keep that list fresh when the org rebalances. To switch to dynamic Kusto-driven routing later, re-run `setup-service group 11` and change `canaryRouting.mode` to `cluster-type`, then re-run `setup-service group 11.1a` to collect the Kusto details.
+   Exit.
 
-   Exit Phase 11.1a.
+   **If `mode == "cluster-type"`** — proceed.
 
-   **If `mode == "cluster-type"`** — proceed with steps 1-5 below to collect the Kusto details.
+2. **Verify Phase 4b config exists**. If `kusto.canary.cluster`, `kusto.canary.database`, and `kusto.canary.queryFile` are not all set, halt with: *"Phase 4b — Canary Detection Kusto has not been collected yet. Re-run `setup-service group 4b` first, then re-run `setup-service group 11.1a`."* Do NOT prompt for Kusto values here.
 
-   **If `mode` is missing or unrecognized** — surface this as a configuration error: tell the owner to run `setup-service group 11` first to set `canaryRouting.mode`, then re-run `setup-service group 11.1a`. Do not prompt for any Kusto values yet.
-
-1. **Show the default canary-detection query** — print verbatim in a fenced code block:
-   ```kql
-   EventLogAllClusters
-   | where TIMESTAMP > ago(1d)
-   | where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
-   | where {{STAMP_PREFIX_FILTER}}
-   | summarize make_set(DeploymentUnit) by StampName
-   | order by StampName asc
+3. **Invoke the resolver**:
+   ```powershell
+   $resolved = & .\.github\skills\zed-agent\scripts\Resolve-PipelinesByClusterType.ps1 -Scope canary
    ```
-2. **Show the required column contract** the agent depends on:
-   ```
-   Required columns in result rows:
-     StampName, DeploymentUnit (a set/array of deployment unit names)
-   Required placeholders in the query:
-     {{SERVICE_FILTER}}        (replaced with kusto.canary.serviceFilter at runtime,
-                                e.g., ServiceName == 'prot')
-     {{STAMP_PREFIX_FILTER}}   (replaced with kusto.canary.stampPrefixFilter at runtime,
-                                e.g., StampName startswith '<your-prefix-1>' or
-                                      StampName startswith '<your-prefix-2>')
-   Tables referenced by default query:
-     EventLogAllClusters
-   Downstream usage (Steps 5, 7, 10):
-     The agent collects the SET of cluster types observed across all rows
-     (by inspecting DeploymentUnit substrings — e.g., '-sfmc' → 'sfmc',
-     '-sf' without '-sfmc' → 'sfrp'). This set is intersected with
-     canaryRouting.clusterTypeMap to pick which pipelines to trigger.
-     The agent does NOT translate or filter stamp short names —
-     each selected pipeline's templateParameters are passed to ADO
-     verbatim from pipeline-catalog.json.
-   Response parsing:
-     ALWAYS use $resp.Tables[0].Rows. NEVER use $resp.tables | Where TableName -eq 'PrimaryResult'
-     (see Kusto MCP Response Parsing in BVT Failure Analysis section).
-   ```
-3. **Ask the schema-fit question** via `ask_user`:
-   > *"The default query above is valid for services in **Azure Backup**. Does your service fall under Azure Backup?"*
-   > Choices: `Yes — Use default query`, `No — Use a different query`
-4. **Branch on the answer**:
+   On error, surface the Kusto error verbatim and let the owner edit `kusto.canary.queryFile` (the agent re-reads it on every run) or re-run Phase 4b to fix the config.
 
-   **(A) `Yes — Use default query`** (default path):
-   - Persist the default canary-detection query path to `kusto.canary.queryFile` (e.g., `Canary-DeploymentUnits.kql`). If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version above into it now. **Do NOT prompt for the filename** — use the default.
-   - **Do NOT prompt for `kusto.canary.cluster` or `kusto.canary.database`** — the default query targets a fixed Azure Backup cluster/database. Write these values directly:
-     - `kusto.canary.cluster` → `https://mabprod1.kusto.windows.net/`
-     - `kusto.canary.database` → `MABKustoProd1`
-   - Ask only the **2 filter fields** (one at a time, persist after each):
-     - `kusto.canary.serviceFilter` — KQL `where` predicate that selects rows belonging to your service (e.g., `ServiceName == 'prot'`). Substituted into `{{SERVICE_FILTER}}` at runtime.
-     - `kusto.canary.stampPrefixFilter` — KQL `where` predicate that narrows `StampName` to your service's canary stamps. Substituted into `{{STAMP_PREFIX_FILTER}}` at runtime.
+4. **Recap** to the release owner: the set of resolved canary pipeline keys, the set of cluster types observed, and the keys filtered out because no cluster-type match was found. These keys form the dry-run universe for Phase 11.2.
 
-       **Canary stamp filter shape (service-agnostic guidance):** This value is a KQL `where`-clause fragment over the `StampName` column. The general shape is `StampName startswith '<prefix1>' or StampName startswith '<prefix2>' …`. Replace `<prefix...>` with the short-name prefixes your service uses for canary stamps. Leave empty if your custom `.kql` file does not use the `{{STAMP_PREFIX_FILTER}}` placeholder.
-
-       **Conditional default offer:** If `service.name` matches a known MAB-family service (case-insensitive regex `^(WBCM|DM|Prot)$`), offer the MAB-historical predicate `StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'` as a suggested default via `ask_user` — but make clear this is a snapshot and the owner is free to edit. For all other services, present `ask_user` with **no pre-filled value** and the shape guidance above; do not bake one service's stamp prefixes into another service's setup.
-   - Note to release owner: *"If results look wrong later, you can edit `.github/skills/zed-agent/queries/{queryFile}` directly — the agent re-reads it on every run."*
-
-   **(B) `No — Use a different query`**:
-   - First, show the release owner the available canary-detection mechanisms supported by this agent today:
-     > *"The agent currently supports the following mechanisms for canary cluster-type detection:*
-     > *  (1) **Custom Kusto query** — you provide a KQL query the agent runs against your team's Kusto cluster; the agent inspects the returned rows to determine which cluster types are currently live in canary, then maps those to the right pipeline(s) via `canaryRouting.clusterTypeMap` (Group 11).*
-     >
-     > *More mechanisms may be added later."*
-     > Choices: `1) Custom Kusto query`
-   - On `Custom Kusto query`, walk the owner through a guided setup so the resulting query is solid and re-runnable by the agent. Persist each answer immediately:
-     1. Ask `kusto.canary.cluster` — Kusto cluster URL where the canary deployment data lives.
-     2. Ask `kusto.canary.database` — database name on that cluster.
-     3. Ask the owner how they want to provide the KQL, via `ask_user`:
-        > *"How do you want to provide your team's canary-detection query?"*
-        > Choices: `Paste KQL now`, `Point me at a .kql file in this repo`
-     4. **If `Paste KQL now`**: collect the KQL via `ask_user` (multi-line), write it to `.github/skills/zed-agent/queries/<service-name>-canary.kql`, and persist that path to `kusto.canary.queryFile`.
-     5. **If `Point me at a .kql file in this repo`**: ask for the relative path, validate the file exists, and persist it to `kusto.canary.queryFile`.
-     6. **Make the query agent-runnable** — the agent must analyze the submitted KQL and intelligently fill in / negotiate the runtime parameters it needs:
-        - **Timestamp window**: scan the query for any of `ago(...)`, `datetime(...)`, `between(...)`, `now()`, or a `TIMESTAMP >=` / `TimeStamp >=` predicate. The canary-detection step needs a recent window (typically the last 1-2 days, not anchored to pipeline trigger time — canary detection is a *snapshot of what's live now*). If no time window is present, offer to inject `| where TIMESTAMP > ago(1d)` and confirm the exact column name to filter on via `ask_user`.
-        - **Service scoping (or whatever mechanism the query uses)**: don't assume every custom query scopes to the service with a `ServiceName == "<svc>"` predicate — some teams use a different column, a build-id join, a namespace prefix on `DeploymentName`, a pre-filtered function in their own database, or no per-service filter at all because the cluster only holds their data. Ask the owner via `ask_user` how their query already narrows results to their service's canary stamps, with choices roughly: `Uses a {{SERVICE_FILTER}}-style column filter`, `Uses a different mechanism — let me describe it`, `No scoping needed — query is already service-specific`. Then:
-           - On `Uses a {{SERVICE_FILTER}}-style column filter`: ask for the predicate (e.g., `ServiceName == 'prot'`), offer to inject `{{SERVICE_FILTER}}`, and collect `kusto.canary.serviceFilter`.
-           - On `Uses a different mechanism`: collect a free-text description via `ask_user` (persist to `kusto.canary.scopingNotes` as a comment for future maintainers), then ask which placeholders — if any — the agent needs to substitute at runtime and what values to bind. Persist each placeholder under `kusto.canary.queryVariables.<NAME>`. If the mechanism needs nothing dynamic, just record the note and move on — do NOT force a `{{SERVICE_FILTER}}` placeholder.
-           - On `No scoping needed`: leave `kusto.canary.serviceFilter` empty and record `kusto.canary.scopingNotes = "Query is pre-scoped — no runtime service filter needed"`.
-        - **Stamp-prefix scoping (optional)**: ask whether the query needs runtime narrowing to canary stamp short-name prefixes via `ask_user`, with choices: `Uses a {{STAMP_PREFIX_FILTER}}-style predicate`, `No — stamps are hard-coded or not filtered`. On the first choice, collect `kusto.canary.stampPrefixFilter` using the same shape guidance and conditional MAB-family default offer described in branch (A) above; otherwise leave it empty.
-        - **Cluster-type extraction contract**: confirm with the owner how the agent should read cluster types from the result rows. Ask via `ask_user`:
-          > *"How does your query expose the cluster type of each canary stamp?"*
-          > Choices: `Set/array column named DeploymentUnit (parse substrings like -sfmc, -sf)`, `Dedicated column (e.g., ClusterType) — I'll tell you the name`, `Other — let me describe it`
-          - On `Set/array column named DeploymentUnit`: persist `kusto.canary.clusterTypeExtraction = { mode: "deployment-unit-substring" }`.
-          - On `Dedicated column`: ask for the column name, persist `kusto.canary.clusterTypeExtraction = { mode: "column", column: "<name>" }`.
-          - On `Other`: collect a free-text description, persist to `kusto.canary.clusterTypeExtraction = { mode: "custom", notes: "<description>" }`, and warn the owner that Steps 5/7/10 may need code changes to honor this mode (file a follow-up).
-        - **Required columns**: ask the owner to confirm the query returns at minimum a row-per-stamp shape with a `StampName` column (or equivalent) plus whatever column the cluster-type extraction step reads. Persist the column list to `kusto.canary.resultColumns`.
-        - **Additional placeholders**: if the owner referenced any other `{{...}}` tokens, prompt for each one and persist under `kusto.canary.queryVariables.<NAME>`.
-     7. **Dry-run check (optional but recommended)**: offer to execute the finalized query once via the Kusto MCP against the cluster/database the owner just provided. Surface the returned rows in a small table and confirm with the owner that the cluster-type extraction step would produce the expected SET of cluster types. On error, surface the Kusto error verbatim and let the owner edit the file and re-run the dry-run.
-     8. **Show this hard reminder** before finishing:
-        > ⚠️ **Contract**: Steps 5, 7, and 10 will run this query verbatim against the cluster/database you just provided, substituting any placeholders you declared. The agent will then extract the SET of cluster types using `kusto.canary.clusterTypeExtraction` and intersect it with `canaryRouting.clusterTypeMap` (Group 11) to decide which canary pipeline(s) to trigger. Make sure the suffix/key vocabulary lines up between this query's output and `clusterTypeMap`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run; no agent code change needed.
-
-5. After persistence, recap to the release owner what was saved (cluster, database, query file path, service filter value).
-
-> If the release owner uses the **same** Kusto cluster/database for both BVT and canary detection, the agent can still keep them as separate config keys — that's fine, just enter the same values.
+> **Why Phase 11.1a still exists**: routing mode is set inside Group 11 (Phase 11.0) AFTER Phase 4b, so the *decision* of whether to invoke the resolver lives here next to the routing-mode declaration. The Kusto details themselves are collected in Phase 4b so the cluster-type detection query is set up at the same time as BVT — owners think about "Kusto config" once, in Group 4, not scattered across Group 4 and Group 11.
 
 ---
 
@@ -768,10 +837,10 @@ $results = $canaryKeys | ForEach-Object -Parallel {
 
 1. Resolve the entry from `pipeline-catalog.json`. Substitute reserved tokens with the **same values a real release would send today** — the only exceptions are the branch (use a dummy ref so nothing builds) and the rollout-mode tokens (force `validateOnly = true`). The substitution table is part of the script so it's auditable:
    - `{{currentBranch}}` → `refs/heads/setup-service-dry-run` *(dummy — keeps the run off any real branch)*
-   - `{{canaryStamps}}` → joined `inventory.canary.stamps[].stampName` from `service-config.json` (Group 4b), filtered by `entry.clusterType` when `canaryRouting.mode == "cluster-type"`, joined using `canary.<key>.discoveryNotes.stampNameStyle` (CSV / semicolon / JSON array)
+   - `{{canaryStamps}}` → joined `inventory.canary.stamps[].stampName` from `service-config.json` (Group 4c), filtered by `entry.clusterType` when `canaryRouting.mode == "cluster-type"`, joined using `canary.<key>.discoveryNotes.stampNameStyle` (CSV / semicolon / JSON array)
    - `{{canaryRegions}}` → joined `inventory.canary.regions` using the same style
    - `{{excludeStamps}}` → `""` *(dry-run never excludes anything; the exclusion source — canary BVT failures + active SafeFly flags — doesn't exist at setup time)*
-   - `{{pubRegions}}`, `{{ffRegions}}`, `{{ffStamps}}`, `{{mcRegions}}`, `{{mcStamps}}`, `{{nationalRegions}}`, etc. — for **canary** dry-run, `""`; for **production** dry-run, joined from `inventory.production.<cloud>` (Group 4c). Cloud is inferred from the token prefix: `pub*` → `Public`, `ff*` → `Fairfax`, `mc*` → `Mooncake`, `nat*` → `USNat`, `sec*` → `USSec`, `bleu*` → `Bleu`. If the token prefix doesn't match a cloud in `inventory.production.cloudsActive`, fall back to `""` and flag `agentGaps: token-cloud-unmapped: <token>` so the owner can declare the mapping. The join shape (CSV / semicolon / JSON array) is taken from `production.<key>.discoveryNotes.stampNameStyle`.
+   - `{{pubRegions}}`, `{{ffRegions}}`, `{{ffStamps}}`, `{{mcRegions}}`, `{{mcStamps}}`, `{{nationalRegions}}`, etc. — for **canary** dry-run, `""`; for **production** dry-run, joined from `inventory.production.<cloud>` (Group 4d). Cloud is inferred from the token prefix: `pub*` → `Public`, `ff*` → `Fairfax`, `mc*` → `Mooncake`, `nat*` → `USNat`, `sec*` → `USSec`, `bleu*` → `Bleu`. If the token prefix doesn't match a cloud in `inventory.production.cloudsActive`, fall back to `""` and flag `agentGaps: token-cloud-unmapped: <token>` so the owner can declare the mapping. The join shape (CSV / semicolon / JSON array) is taken from `production.<key>.discoveryNotes.stampNameStyle`.
    - `{{sdpType}}` → `"Express"`
    - `{{validateOnly}}` → `"true"` *(forces ADO into validation mode — extra belt-and-suspenders on top of the 5-second cancel)*
 
@@ -863,66 +932,25 @@ If `productionRouting.mode == "cluster-type"`, the per-pipeline `clusterType` in
 
 ---
 
-#### Phase 11.3a — Production cluster-type detection Kusto (schema-aware)
+#### Phase 11.3a — Production cluster-type resolver invocation (config now lives in Phase 4e)
 
-> **Phase 11.3a runs inside Group 11**, after `productionRouting.mode` is set in Phase 11.0 and before the Phase 11.3 production dry-run fan-out. When `productionRouting.mode == "static"` this phase auto-skips. Shape mirrors Phase 11.1a exactly — cluster-type is a pipeline-level attribute, so the resolver runs once per release (not per cloud) and the same query serves every cloud the pipeline pushes to.
+> **Phase 11.3a is a resolver invocation only.** The Kusto cluster / database / query file / filters used to discover which cluster types are currently live in production are collected up-front in **Phase 4e — Production Detection Kusto** (Group 4). This phase exists solely to invoke `Resolve-PipelinesByClusterType.ps1 -Scope production` between Phase 11.3 (production discovery) and Phase 11.3b / Phase 11.4 so the production dry-run / EV2 fan-out only operates on currently-live pipelines.
 
-0. **Read `pipeline-catalog.json → productionRouting.mode`** (set during Phase 11.0). Branch:
+1. **Read `pipeline-catalog.json → productionRouting.mode`** (set during Phase 11.0). Branch:
 
-   **If `mode == "static"`** — Phase 11.3a is not needed. Clear `service-config.json → kusto.production.*` and record `kusto.production.scopingNotes = "productionRouting.mode is 'static' — no production-detection Kusto query is used; resolver returns all production.* keys"`. Recap to the owner: *"Phase 11.3a skipped — production routing is `static`. Step 10 and Step 15 will trigger every entry under `production.*` in parallel, and each pipeline pushes to whatever clouds are listed in `ev2CloudCoverage.<key>`."* Exit Phase 11.3a.
-
-   **If `mode` is missing or unrecognized** — surface a configuration error: tell the owner to run `setup-service group 11` first to set `productionRouting.mode`, then re-run `setup-service group 11.3a`.
+   **If `mode == "static"`** — no resolution needed. The resolver returns every `production.*` key. Recap: *"Phase 11.3a: production routing is `static`, all production pipelines participate in the fan-out; each pipeline pushes to whichever clouds are listed under `ev2CloudCoverage.<key>`."* Exit.
 
    **If `mode == "cluster-type"`** — proceed.
 
-1. **Show the default production-detection query** by reading `.github/skills/zed-agent/queries/Production-DeploymentUnits.kql` from disk and printing it verbatim. The default is identical in shape to the canary query — it reports which cluster types are currently live across the production fleet, regardless of cloud. (If your data is segregated such that you genuinely need a per-cloud query, switch to the custom-query path in step 4(B) and add the filter yourself — but the resolver itself is single-shot.)
+2. **Verify Phase 4e config exists**. If `kusto.production.cluster`, `kusto.production.database`, and `kusto.production.queryFile` are not all set, halt with: *"Phase 4e — Production Detection Kusto has not been collected yet. Re-run `setup-service group 4e` first, then re-run `setup-service group 11.3a`."* Do NOT prompt for Kusto values here.
 
-2. **Show the required column / placeholder contract**:
+3. **Invoke the resolver**:
+   ```powershell
+   $resolved = & .\.github\skills\zed-agent\scripts\Resolve-PipelinesByClusterType.ps1 -Scope production
    ```
-   Required columns in result rows:
-     StampName, DeploymentUnit (a set/array of deployment unit names)
-   Required placeholders in the query:
-     {{SERVICE_FILTER}}        (replaced with kusto.production.serviceFilter)
-     {{STAMP_PREFIX_FILTER}}   (replaced with kusto.production.stampPrefixFilter)
-   Downstream usage (Steps 10 and 15):
-     The resolver extracts the SET of live cluster types via
-     kusto.production.clusterTypeExtraction, intersects with
-     productionRouting.clusterTypeMap, and returns the pipeline keys
-     whose declared cluster type is currently live. Cloud fan-out
-     happens AFTER resolution — each resolved pipeline pushes to
-     whichever clouds are listed under ev2CloudCoverage.<key>.
-   Response parsing:
-     ALWAYS use $resp.Tables[0].Rows.
-   ```
+   On error, surface the Kusto error verbatim and let the owner edit `kusto.production.queryFile` (the agent re-reads it on every run) or re-run Phase 4e to fix the config.
 
-3. **Ask the schema-fit question** via `ask_user`:
-   > *"The default production query above is valid for services in **Azure Backup** (same `EventLogAllClusters` schema as canary). Does your service fall under Azure Backup?"*
-   > Choices: `Yes — Use default query`, `No — Use a different query`
-
-4. **Branch on the answer** — same shape as Phase 11.1a:
-
-   **(A) `Yes — Use default query`** (default path):
-   - Persist `kusto.production.queryFile = "Production-DeploymentUnits.kql"`. If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version into it now.
-   - **Do NOT prompt for cluster/database** — use the same Azure Backup defaults as canary:
-     - `kusto.production.cluster` → `https://mabprod1.kusto.windows.net/`
-     - `kusto.production.database` → `MABKustoProd1`
-   - Persist `kusto.production.clusterTypeExtraction = { mode: "deployment-unit-substring" }`.
-   - **Auto-derive `kusto.production.stampPrefixFilter` from ASC — do NOT prompt**:
-     1. Run `.\.github\skills\zed-agent\scripts\Get-AzureServiceConfig.ps1` to load the ASC snapshot.
-     2. Select the `Public` cloud entry (`$asc.data.Clouds | Where-Object { $_.Name -eq 'Public' }`) and collect the distinct lower-cased `ShortName` values from `DataCenters[]` (e.g., `eus`, `wus`, `weu`, `sea`, …).
-     3. Persist that sorted distinct list to `kusto.production.stampPrefixFilter` verbatim. At runtime `Get-StampInventory.ps1` joins them into `StampName startswith 'eus' or StampName startswith 'wus' or …` and substitutes into `{{STAMP_PREFIX_FILTER}}`.
-     4. Recap to the owner: *"Auto-filled `kusto.production.stampPrefixFilter` from ASC Public cloud (N short names). Edit `service-config.json` directly any time to add/remove entries — the wizard will not overwrite a non-empty value on re-run."* On re-run of Phase 11.3a, if `kusto.production.stampPrefixFilter` is already non-empty, leave it alone.
-     5. **Sovereign clouds note**: this query covers Public only — Fairfax / Mooncake / USNat / USSec stamps require AME-tenant Kusto access this agent does not have. Their handling is out-of-band (mechanism TBD).
-   - Ask only `kusto.production.serviceFilter` — same shape as canary `serviceFilter` (e.g., `ServiceName == 'prot'`). The owner can reuse the canary value or specify a broader one for production.
-
-   **(B) `No — Use a different query`** — walk the owner through the same custom-query flow as Phase 11.1a step 4(B), but with these differences:
-   - Persist under `kusto.production.*` instead of `kusto.canary.*`.
-   - Collect `kusto.production.clusterTypeExtraction` the same way (modes: `deployment-unit-substring` | `column` | `custom`).
-
-5. **Hard reminder** before finishing:
-   > ⚠️ **Contract**: Step 10 (Roll-Forward) and Step 15 (Production Rollout) will invoke `Resolve-PipelinesByClusterType.ps1 -Scope production` **once per release** — not per cloud. The resolver runs this query verbatim, extracts cluster types via `kusto.production.clusterTypeExtraction`, and intersects with `productionRouting.clusterTypeMap` to decide which production pipeline(s) to trigger. Each resolved pipeline then pushes to whichever clouds are listed under `ev2CloudCoverage.<key>`. Make sure the suffix/key vocabulary in your query output lines up with `clusterTypeMap`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run.
-
-6. Recap to the release owner what was saved (cluster, database, query file path, service filter).
+4. **Recap** to the release owner: the set of resolved production pipeline keys, the set of cluster types observed, and the keys filtered out because no cluster-type match was found. These keys form the EV2 / dry-run universe for Phase 11.3b and Phase 11.4.
 
 ---
 

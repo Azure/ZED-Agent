@@ -210,18 +210,39 @@ function Get-Sds-Hint {
     $rxFile = '(?im)-SdsFiles\s+([^\s,;|]+)'
     $m = [regex]::Match($Text, $rxFile)
     if (-not $m.Success) { return $null }
-    $fileName = $m.Groups[1].Value
-    # Look for the closest `$hsp_source = "...Pipeline.Workspace.../s/dep_specs/<repoPath>"`
-    # (commented or live). This is the source-tree path setup-service uses for
-    # static SDS lookup.
+    $fileName = [System.IO.Path]::GetFileName($m.Groups[1].Value)
+
+    # Look for any quoted string literal that references a `dep_specs/<repoPath>`
+    # subtree. The DataMover convention uses `$hsp_source = "$(Pipeline.Workspace)/s/dep_specs/..."`
+    # but other services use different variable names (e.g. `$sds_source`,
+    # `$specsRoot`), inline `Copy-Item` calls, or no variable at all. Be permissive:
+    # accept any quoted path containing `dep_specs/`, with or without a preceding
+    # PowerShell variable assignment, and either `/` or `\` separators.
     $repoPath = $null
-    $rxPath = '(?im)\$hsp_source\s*=\s*"[^"]*?s/dep_specs/([^"\s]+)"'
-    $mp = [regex]::Match($Text, $rxPath)
-    if ($mp.Success) { $repoPath = $mp.Groups[1].Value.TrimEnd('/').Replace('\','/') }
+    $sourceTag = 'regex:-SdsFiles'
+    $candidates = @(
+        # (a) Variable assignment: $anyName = "...dep_specs/<path>"
+        @{ rx = '(?im)\$\w+\s*=\s*"[^"]*?[\\/]dep_specs[\\/]([^"\s]+)"'; tag = 'regex:-SdsFiles + $var=dep_specs' },
+        # (b) Bare quoted literal anywhere: "...dep_specs/<path>"
+        @{ rx = '(?im)"[^"]*?[\\/]dep_specs[\\/]([^"\s]+)"';              tag = 'regex:-SdsFiles + dep_specs-literal' }
+    )
+    foreach ($c in $candidates) {
+        $mp = [regex]::Match($Text, $c.rx)
+        if ($mp.Success) {
+            $repoPath = $mp.Groups[1].Value.TrimEnd('/','\').Replace('\','/')
+            $sourceTag = $c.tag
+            break
+        }
+    }
+    # When the path resolves to a directory rather than the SDS file itself,
+    # append the file name so downstream consumers get a complete repo-relative path.
+    if ($repoPath -and -not ($repoPath.EndsWith($fileName, [System.StringComparison]::OrdinalIgnoreCase))) {
+        $repoPath = "$repoPath/$fileName"
+    }
     return [pscustomobject]@{
         fileName = $fileName
         repoPath = $repoPath
-        source   = if ($repoPath) { "regex:-SdsFiles + `$hsp_source" } else { "regex:-SdsFiles" }
+        source   = $sourceTag
     }
 }
 

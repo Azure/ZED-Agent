@@ -253,10 +253,19 @@ elseif ($isSovereignCloud) {
 else {
     # production (public cloud): run kusto.production query
     $k = $config.kusto.production
-    if (-not $k -or -not $k.cluster -or -not $k.database -or -not $k.queryFile) {
-        throw "service-config.json → kusto.production (cluster/database/queryFile) is required for Scope=production."
+    # Prefer the inventory-only query (Production-StampInventory.kql) when set —
+    # it returns just `StampName` and is the canonical source for Public-cloud
+    # stamp enumeration. Fall back to the cluster-type query (queryFile) for
+    # back-compat with configs that haven't been re-run through Phase 4.9 since
+    # the split.
+    $effectiveQueryFile = $null
+    if ($k -and $k.inventoryQueryFile) { $effectiveQueryFile = $k.inventoryQueryFile }
+    elseif ($k -and $k.queryFile)      { $effectiveQueryFile = $k.queryFile }
+
+    if (-not $k -or -not $k.cluster -or -not $k.database -or -not $effectiveQueryFile) {
+        throw "service-config.json -> kusto.production (cluster/database/inventoryQueryFile or queryFile) is required for Scope=production."
     }
-    $queryPath = Join-Path $QueriesDir $k.queryFile
+    $queryPath = Join-Path $QueriesDir $effectiveQueryFile
     if (-not (Test-Path $queryPath)) { throw "Kusto query file not found: $queryPath" }
     $queryText = Get-Content $queryPath -Raw
 
@@ -292,21 +301,26 @@ else {
         rowCount    = @($rows).Count
         cluster     = $k.cluster
         database    = $k.database
-        queryFile   = $k.queryFile
+        queryFile   = $effectiveQueryFile
     }
 
     if (-not $rows -or @($rows).Count -eq 0) {
         throw "kusto.production query returned 0 rows. Refusing to publish an empty production inventory. Validate the query at $queryPath."
     }
 
-    # Cluster-type extraction (per-row, not per-set).
+    # Cluster-type extraction is only meaningful when the query carries DeploymentUnit
+    # (i.e. it's the cluster-type query, not the inventory query). When the inventory
+    # query is in use, every row's clusterType is left $null and the caller falls back
+    # to the lazy `clusterType` resolver if it needs that field per stamp.
+    $hasDeploymentUnit = $colNames -contains 'DeploymentUnit' -or $colNames -contains 'set_DeploymentUnit'
     $extraction = if ($k.clusterTypeExtraction) { $k.clusterTypeExtraction } else { [PSCustomObject]@{ mode = 'deployment-unit-substring' } }
 
     foreach ($row in $rows) {
         $stampName = "$($row.StampName)".ToLowerInvariant()
         if (-not $stampName) { continue }
         $ct = $null
-        switch ($extraction.mode) {
+        if ($hasDeploymentUnit) {
+            switch ($extraction.mode) {
             'deployment-unit-substring' {
                 # Row's DeploymentUnit may be a single value or set/array.
                 $units = @()
@@ -330,6 +344,8 @@ else {
                 throw "clusterTypeExtraction.mode='custom' not implemented. Owner notes: $($extraction.notes)"
             }
             default { throw "Unknown clusterTypeExtraction.mode '$($extraction.mode)'." }
+            }
+            }
         }
         $rawStamps.Add([PSCustomObject]@{
             stampName   = $stampName

@@ -158,7 +158,7 @@ Group 4 is the **single contiguous wizard block** covering everything pipeline- 
 
 Stamp-universe **source-of-truth precedence** (top wins, applies wherever a stamp list is needed):
 
-1. **Kusto live query** (Phase 4.9 cluster-type query, or any equivalent `EventLogAllClusters`-shaped query) — strongest evidence: a stamp emitting telemetry **right now** is a stamp that exists. Limited to clouds the agent's identity can reach (effectively **Public** only — sovereign clouds live in AME-tenant Kusto and are out of reach).
+1. **Kusto live inventory query** (Phase 4.9 `kusto.production.inventoryQueryFile` — default `Production-StampInventory.kql`, shape `EventLogAllClusters | distinct StampName`) — strongest evidence: a stamp emitting telemetry **right now** is a stamp that exists. Inventory enumeration is intentionally split from cluster-type detection (which keeps using `kusto.production.queryFile` → `Production-DeploymentUnits.kql`). Limited to clouds the agent's identity can reach (effectively **Public** only — sovereign clouds live in AME-tenant Kusto and are out of reach).
 2. **SDS** (Phobos 2022 JSON, pinned in Phase 4.5) — authoritative declared truth; the only source that covers sovereign clouds (Fairfax / Mooncake / USNat / USSec / Bleu). For Public, used to cross-check Kusto and catch decommissioned-but-still-configured stamps.
 3. **Pipeline YAML hard-coded defaults** — `flatDefaults` / `perCloudDefaults` from `Get-PipelineYamlIntrospection.ps1` (Phase 4.4). Useful when a pipeline pins an explicit stamp list that disagrees with SDS / Kusto.
 4. **AzureServiceConfig + grammar `<region>-<layout>-<stampTag><index>`** — last-resort approximation only when (1)–(3) are unavailable. The wizard surfaces an explicit warning when it falls back here.
@@ -266,6 +266,50 @@ The script returns normalized objects: `{ runId, runUrl, finishedAt, sourceBranc
 
 Persist the normalized run objects under `<scope>.<key>._learnedFrom.runs` so Phase 4.10 can read them without re-fetching.
 
+**Reference-run capture (per production pipeline)** — the auto-captured 3 runs teach the agent **parameter shape** (CSV vs JSON, naming style, which params even exist). They are intentionally **not trusted as the source of truth for values** — history goes stale, owners experiment, runs get queued from feature branches. To anchor real-world value patterns (e.g., *"do operators actually pass `*` for regions, or do they enumerate?"*, *"is `excludeStamps` typically empty or populated?"*, *"what's the typical `sdpType` for a clean prod push?"*), the wizard asks each production-pipeline owner to nominate ONE known-good release run after the 3-run capture:
+
+> *"For `{key}`: I've captured the last 3 successful runs to learn the parameter schema. Now point me at one specific **reference release** — a run you'd describe as 'this is what a healthy production push of this service looks like'. I'll use its values (not the 3-run mode) whenever a parameter is ambiguous or its value diverges across the 3 runs. Run ID or full ADO run URL?"*
+> Choices: `Provide reference run`, `Skip — the 3-run mode is good enough`
+
+On `Provide reference run`, parse the input (integer `runId` or `…/_build/results?buildId=<id>` URL) and validate via `Read-PriorRun.ps1`:
+
+```powershell
+$ref = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
+    -Organization $cfg.ado.organization `
+    -Project $cfg.ado.project `
+    -PipelineId $entry.id `
+    -RunIds @(<owner-provided id>)
+```
+
+Reject (and re-prompt) if any of these fail:
+- The run belongs to a different `PipelineId`.
+- `result != succeeded`.
+- `reason == 'manual'` AND `templateParameters` is empty (a dry-run — reference runs must be real releases).
+
+Also ask one optional free-text follow-up: *"One-line note on why this run is your reference (e.g. 'May 2026 release — clean prod push, all clouds, no skips')?"* — stored as `reason` in the persisted record.
+
+Persist alongside the 3-run capture, distinct shape:
+
+```jsonc
+"<scope>.<key>._learnedFrom": {
+  "runs": [ /* 3 auto-captured — schema source */ ],
+  "referenceRun": {
+    "runId":             28471,
+    "runUrl":            "https://dev.azure.com/…/_build/results?buildId=28471",
+    "finishedAt":        "2026-05-19T17:42:11Z",
+    "sourceBranch":      "refs/heads/releases/svc2604",
+    "templateParameters": { /* full owner-signed-off value map */ },
+    "nominatedAt":       "<UTC ISO>",
+    "nominatedBy":       "<owner email>",
+    "reason":            "<owner free-text or empty>"
+  }
+}
+```
+
+On `Skip`, write `_learnedFrom.referenceRun = null` so Phase 4.10 knows to fall back to 3-run mode-of-values for value selection.
+
+**Scope**: the reference-run prompt is asked **only for production pipeline keys** (canary pipelines use stamp/region tokens substituted from Phase 4.6 inventory at runtime — a reference run there teaches nothing the tokens don't already encode). The official build pipeline is also skipped — it has no scope-shaped parameters.
+
 ---
 
 #### Phase 4.4 — Pipeline YAML introspection
@@ -317,6 +361,14 @@ The introspector is pure analysis — no network, no auth, no side effects. It r
 - **`selfRepo.{name, baseBranch, alias}`** — the source-tree repo declared under `resources.repositories[]` (type git, not under `OneBranch.Pipelines/`). Consumed by Phase 4.5 for the SDS path.
 
 Persist verbatim to `pipeline-catalog.json → pipelines.<key>.yamlIntrospection`. The merged `parameters:` block (per-parameter `name`, `type`, `default`, `values`, plus `_resolvedFrom` provenance) is persisted under `pipelines.<key>.yamlIntrospection.parameters` and consumed by Phase 4.10's merge.
+
+> **Hard warning — empty leaf parameters + non-null extends.** If `Get-PipelineYamlIntrospection.ps1` returns `parameters.Count == 0` AND the YAML contains an `extends:` reference AND `Read-PipelineYaml.ps1` did NOT return parameters from the extended template either (or returned a non-empty `promptForRepos`), halt with:
+>
+> > *"Pipeline `<key>`: the leaf YAML has no `parameters:` block, but it extends `<template>@<repo>` and Read-PipelineYaml could not resolve that template either. Phase 4.10 will be unable to propose `templateParameters` for this pipeline. Re-run `setup-service group 4.4` after fixing the extends resolution (most common cause: missing `yamlRepos.<repo>.baseBranch` entry — answer the `promptForRepos` follow-up, or set `LocalRepoRoot` if the repo is cloned locally)."*
+>
+> Do not silently continue — a stale `pipelines.<key>.yamlIntrospection.parameters = []` makes Phase 4.10 fall back to prior-run values alone, which strips reserved tokens and re-introduces stamp-list drift.
+
+> **Path strings are passed verbatim to ADO.** Pipeline YAML paths sometimes contain commas, spaces, or other characters that look like typos (e.g., `OneBranch.DT,SF.ServiceUpgrade.yml`). Do not normalize, "fix", or strip them — `configuration.path` from the pipeline definition is the source of truth and ADO's Git Items API matches it byte-for-byte.
 
 The cloud-coverage cross-check is deferred to Phase 4.13 — that's where `ev2CloudCoverage.<key>` is collected.
 
@@ -375,7 +427,21 @@ The phase has three parts: **locate**, **confirm**, **detect-mapping**. All thre
    $d.samples  # what each path actually returned on the first stamp / cloud
    ```
 
-   For each sample whose value is null or `<unresolved>`, ask the owner to dictate the correct dotted path. Persist non-default overrides to `service-config.json → sdsFieldMapping.<key>` (keys: `cloudArrayPath`, `cloudNameField`, `stampsArrayField`, `stampIdField`, `stampNamePath`, `clusterNamePath`, `dcShortNamePath`, `regionPath`, `deploymentNamePath`, `dsmsRegionPath`). When all sample values look right, skip the block entirely — missing keys fall back to Phobos 2022 defaults at runtime.
+   For each sample whose value is null or `<unresolved>`, **try probe-and-resolve before asking the owner**:
+
+   - **Pick a probe value** the agent already knows is correct for *some* stamp in this SDS — preferred order: (a) a stamp name returned by Phase 4.7 Kusto inventory for this service, (b) a canary stamp the owner declared in Phase 4.6, (c) a stamp name from a prior `audit.jsonl` learning. Repeat per missing field with the matching probe (e.g. probe `"ea-bvtd3"` for `deploymentNamePath`, `"ea-bvtd3-prot-01-sf"` for any deployment-unit path, `"eastasia"` for `regionPath`).
+   - **Walk the SDS** and collect every dotted path whose value contains the probe. Implement as a depth-first JSON walk emitting `(path, value)` tuples; do not rely on regex against the raw file (key names contain `->` and quotes which trip naive matchers).
+   - **Score candidates** and pick a winner:
+     1. Exact match (`value == probe`) beats substring match (`value -like "*probe*"`, e.g. URL or DNS containing the stamp name).
+     2. Path appearing in **every** SDS row with a **distinct** exact value per row (1:1 with row identity) beats a path that's constant across rows or missing on some.
+     3. Path whose final segment contains the field's intent word (`StampName`, `DeploymentName`, `Region`, etc., case-insensitive) beats one that doesn't.
+     4. Shorter path beats deeper path on ties.
+   - **Persist the winner** to `sdsFieldMapping.<key>` and record provenance in `audit.jsonl` as `{type:"sds-field-resolve", field, probe, winnerPath, candidatesConsidered:<n>, confidence:"high|medium"}`. Confidence is `high` only when rule 1 + rule 2 both hold for the winner.
+   - **Ask the owner only when** probe-and-resolve returns zero hits, or returns a tie that none of rules 1–4 breaks, or when confidence is `medium` and the field is one of `stampNamePath` / `clusterNamePath` (the two paths that drive Phase 4.7 stamp identity). Show the top 3 candidates plus their sample values; let the owner pick by index or dictate a path.
+
+   Persist non-default overrides to `service-config.json → sdsFieldMapping.<key>` (keys: `cloudArrayPath`, `cloudNameField`, `stampsArrayField`, `stampIdField`, `stampNamePath`, `clusterNamePath`, `dcShortNamePath`, `regionPath`, `deploymentNamePath`, `dsmsRegionPath`). When all sample values look right under Phobos 2022 defaults, skip the block entirely — missing keys fall back to Phobos 2022 defaults at runtime.
+
+   > **Why probe-and-resolve, not a hard-coded list of known prefixes:** different services bury the stamp name under different `Properties.*Config->StampName` prefixes (`ProtConfig`, `RecConfig`, `BcdrConfig`, `ProvConfig`, …) and some don't use the `*Config->` shape at all. Encoding any one prefix as a default biases the agent toward one service. The probe is service-agnostic because it asks the SDS "where does this known-good value live?" rather than "do you match my hard-coded path?".
 
 4. **Smoke-test once.** After persisting, run the full inventory against every cloud the SDS exposes:
 
@@ -491,36 +557,36 @@ Prerequisite: `service.stampTag` (Group 1), Phase 4.5 (SDS pinned), and Phase 4.
 
    > Kusto is the **finalizing signal** for the Public cloud — a stamp emitting telemetry right now is a stamp that exists. The chain still falls back to SDS / YAML / grammar for sovereign clouds (out of reach from the agent's identity) and for the case where Phase 4.9's production half has not been collected yet.
 
-   **3a. Kusto live query (Public cloud only) — preferred when available.**
+   **3a. Kusto live inventory query (Public cloud only) — preferred when available.**
 
    Gate: this branch runs **only** when `cloud == "Public"` AND the production-half Kusto config from Phase 4.9 is populated. Required fields:
 
    - `kusto.production.cluster`
    - `kusto.production.database`
-   - `kusto.production.queryFile`
+   - `kusto.production.inventoryQueryFile` (default `Production-StampInventory.kql` — the **inventory-only** query that returns a single `StampName` column; distinct from `queryFile` which is the cluster-type/`DeploymentUnit` query)
    - `kusto.production.serviceFilter` (substituted into `{{SERVICE_FILTER}}`)
-   - `kusto.production.stampPrefixFilter` (substituted into `{{STAMP_PREFIX_FILTER}}` — auto-derived from AzureServiceConfig in Phase 4.9 production half)
+   - `kusto.production.stampPrefixFilter` (substituted into `{{STAMP_PREFIX_FILTER}}` — auto-derived from AzureServiceConfig in Phase 4.9 production half; may be empty when the query does not use the placeholder)
 
-   If `productionRouting.mode == "cluster-type"`, **all** of those must be present (Phase 4.9 production half must have been run end-to-end). If `productionRouting.mode == "static"`, at minimum `cluster`, `database`, `queryFile`, and `serviceFilter` must be present — `stampPrefixFilter` may be empty (the query will return all rows matching the service filter and the agent will narrow them locally).
+   This branch does **not** require `queryFile` or `clusterTypeExtraction` — those are only consumed by the cluster-type resolver at runtime (`Resolve-PipelinesByClusterType.ps1 -Scope production`).
 
-   When gated open, run the production query verbatim:
+   When gated open, run the inventory query verbatim:
 
    ```powershell
    $kustoRows = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 `
        -Scope production -Cloud Public -EmitRaw
    ```
 
-   `Get-StampInventory.ps1` loads `.github/skills/zed-agent/queries/<kusto.production.queryFile>`, substitutes `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}`, executes it against `kusto.production.cluster` / `.database`, and returns rows shaped `{ StampName, Region, ClusterType, DeploymentName, … }`. Group rows by `Region`, dedupe `StampName`, and write the result as `{ regions, stamps[] }`. Source label: `Kusto live (<queryFile>@<UTC ISO>)`.
+   `Get-StampInventory.ps1` loads `.github/skills/zed-agent/queries/<kusto.production.inventoryQueryFile>` (preferring `inventoryQueryFile` over `queryFile`), substitutes `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}`, executes it against `kusto.production.cluster` / `.database`, and returns rows shaped `{ StampName }`. Stamp names are captured **verbatim from Kusto** — the wizard does **not** synthesize names via the `<region>-<layout>-<stampTag><index>` grammar on this branch. Regions are derived per stamp by `Resolve-StampParts` (the short-name prefix). Source label: `Kusto live (<inventoryQueryFile>@<UTC ISO>)`.
 
    On Kusto error (auth, query syntax, empty result set), surface the error verbatim and **fall through to 3b**. Do not halt — Kusto is the preferred signal, not a hard dependency.
 
-   When Phase 4.9 production half has NOT been run yet, skip 3a silently and recap at the end: *"Built Public scope from SDS. Run `setup-service group 4.9` to enable live Kusto reconciliation, then re-run `setup-service group 4.7` to refresh the baseline from telemetry."*
+   When Phase 4.9 production half has NOT been run yet, the wizard MUST surface the recap (not silence it): *"Built Public scope from SDS. Run `setup-service group 4.9` to enable live Kusto reconciliation, then re-run `setup-service group 4.7` to refresh the baseline from telemetry."*
 
-   **3b. SDS (Phase 4.5):** Run `Get-StampInventoryFromSds.ps1 -SdsPath <pinned path> -Cloud <cloud>`. Capture `regions` and `stamps[]` verbatim from SDS. Source label: `SDS`.
+   **3b. SDS (Phase 4.5):** Run `Get-StampInventoryFromSds.ps1 -SdsPath <pinned path> -Cloud <cloud>`. Capture `regions` and `stamps[].stampName` **verbatim from SDS** — do NOT reconstruct names via grammar; SDS already stores the canonical, unpadded stamp names. Source label: `SDS`.
 
    **3c. YAML defaults (Phase 4.4):** If SDS returned nothing for this cloud (rare for production), fall back to `pipelines.<prodKey>.yamlIntrospection.perCloudDefaults.<cloud>.{Regions,stamps}` (or `flatDefaults` for single-cloud pipelines). Source label: `YAML defaults`.
 
-   **3d. AzureServiceConfig + grammar (last resort, with explicit warning):** If 3a–3c are all unavailable for this cloud, fall back to the AzureServiceConfig + grammar expansion (`<region>-<layout>-<stampTag><index>`) and surface a warning to the owner. Source label: `AzureServiceConfig grammar (fallback ⚠)`. Always log a fallback learning.
+   **3d. AzureServiceConfig + grammar (last resort, with explicit warning):** If 3a–3c are all unavailable for this cloud, fall back to the AzureServiceConfig + grammar expansion (`<region>-<layout>-<stampTag><index>`) and surface a warning to the owner. Grammar synthesis is reserved for this branch only. Source label: `AzureServiceConfig grammar (fallback ⚠)`. Always log a fallback learning.
 
    No "1 stamp per region (assumed)" preview — the wizard always reports the **actual** count derived from the chain above.
 
@@ -693,14 +759,22 @@ Both halves are persisted under `kusto.canary.*` / `kusto.production.*` and used
 5. **Hard reminder** before finishing the canary half:
    > ⚠️ **Contract**: Steps 5/7/10 will run this query verbatim, substituting `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}` / any custom placeholders. The agent then (a) extracts the SET of cluster types via `kusto.canary.clusterTypeExtraction` and intersects with `canaryRouting.clusterTypeMap` (Phase 4.2) to pick canary pipelines, and (b) joins rows back by `StampName` to fill `inventory.canary.stamps[*].clusterType`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run.
 
-**Production half** (only when `productionRouting.mode == "cluster-type"`):
+**Production half** (always collected when the production scope is non-empty — Phase 4.7 step 3a depends on it for Public-cloud inventory finalization; also required when `productionRouting.mode == "cluster-type"` for the resolver):
 
-Mirrors the canary half but persists under `kusto.production.*`. Defaults differ:
+Mirrors the canary half but persists under `kusto.production.*`. **Two queries are collected, not one** — they have different shapes and different consumers:
 
-- `kusto.production.queryFile` → `Production-DeploymentUnits.kql` (canonical, shape-identical to canary; copy into queries/ if absent).
+| Field | Default file | Consumed by | Shape |
+|---|---|---|---|
+| `kusto.production.inventoryQueryFile` | `Production-StampInventory.kql` | Phase 4.7 step 3a, `Get-StampInventory.ps1 -Scope production` (inventory path) | `EventLogAllClusters \| where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01' \| where {{STAMP_PREFIX_FILTER}} \| distinct StampName` |
+| `kusto.production.queryFile`          | `Production-DeploymentUnits.kql` | `Resolve-PipelinesByClusterType.ps1 -Scope production` (Step 10, cluster-type resolver) | `… \| summarize make_set(DeploymentUnit) by StampName` |
+
+If the file doesn't exist in `.github/skills/zed-agent/queries/`, copy the canonical version above into it now. **Do NOT prompt for the filenames.**
+
+Other defaults (shared by both queries):
+
 - `kusto.production.cluster` → `https://mabprod1.kusto.windows.net/` (Azure Backup default).
 - `kusto.production.database` → `MABKustoProd1` (Azure Backup default).
-- `kusto.production.clusterTypeExtraction` → `{ mode: "deployment-unit-substring" }`.
+- `kusto.production.clusterTypeExtraction` → `{ mode: "deployment-unit-substring" }` (only used by the cluster-type query).
 - **Auto-derive `kusto.production.stampPrefixFilter` from AzureServiceConfig — do NOT prompt**:
   1. Run `Get-AzureServiceConfig.ps1` to load the snapshot.
   2. Select the `Public` cloud entry and collect the distinct lower-cased `ShortName` values from `DataCenters[]`.
@@ -741,8 +815,9 @@ Every ADO REST call in Phase 4.10 / 4.11 / 4.12 uses the same `az login` identit
 For each pipeline key, fan out in parallel using `ForEach-Object -Parallel` and:
 
 1. **Baseline**: union of all parameters declared in `pipelines.<key>.yamlIntrospection.parameters` (Phase 4.4).
-2. **Concrete values**: prior-run values from `<scope>.<key>._learnedFrom.runs[].templateParameters` (Phase 4.3), mode-of-values across the runs (most common wins). If the runs disagree, flag the parameter as `mode-disagreement` in `agentGaps`.
-3. **Reserved-token preservation**: if a prior-run value matches one of the reserved `{{...}}` tokens **or** the YAML's `default` is a reserved token, keep it as the token (do not substitute the literal from history).
+2. **Concrete values — schema source (last 3 runs)**: prior-run values from `<scope>.<key>._learnedFrom.runs[].templateParameters` (Phase 4.3), mode-of-values across the runs (most common wins). This pass establishes the **shape** of each parameter (CSV vs JSON array, naming style, whether the param exists at all). If the runs disagree on a value, flag the parameter as `mode-disagreement` in `agentGaps` — do NOT pick a winner yet, defer to step 2b.
+2b. **Concrete values — value-of-truth (reference run)**: if `<scope>.<key>._learnedFrom.referenceRun` is set (Phase 4.3 reference-run capture, production scope only), for every parameter that is either flagged `mode-disagreement` from step 2 OR has a different value in the reference run than the 3-run mode, **prefer the reference-run value**. Tag the parameter's source as `reference-run` so the proposal block can render the lineage. Reserved tokens (step 3 below) still win over both — the reference run only resolves literal-value ambiguity, it never overrides a token.
+3. **Reserved-token preservation**: if a prior-run value matches one of the reserved `{{...}}` tokens **or** the YAML's `default` is a reserved token, keep it as the token (do not substitute the literal from history, and ignore the reference run for this parameter).
 4. **Canary stamp / region detection (token replaces literal)**: prior-run values are excellent for *teaching the agent the parameter shape* (CSV vs JSON array, naming style, count) but they are **not** trusted as the actual values to send — Phase 4.6's `inventory.canary.stamps` is the truth. For each parameter whose prior-run value looks like a canary stamp list or canary region list (values are a subset of `inventory.canary.stamps[].stampName` / distinct `inventory.canary.stamps[].region`, or look like `<region>-<layout>-<stampTag><index>` triples), **replace the literal with the matching reserved token** (`{{canaryStamps}}` or `{{canaryRegions}}`) in the proposal. Record the detected delivery shape (CSV / semicolon-list / JSON array) under `canary.<key>.discoveryNotes.stampNameStyle` so the runtime substitution knows how to join the inventory values. If detection is ambiguous (prior-run value contains stamps NOT in `inventory.canary.stamps`), flag `agentGaps: stamp-list-drift: [<stamps not in inventory>]` and surface in the proposal review.
 5. **Production stamp / region detection** — same shape, against `inventory.production.<cloud>` (Phase 4.7); tokens become `{{pubRegions}}` / `{{ffStamps}}` / etc. depending on the matching cloud.
 6. **Cluster-type cross-check**: if `canaryRouting.mode == "cluster-type"` (or production equivalent) and the owner declared `entry.clusterType` in Phase 4.2, scan the YAML and prior runs for stamp-list / region-list parameters whose values cluster around a single suffix (e.g., all entries end in `-sfmc`). If the inferred suffix **disagrees** with the owner-declared cluster type, flag `agentGaps: clusterType-mismatch: declared <X>, evidence suggests <Y>`. If `clusterType` was NOT declared, fall back to the inferred value as the proposal.
@@ -757,14 +832,17 @@ Show the owner a single review block per pipeline:
 │ YAML:  Mgmt-RecoverySvcs-BackupDataPlane/pipelines/canary.yml    │
 │        @ develop · sha 7a3f4b1                                   │
 │ Prior: run 28471 (2026-05-19), 28392 (2026-04-22), 28203 (2026-03-24) │
+│ Reference run: #28471 (2026-05-19) — nominated by alice@…         │
+│   "May 2026 release — clean prod push, all clouds, no skips"     │
 │                                                                  │
 │ Proposed templateParameters:                                     │
 │   ServiceTreeId      = "<guid>"            ← prior runs (all 3)  │
 │   SourceBranch       = "{{currentBranch}}" ← YAML default token  │
 │   PubCanaryStamps    = "{{canaryStamps}}"  ← detected (canary)   │
+│   PubRegions         = "*"                 ← reference run #28471 │
+│   ExcludeStamps      = ""                  ← reference run #28471 │
 │   SdpType            = "{{sdpType}}"       ← reserved token      │
 │   ValidateOnlyRollOut= "{{validateOnly}}"  ← reserved token      │
-│   ExcludeStamps      = "{{excludeStamps}}" ← reserved token      │
 │                                                                  │
 │ clusterType: "sfmc" (declared in Phase 4.2 · ✓ matches evidence)│
 │                                                                  │
@@ -780,12 +858,21 @@ Rules for rendering the `clusterType` line:
 - If owner **declared** but the cross-check disagrees → show with `⚠ evidence suggests "<inferred>"` and also list the discrepancy in **Gaps** — must be resolved before `Accept` is allowed.
 - If owner did **not** declare it → show `clusterType: "<inferred>" (inferred from <evidence source> — please confirm)` and treat as a gap.
 
+Rules for rendering the per-parameter source-of-value annotation (right-hand side of each line):
+- `← prior runs (all 3)` — all 3 auto-captured runs agreed on this literal value.
+- `← reference run #<id>` — either the 3 runs disagreed and the reference broke the tie, or the reference value differs from the 3-run mode. Always render the run id so the lineage is auditable.
+- `← YAML default token` / `← reserved token` — token preservation path (merge step 3). Wins over both run sources.
+- `← detected (canary)` / `← detected (<cloud>)` — stamp/region literal collapsed to a token by merge step 4/5.
+- The `Reference run:` header line is omitted entirely when `_learnedFrom.referenceRun` is null (owner skipped in Phase 4.3).
+
 Loop on the choice until owner picks `Accept` or `Reject`. On `Edit a value` ask which key, collect new value via `ask_user`, re-render. On `Reject`, drop to the legacy paste-YAML / paste-JSON / manual flow as a fallback.
 
 #### Persist
 
 - `<scope>.<key>.templateParameters` = accepted map (with reserved tokens preserved as strings).
-- `<scope>.<key>._learnedFrom` = `{ runIds: [...], yamlPath, yamlRepo, yamlBranch, yamlSha, learnedAt: <UTC ISO> }`
+- `<scope>.<key>._learnedFrom` = `{ runIds: [...], referenceRunId: <int|null>, yamlPath, yamlRepo, yamlBranch, yamlSha, learnedAt: <UTC ISO> }`
+- `<scope>.<key>._learnedFrom.referenceRun` (production pipelines that nominated one) = `{ runId, runUrl, finishedAt, sourceBranch, templateParameters, nominatedAt, nominatedBy, reason }` — the full payload captured in Phase 4.3; preserved so Phase 4.10 can re-merge on rerun without re-prompting the owner.
+- `<scope>.<key>._learnedFrom.valueSources` (optional, debug) = per-parameter `{ <paramName>: "prior-runs-mode" | "reference-run" | "reserved-token" | "yaml-default" | "detected-canary" | "detected-<cloud>" }` so the proposal block's right-hand annotations remain auditable on rerun.
 - `<scope>.<key>.discoveryNotes` = `{ exclusionFormat: <auto-detected>, stampNameStyle: <auto-detected>, freeText: "" }`
 - `<scope>.<key>.agentGaps` = list of unresolved-gap descriptions (empty array on full success).
 - If routing mode is `cluster-type` and a `clusterType` was inferred (or owner overrode Phase 4.2's declared value), persist `<scope>.<key>.clusterType` and update `<scope>Routing.clusterTypeMap[<clusterType>]`.

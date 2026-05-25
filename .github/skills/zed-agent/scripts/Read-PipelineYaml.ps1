@@ -26,6 +26,13 @@
     Fallback base branch if a repo has no entry under yamlRepos.<repo>.
     Defaults to service-config.json → ado.baseBranch when available, else 'main'.
 
+.PARAMETER LocalRepoRoot
+    Optional absolute path to a local clone of the root pipeline repo. When set,
+    Get-YamlItem tries the local file first (Join-Path $LocalRepoRoot $Path) and
+    only falls back to the ADO Git Items API if the file is not on disk. Useful
+    when the wizard runs against a developer machine that already has the repo
+    cloned — bypasses 404 problems caused by ADO repo-id/name mismatches.
+
 .OUTPUTS
     PSCustomObject with:
       pipelineId       : int
@@ -45,7 +52,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Project,
     [Parameter(Mandatory = $true)][int]$PipelineId,
     [string]$CatalogPath,
-    [string]$DefaultBaseBranch
+    [string]$DefaultBaseBranch,
+    [string]$LocalRepoRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,8 +97,23 @@ function Get-RepoOrgProject {
 
 function Get-YamlItem {
     param([string]$RepoName, [string]$BranchName, [string]$Path)
+    # Local-clone fast path: when the caller passed -LocalRepoRoot and the file
+    # is on disk, return its content without an ADO round-trip. The sha is
+    # synthesized from the file's content hash so downstream code that records
+    # provenance still gets a stable identifier.
+    if ($LocalRepoRoot -and (Test-Path -LiteralPath $LocalRepoRoot)) {
+        $relPath = $Path.TrimStart('/','\\')
+        $localFile = Join-Path $LocalRepoRoot $relPath
+        if (Test-Path -LiteralPath $localFile) {
+            $content = Get-Content -LiteralPath $localFile -Raw
+            $sha = (Get-FileHash -LiteralPath $localFile -Algorithm SHA1).Hash.ToLowerInvariant()
+            return [PSCustomObject]@{ content = $content; sha = "local:$sha" }
+        }
+    }
     $op = Get-RepoOrgProject -RepoName $RepoName
-    # ADO Git items API — pull raw file content at the given branch.
+    # ADO Git items API — pull raw file content at the given branch. The
+    # `repositoryIdOrName` segment accepts either a repo name OR a repo GUID,
+    # so $RepoName may be a GUID when the pipeline definition omitted .name/.fullName.
     $uri = "https://dev.azure.com/$($op.Organization)/$($op.Project)/_apis/git/repositories/$RepoName/items" +
            "?path=$([uri]::EscapeDataString($Path))&versionDescriptor.version=$([uri]::EscapeDataString($BranchName))" +
            "&versionDescriptor.versionType=branch&includeContent=true&api-version=7.1"
@@ -215,8 +238,12 @@ function Resolve-RepoAlias {
 # ── 1. Get pipeline definition to discover root YAML location ──
 $pipelineUri = "https://dev.azure.com/$Organization/$Project/_apis/pipelines/${PipelineId}?api-version=7.1"
 $pipeline = Invoke-RestMethod -Uri $pipelineUri -Headers $headers -ErrorAction Stop
+# OneBranch (and many modern) pipelines return only { id, type } — no .name and no
+# .fullName. ADO's Git Items API accepts the repo GUID in the repositoryIdOrName
+# slot, so fall back to .id rather than letting the URL render as `/repositories//items`.
 $rootRepoName = $pipeline.configuration.repository.name
 if (-not $rootRepoName) { $rootRepoName = $pipeline.configuration.repository.fullName }
+if (-not $rootRepoName) { $rootRepoName = $pipeline.configuration.repository.id }
 $rootPath = $pipeline.configuration.path
 
 $promptFor = @()

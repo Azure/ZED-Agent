@@ -1,0 +1,22 @@
+// Production stamp inventory — used by Phase 4.7 (setup-service) and the
+// Public-cloud half of `Get-StampInventory.ps1 -Scope production` at runtime.
+//
+// This query is INVENTORY-ONLY: returns the distinct list of stamps emitting
+// telemetry right now. It does NOT carry DeploymentUnit (that is what the
+// separate cluster-type query Production-DeploymentUnits.kql is for). The
+// two responsibilities are split so the inventory result is small, fast,
+// and unambiguous.
+//
+// Placeholders (substituted at runtime by the agent / Release-Watcher):
+//   {{SERVICE_FILTER}}      → CONFIG[kusto.production.serviceFilter]
+//   {{STAMP_PREFIX_FILTER}} → CONFIG[kusto.production.stampPrefixFilter]
+//                             (optional — defaults to `1 == 1` when empty)
+//
+// Required columns in result rows: StampName
+// Response parsing: ALWAYS use $resp.Tables[0].Rows.
+EventLogAllClusters
+| where TIMESTAMP > ago(1d)
+| where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
+| where {{STAMP_PREFIX_FILTER}}
+| distinct StampName
+| order by StampName asc

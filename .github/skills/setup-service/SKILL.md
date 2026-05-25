@@ -117,7 +117,7 @@ Dispatcher behavior:
 4. Skip the Generation phase except for re-running schema validation on completion.
 5. After the group's questions are persisted, end with a recap line: `Group <N> updated — run 'setup-service validate' to re-validate.`
 
-> 📒 **Always log a learning when the documented signal fails.** Whenever the agent has to fall back from the primary path described in a group (ASC field missing the expected tag, a cached/snapshot fetch instead of live, a prefix-based filter instead of a DatacenterType filter, an owner correcting a stamp name the agent built, an empty Kusto result that forces a manual prompt, etc.), the agent **MUST** call `Add-Learning.ps1` once per fallback, before the next `ask_user`, with `-Source agent-discovery` and a category from `{infrastructure, pipeline, parameter, config, process}`. The learning text must name the group, the signal that failed, and what the agent used instead. Re-runs still log — the gap is only "closed" when the ASC / source data is fixed, not when the wizard finishes. Skipping this step is a bug, not an optimisation.
+> 📒 **Always log a learning when the documented signal fails.** Whenever the agent has to fall back from the primary path described in a group (a cached/snapshot Azure Service Config fetch instead of live, an owner correcting a stamp name the agent built, an empty Kusto result that forces a manual prompt, an owner-declared region that does not resolve against Azure Service Config, etc.), the agent **MUST** call `Add-Learning.ps1` once per fallback, before the next `ask_user`, with `-Source agent-discovery` and a category from `{infrastructure, pipeline, parameter, config, process}`. The learning text must name the group, the signal that failed, and what the agent used instead. Re-runs still log — the gap is only "closed" when the source data is fixed, not when the wizard finishes. Skipping this step is a bug, not an optimisation.
 
 **Group 1 — Service Identity**
 Ask for:
@@ -292,70 +292,57 @@ The agent uses this Kusto query for **canary pipeline selection** — to discove
 
 **Group 4c — Canary Stamp Inventory**
 
-The canary fleet is small, stable, and **owner-curated** — but it spans multiple clouds. Some services have all canary stamps in one purpose-built cloud (e.g. `Canary`); others have canary stamps inside the **Public** cloud (e.g. `ecy`, `ccy` regions for Prot). Each stamp carries its own `{ cloud, region, layout }`, so the inventory works for either shape.
+The canary fleet is small, stable, and **owner-declared**. Some services have all canary stamps in one purpose-built cloud (e.g. the `Canary` cloud); others have canary stamps inside the **Public** cloud (e.g. `ecy`, `ccy` regions for Prot). Each stamp carries its own `{ cloud, region, layout }` so multi-cloud setups are represented natively.
 
-This group captures the exact stamps the agent targets in Steps 5 / 7 / 10. The owner-curated list is cross-checked against the authoritative `AzureServiceConfig.json` (fetched live from `Mgmt-RecoverySvcs-DeploymentExtn` by `Get-AzureServiceConfig.ps1`; cache and committed snapshot are fallbacks only) so a typo in a stamp name fails fast in `setup-service validate` instead of at canary-deploy time. **`clusterType` is never prompted** — it is filled lazily by `Get-StampInventory.ps1` running the Phase 4b query and joining by `StampName`.
+**The owner is the only source of truth for which regions are canary.** The agent does **not** scan Azure Service Config looking for "canary datacenters" — Azure Service Config has no reliable, service-agnostic tag for that. Azure Service Config is used only as a **lookup table** to (a) map each owner-provided region short name to its `{ cloud, layout }`, (b) catch typos before they reach a release, and (c) surface whether a region has a passive recovery stamp.
 
-> **ASC vocabulary — read before prompting**
+`clusterType` is never prompted in Group 4c — it is filled lazily by `Get-StampInventory.ps1` running the Phase 4b Kusto query when Phase 11.0 sets `canaryRouting.mode` to `cluster-type`.
+
+> **Azure Service Config vocabulary — for the recap only**
 >
-> `Clouds[].DataCenters[].DatacenterType` is a free-text comma-list that varies by service. The values the agent cares about:
-> - **`Pilot` / `Canary` / `EarlyRollout`** — canary-class DC. When present, this is the authoritative canary signal.
-> - **`ACTIVE` / `PASSIVE`** — describes the live/recovery role of stamps in a DC. **`PASSIVE` means the stamp exists only for disaster-recovery failover; do NOT target it as a canary stamp.**
-> - **`HAS_PASSIVE`** — informational: the DC has an additional passive (recovery) stamp behind the primary one. Surface this in the recap so the owner is reminded which regions have a recovery copy, but never auto-select the passive copy.
+> Each `Clouds[].DataCenters[]` entry carries a `DatacenterType` comma-list. Two values matter for the recap:
+> - **`PASSIVE`** — this datacenter IS a recovery-only copy. Never targeted as a canary stamp.
+> - **`HAS_PASSIVE`** — this datacenter has an additional passive (recovery) copy behind the primary. Purely informational; surface it so the owner knows which regions have a recovery copy.
 >
-> Many services (e.g. Prot) use only `ACTIVE` / `PASSIVE` / `HAS_PASSIVE` and never tag canary DCs with `Pilot|Canary|EarlyRollout`. For those services the **DatacenterType field cannot identify canary candidates** and the agent must fall back to owner-provided **canary region prefixes** (Signal B below). When that fallback path is taken, the agent **MUST** call `Add-Learning.ps1` so the gap is captured for the next setup.
+> Many services (e.g. Prot) only use `ACTIVE` / `PASSIVE` / `HAS_PASSIVE` and never tag canary datacenters at all. That is fine — the agent does not need that tag because the owner already told us which regions are canary.
 
-Prerequisite: `service.stampTag` must already be set (Group 1). If it is empty, jump back to Group 1 before continuing.
+Prerequisite: `service.stampTag` must already be set (Group 1). If it is empty, jump back to Group 1.
 
-1. **Fetch ASC** by calling:
+1. **Fetch Azure Service Config** by calling:
    ```powershell
    $asc = & .\.github\skills\zed-agent\scripts\Get-AzureServiceConfig.ps1
    ```
-   Default behavior is live-first. If the call surfaces a warning that it fell back to cache or snapshot, tell the release owner — they may want to fix `az login` before continuing so validation is grounded in truth. If the call throws or `$asc.data.Clouds.Count -eq 0`, halt and surface the error; do not proceed with stale state.
+   Live-first; cache and committed snapshot are fallbacks. If the call surfaces a warning that it fell back to cache or snapshot, tell the release owner — they may want to fix `az login` before continuing so validation is grounded in truth. If the call throws or `$asc.data.Clouds.Count -eq 0`, halt and surface the error.
 
-2. **Compute canary candidates from BOTH signals** — never one alone, never silent defaults:
+2. **Ask the owner for the canary region short names.** Read any existing `inventory.canary.regionPrefixHints` from disk first; if it is non-empty, offer the saved list as a one-tap default. Otherwise (and on re-runs where the owner says "change"), ask:
 
-   - **Signal A (DatacenterType tag)** — flatten every `($cloud, $dc)` pair and keep rows where `($dc.DatacenterType -join ',') -match '(?i)Pilot|Canary|EarlyRollout'`.
-   - **Signal B (owner-provided region prefixes)** — read `inventory.canary.regionPrefixHints` from disk. If empty, ask via `ask_user`:
-     > *"Your service's ASC may not tag canary DCs explicitly (many services only mark `ACTIVE` / `PASSIVE`). List the **canary region prefixes** for your service so I can surface the right DCs from ASC. Comma-separated, lowercase, matched against `DataCenter.ShortName` via `startswith`. Example for Prot: `ea-can, ecy, ccy`. Type `none` only if Signal A above already picked the right rows."*
-     Persist the answer to `inventory.canary.regionPrefixHints` (an array of trimmed lowercase strings; empty array if the owner answered `none`). After persisting, build the Signal B set by keeping every `($cloud, $dc)` pair where `$dc.ShortName` (lowercased) starts with any hint.
-   - **Candidate set** = union of Signal A and Signal B, de-duplicated on `(cloud.Name, dc.ShortName)`.
+   > *"Which regions are canary regions for your service? List the region short names exactly as they appear in your stamp names. Comma-separated, lowercase. The agent will look each one up in Azure Service Config to confirm it exists and find its cloud + layout. Example for Prot: `ea-can, ecy, ccy`."*
 
-   If Signal A returned **zero rows** for any cloud the owner cares about and Signal B was needed to find candidates there, call `Add-Learning.ps1` exactly once:
-   ```powershell
-   & .\.github\skills\zed-agent\scripts\Add-Learning.ps1 -Category infrastructure -Source agent-discovery `
-     -Learning "ASC for service '<service.name>' does not tag canary DCs with Pilot|Canary|EarlyRollout (clouds: <comma list>). Group 4c fell back to owner-provided regionPrefixHints (<hints>). Consider asking the ASC owners to tag canary DCs so the discovery signal is intrinsic."
-   ```
-   This is mandatory — do not skip it even on a re-run; a re-run still re-confirms the fallback is in effect.
+   If Phase 4b already collected `kusto.canary.stampPrefixFilter`, derive a suggested default from it (e.g. the `startswith '<token>'` tokens) and offer:
+   `1. Use <suggested list>   2. Provide my own   3. None of my regions are canary (skip Group 4c)`.
 
-3. **Present candidates as a flat multi-select** via `ask_user`. For each candidate render one row with all the context the owner needs to confirm or deselect:
+   Persist the trimmed lowercase list to `inventory.canary.regionPrefixHints`.
 
-   ```
-   [x] Public  / ecy   layout=pod01  ACTIVE, HAS_PASSIVE       (matched prefix: ecy)
-   [x] Public  / ccy   layout=pod01  ACTIVE, HAS_PASSIVE       (matched prefix: ccy)
-   [x] Canary  / ea    layout=can02  ACTIVE                    (matched prefix: ea-can)
-   [ ] Public  / eus   layout=prod   ACTIVE                    (production — shown for context, leave unchecked)
-   ```
+3. **Resolve each owner-provided short name against Azure Service Config.** For every short name `p` in the list, scan `$asc.data.Clouds[*].DataCenters[*]` and find every datacenter where `"$($dc.ShortName)-$($cloud.Layout)" -like "$p*"` (case-insensitive). This matches both exact short names (`ecy`) and shape-anchored prefixes (`ea-can` resolves to `(Canary, ea, can02)` because the full token `ea-can02` starts with `ea-can`).
 
-   - **Default-check** every candidate (both signals contribute). The owner can uncheck anything misclassified.
-   - Append a one-line legend below the list: *"`HAS_PASSIVE` = region has a recovery-only stamp; the agent never targets passive copies. `PASSIVE` = this DC IS the recovery copy — leave it unchecked."*
-   - Do NOT silently drop rows with `PASSIVE` in their type list — show them, but leave them unchecked by default. The owner sees the full picture.
+   - **Zero matches** for a token → halt and re-prompt step 2 with: *"`<p>` doesn't match any datacenter in Azure Service Config. Check spelling, or remove it from the list."*
+   - **Multiple matches across clouds** for a token (rare) → render the choices and ask the owner to pick which one is canary.
+   - **One match per cloud** → record the `{ cloud, region: shortName, layout }` triple for that token. Multiple tokens may legitimately resolve to different `(cloud, layout)` triples — that's the multi-cloud case.
 
-4. **For each selected `(cloudName, shortName)` pair**, read that cloud's layout from ASC: `$layout = $asc.data.Clouds | Where-Object Name -eq $cloudName | Select-Object -ExpandProperty Layout`. Do NOT prompt for layout — it is a per-cloud constant.
+4. **For each resolved `(cloud, region, layout)` triple**, ask only for the stamp index list:
 
-5. **Enumerate canary stamps per selection**, asking only for the index list:
-   > *"How many `{shortName}-{layout}-{stampTag}{index}` stamps does your service run in `<cloudName> / <shortName>`? (Comma-separated indexes — e.g. `1, 1d, 2`. The agent builds the full stamp names.)"*
-   For each index, build `stampName = "<shortName>-<layout>-<stampTag><index>"` and push `{ stampName, cloud: <cloudName>, region: <shortName>, layout: <layout>, clusterType: null }` to `inventory.canary.stamps`. **Never prompt for clusterType.**
+   > *"How many `{region}-{layout}-{stampTag}{index}` stamps does your service run in `<cloud> / <region>`? (Comma-separated indexes — e.g. `1, 1d, 2`. The agent builds the full stamp names.)"*
 
-6. **Validate immediately** by calling:
+   For each index, build `stampName = "<region>-<layout>-<stampTag><index>"` and push `{ stampName, cloud, region, layout, clusterType: null }` to `inventory.canary.stamps`. **Never prompt for clusterType.**
+
+5. **Validate immediately** by calling:
    ```powershell
    $inv = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 -Scope canary
    ```
-   - If `$inv.drift` is non-empty, render the drift table (`stampName`, `reason`) and re-prompt for each drifted stamp. Common reasons: shortName not in that cloud, serviceTag mismatch, grammar mismatch.
+   - If `$inv.drift` is non-empty, render the drift table (`stampName`, `reason`) and re-prompt for each drifted stamp. Common reasons: region not in the named cloud, stampTag mismatch, grammar mismatch.
    - If `$inv.stamps.Count -eq 0`, halt and re-run Group 4c from step 2.
-   - The recap **must not** assert what `canaryRouting.mode` is — that field lives in `pipeline-catalog.json` and is set in Phase 11.0. If the mode happens to already be `cluster-type` and `kusto.canary.cluster` is set (Phase 4b), the resolver will have filled `clusterType` lazily and the recap shows the resolved values; otherwise the column reads `(unresolved — set by Phase 11.0)`. Do **not** infer "static" from a null clusterType.
 
-7. **Recap + confirm**. Render the full inventory as a table to the release owner:
+6. **Recap + confirm.** Render the full inventory as a table. The `clusterType` column **must not** assert that `canaryRouting.mode` is anything — that decision lives in Phase 11.0. If Phase 11.0 has already set the mode to `cluster-type` and Phase 4b's Kusto is configured, the lazy resolver fills the column at validation time; otherwise it reads `(unresolved — set by Phase 11.0)`. Never infer `static` from a null `clusterType`.
 
    | Cloud | Region | Layout | HAS_PASSIVE | Stamps | clusterType |
    |-------|--------|--------|-------------|--------|-------------|
@@ -364,10 +351,10 @@ Prerequisite: `service.stampTag` must already be set (Group 1). If it is empty, 
    | Canary | ea | can02 | no | ea-can02-prot1 | (unresolved — set by Phase 11.0) |
 
    Then `ask_user`:
-   > *"Does this canary inventory look right? Picking `Edit` lets you redo the selection from step 3. Picking `Yes — looks good` finalizes the inventory and continues to Group 4d."*
+   > *"Does this canary inventory look right? Picking `Edit` lets you redo the region list from step 2. Picking `Yes — looks good` finalizes the inventory and continues to Group 4d."*
    > Choices: `Yes — looks good`, `Edit`
 
-   On `Edit`, jump back to step 3. On `Yes — looks good`, persist the inventory and remind the owner that any stamp added or decommissioned needs a re-run of `setup-service group 4c`.
+   On `Edit`, jump back to step 2. On `Yes — looks good`, persist and remind the owner that any stamp added or decommissioned needs a re-run of `setup-service group 4c`.
 
 ---
 

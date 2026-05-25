@@ -587,7 +587,7 @@
             },
             "regionPrefixHints": {
               "type": "array",
-              "description": "Owner-provided canary region/DC short-name prefixes used by setup-service Group 4c to filter ASC candidates when the cloud's DatacenterType field does not carry Pilot/Canary/EarlyRollout tags. Example for Prot: ['ea-can', 'ecy', 'ccy']. Persisted so re-runs skip the prompt. Optional — purely a discovery hint, not consulted by Get-StampInventory at release time.",
+              "description": "Owner-declared canary region short names (or shape-anchored prefixes like 'ea-can') from setup-service Group 4c. The wizard looks each one up in AzureServiceConfig.json to resolve its cloud + layout, then builds the stamps[] entries below. Persisted only so re-runs of Group 4c can offer the saved list as a default; not consulted by Get-StampInventory at release time.",
               "items": { "type": "string", "minLength": 1 }
             },
             "stamps": {

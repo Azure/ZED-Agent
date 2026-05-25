@@ -585,6 +585,11 @@
               "description": "DEPRECATED single-cloud regions list. Kept only so older configs still load; new fields live on each stamp.",
               "items": { "type": "string", "pattern": "^[a-z0-9]+$" }
             },
+            "regionPrefixHints": {
+              "type": "array",
+              "description": "Owner-provided canary region/DC short-name prefixes used by setup-service Group 4c to filter ASC candidates when the cloud's DatacenterType field does not carry Pilot/Canary/EarlyRollout tags. Example for Prot: ['ea-can', 'ecy', 'ccy']. Persisted so re-runs skip the prompt. Optional — purely a discovery hint, not consulted by Get-StampInventory at release time.",
+              "items": { "type": "string", "minLength": 1 }
+            },
             "stamps": {
               "type": "array",
               "description": "Canary stamps for this service across all clouds. Each entry carries its own cloud / region / layout so the agent does not assume a single canary cloud. clusterType may be null at setup time — Get-StampInventory.ps1 fills it lazily via the Phase 4b Kusto query when canaryRouting.mode == 'cluster-type'.",

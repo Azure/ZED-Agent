@@ -489,9 +489,38 @@ Prerequisite: `service.stampTag` (Group 1), Phase 4.5 (SDS pinned), and Phase 4.
 
 3. **Per chosen cloud, build the stamp list using the source-of-truth precedence chain:**
 
-   1. **SDS (Phase 4.5):** Run `Get-StampInventoryFromSds.ps1 -SdsPath <pinned path> -Cloud <cloud>`. Capture `regions` and `stamps[]` verbatim from SDS. Source label: `SDS`.
-   2. **YAML defaults (Phase 4.4):** If SDS returned nothing for this cloud (rare for production), fall back to `pipelines.<prodKey>.yamlIntrospection.perCloudDefaults.<cloud>.{Regions,stamps}` (or `flatDefaults` for single-cloud pipelines). Source label: `YAML defaults`.
-   3. **AzureServiceConfig + grammar (last resort, with explicit warning):** If both SDS and YAML defaults are unavailable, fall back to the AzureServiceConfig + grammar expansion (`<region>-<layout>-<stampTag><index>`) and surface a warning to the owner. Source label: `AzureServiceConfig grammar (fallback ⚠)`. Always log a fallback learning.
+   > Kusto is the **finalizing signal** for the Public cloud — a stamp emitting telemetry right now is a stamp that exists. The chain still falls back to SDS / YAML / grammar for sovereign clouds (out of reach from the agent's identity) and for the case where Phase 4.9's production half has not been collected yet.
+
+   **3a. Kusto live query (Public cloud only) — preferred when available.**
+
+   Gate: this branch runs **only** when `cloud == "Public"` AND the production-half Kusto config from Phase 4.9 is populated. Required fields:
+
+   - `kusto.production.cluster`
+   - `kusto.production.database`
+   - `kusto.production.queryFile`
+   - `kusto.production.serviceFilter` (substituted into `{{SERVICE_FILTER}}`)
+   - `kusto.production.stampPrefixFilter` (substituted into `{{STAMP_PREFIX_FILTER}}` — auto-derived from AzureServiceConfig in Phase 4.9 production half)
+
+   If `productionRouting.mode == "cluster-type"`, **all** of those must be present (Phase 4.9 production half must have been run end-to-end). If `productionRouting.mode == "static"`, at minimum `cluster`, `database`, `queryFile`, and `serviceFilter` must be present — `stampPrefixFilter` may be empty (the query will return all rows matching the service filter and the agent will narrow them locally).
+
+   When gated open, run the production query verbatim:
+
+   ```powershell
+   $kustoRows = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 `
+       -Scope production -Cloud Public -EmitRaw
+   ```
+
+   `Get-StampInventory.ps1` loads `.github/skills/zed-agent/queries/<kusto.production.queryFile>`, substitutes `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}`, executes it against `kusto.production.cluster` / `.database`, and returns rows shaped `{ StampName, Region, ClusterType, DeploymentName, … }`. Group rows by `Region`, dedupe `StampName`, and write the result as `{ regions, stamps[] }`. Source label: `Kusto live (<queryFile>@<UTC ISO>)`.
+
+   On Kusto error (auth, query syntax, empty result set), surface the error verbatim and **fall through to 3b**. Do not halt — Kusto is the preferred signal, not a hard dependency.
+
+   When Phase 4.9 production half has NOT been run yet, skip 3a silently and recap at the end: *"Built Public scope from SDS. Run `setup-service group 4.9` to enable live Kusto reconciliation, then re-run `setup-service group 4.7` to refresh the baseline from telemetry."*
+
+   **3b. SDS (Phase 4.5):** Run `Get-StampInventoryFromSds.ps1 -SdsPath <pinned path> -Cloud <cloud>`. Capture `regions` and `stamps[]` verbatim from SDS. Source label: `SDS`.
+
+   **3c. YAML defaults (Phase 4.4):** If SDS returned nothing for this cloud (rare for production), fall back to `pipelines.<prodKey>.yamlIntrospection.perCloudDefaults.<cloud>.{Regions,stamps}` (or `flatDefaults` for single-cloud pipelines). Source label: `YAML defaults`.
+
+   **3d. AzureServiceConfig + grammar (last resort, with explicit warning):** If 3a–3c are all unavailable for this cloud, fall back to the AzureServiceConfig + grammar expansion (`<region>-<layout>-<stampTag><index>`) and surface a warning to the owner. Source label: `AzureServiceConfig grammar (fallback ⚠)`. Always log a fallback learning.
 
    No "1 stamp per region (assumed)" preview — the wizard always reports the **actual** count derived from the chain above.
 
@@ -519,17 +548,17 @@ Prerequisite: `service.stampTag` (Group 1), Phase 4.5 (SDS pinned), and Phase 4.
          "layout": "prod",
          "regions": ["eus", "wus", "eas", …],
          "stamps": [{ "stampName": "eus-prod-prot1", "region": "eus", "index": "1" }, …],
-         "_scopeFrom": { "source": "SDS", "sdsHash": "<sha256[:12]>", "at": "<UTC ISO>" }
+         "_scopeFrom": { "source": "Kusto live", "queryFile": "Production-DeploymentUnits.kql", "rowCount": 312, "at": "<UTC ISO>" }
        },
-       "Fairfax":  { … same shape … }
+       "Fairfax":  { "_scopeFrom": { "source": "SDS", "sdsHash": "<sha256[:12]>", "at": "<UTC ISO>" }, … }
      }
    }
    ```
 
-   When `_scopeFrom.source` is `AzureServiceConfig grammar (fallback)`, the gate at Step 15 surfaces this fact in the drift recap.
+   `_scopeFrom.source` is one of: `Kusto live` | `SDS` | `YAML defaults` | `AzureServiceConfig grammar (fallback)`. The fallback label is surfaced again at Step 15 in the drift recap.
 
 6. **Recap** to the release owner:
-   - *"Current scope saved for {N} clouds, {total regions}, {total stamps}."*
+   - *"Current scope saved for {N} clouds, {total regions}, {total stamps}. Public finalized from Kusto ({rowCount} live rows); sovereign clouds from SDS."* (Adapt the second sentence to actual `_scopeFrom.source` values per cloud.)
    - *"This is what Phase 4.12 will POST to your production pipelines for `{{pubRegions}}` / `{{ffRegions}}` / `{{ffStamps}}`-style parameters — no CCOA filtering, no exclusion list (those don't exist at setup time). Dry-run is a **maximum-scope** preview."*
    - *"At Step 15 of every real release, the agent re-fetches AzureServiceConfig live and diffs against this current scope. If a region or stamp was added/removed, you'll see a drift table and approve the new scope before the production POST goes out. On approval, this scope is updated automatically. Re-run `setup-service group 4.7` any time to force-refresh the baseline."*
 

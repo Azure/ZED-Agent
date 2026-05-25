@@ -418,12 +418,57 @@ function Test-PreFlight {
         }
     }
 
-    # ── Compute verdict ──
+    # ── Categorize checks ──
+    # Each check row is tagged with one of three categories so callers can
+    # apply the right gate:
+    #   env     — machine-readiness (az/git/pwsh/modules/MCP/ASC/skill scripts).
+    #             Hard blocker for EVERY downstream command (setup-service,
+    #             setup, run). If env is red, nothing else can succeed.
+    #   config  — service-config.json / pipeline-catalog.json completeness.
+    #             Expected to be red on a fresh clone — setup-service IS the
+    #             remediation. Not a blocker for setup-service itself; IS a
+    #             blocker for setup and run.
+    #   release — per-release artefacts created by `setup` (environment.json,
+    #             secrets.json, releases/<id>/*). Out of scope for both
+    #             test-preflight standalone AND setup-service; only setup/run
+    #             treat these as blockers.
+    $envChecks = @(
+        'Azure CLI','Git','PowerShell 7','ImportExcel module','EV2 API token',
+        'ASC snapshot','ASC live reachability','Skill scripts','Templates','Teams CDP'
+    )
+    $configChecks = @(
+        'Service config','Pipeline catalog','Pipeline definitions',
+        'Kusto connectivity','Kusto queries','Inventory cache (production)'
+    )
+    $releaseChecks = @(
+        'Environment config','Repo root path','Tenant ID','SharePoint site ID',
+        'Secrets (Teams chats)','Release directory','Release config (release.json)',
+        'Release state (state.json)','Watcher task'
+    )
+
+    foreach ($c in $checks) {
+        $c.category = if ($envChecks -contains $c.name) { 'env' }
+                      elseif ($configChecks -contains $c.name) { 'config' }
+                      elseif ($releaseChecks -contains $c.name) { 'release' }
+                      else { 'env' } # default = treat unknown as env (fail-safe)
+    }
+
+    # ── Compute verdicts ──
+    function _verdictOf {
+        param([array]$Rows)
+        $f = ($Rows | Where-Object { $_.status -eq 'fail' }).Count
+        $w = ($Rows | Where-Object { $_.status -eq 'warn' }).Count
+        if ($f -gt 0) { 'fail' } elseif ($w -gt 0) { 'warn' } else { 'pass' }
+    }
+
     $failCount = ($checks | Where-Object { $_.status -eq "fail" }).Count
     $warnCount = ($checks | Where-Object { $_.status -eq "warn" }).Count
     $passCount = ($checks | Where-Object { $_.status -eq "pass" }).Count
 
-    $verdict = if ($failCount -gt 0) { "fail" } elseif ($warnCount -gt 0) { "warn" } else { "pass" }
+    $verdict        = if ($failCount -gt 0) { 'fail' } elseif ($warnCount -gt 0) { 'warn' } else { 'pass' }
+    $envVerdict     = _verdictOf ($checks | Where-Object { $_.category -eq 'env' })
+    $configVerdict  = _verdictOf ($checks | Where-Object { $_.category -eq 'config' })
+    $releaseVerdict = _verdictOf ($checks | Where-Object { $_.category -eq 'release' })
 
     # ── Persist readiness.preflight ──
     $failureDetails = @($checks | Where-Object { $_.status -eq 'fail' } | ForEach-Object { "$($_.name): $($_.detail)" })
@@ -431,20 +476,26 @@ function Test-PreFlight {
 
     try {
         & (Join-Path $PSScriptRoot 'Write-Readiness.ps1') -Stage 'preflight' -Data @{
-            status     = $verdict
-            verdict    = $verdict
-            summary    = @{ pass = $passCount; warn = $warnCount; fail = $failCount }
-            failures   = $failureDetails
-            warnings   = $warningDetails
-            overridden = $false
+            status         = $verdict
+            verdict        = $verdict
+            envVerdict     = $envVerdict
+            configVerdict  = $configVerdict
+            releaseVerdict = $releaseVerdict
+            summary        = @{ pass = $passCount; warn = $warnCount; fail = $failCount }
+            failures       = $failureDetails
+            warnings       = $warningDetails
+            overridden     = $false
         } | Out-Null
     } catch {
         Write-Warning "Could not persist readiness.preflight: $_"
     }
 
     return @{
-        checks  = $checks
-        summary = @{ pass = $passCount; warn = $warnCount; fail = $failCount }
-        verdict = $verdict
+        checks         = $checks
+        summary        = @{ pass = $passCount; warn = $warnCount; fail = $failCount }
+        verdict        = $verdict
+        envVerdict     = $envVerdict
+        configVerdict  = $configVerdict
+        releaseVerdict = $releaseVerdict
     }
 }

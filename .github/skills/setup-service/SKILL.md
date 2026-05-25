@@ -24,18 +24,27 @@ You are the ZED Agent setup-service wizard. The release owner has just typed `se
 
 ### Phase 0 — Pre-flight gate (always runs first)
 
-Before any prompts, **always invoke `test-preflight`** so the environment (auth, tooling, ADO/Kusto connectivity, MCP wiring, Teams CDP, required modules) is known-good. The wizard depends on every one of these — there is no point collecting answers if `az` is broken or `pipeline-catalog.json` is unreachable.
+Before any prompts, **always invoke `test-preflight`** so the *machine* is known-good — `az`, `git`, `pwsh`, modules, MCP, Teams CDP, ASC reachability, skill scripts. There is no point collecting answers if `az` is broken.
 
-1. Invoke the `/test-preflight` skill (the canonical entry point for pre-flight). It runs `Test-PreFlight.ps1`, attempts auto-remediation, writes `.zed-agent/readiness.json → preflight`, and reports the verdict.
-2. Read the freshly-written `.zed-agent/readiness.json → preflight` to learn the verdict.
-3. Branch on the verdict:
-   - **`pass`** → continue to the Interactive Collection Flow below.
-   - **`warn`** → show the warning list, then ask via `ask_user`:
-     > *"Pre-flight passed with {n} warning(s). These usually do not block setup-service but may degrade some checks. Continue?"*
+`Test-PreFlight` returns three independent verdicts. Setup-service only gates on the first one:
+
+| Verdict | What it covers | Setup-service behavior |
+|---|---|---|
+| **`envVerdict`** | Machine readiness — `az`, `git`, `pwsh`, modules, MCP, Teams CDP, ASC, skill scripts | **Hard gate.** `fail` → halt. `warn` → confirm. `pass` → continue. |
+| **`configVerdict`** | `service-config.json` + `pipeline-catalog.json` completeness | **Informational.** This is *exactly* what the wizard is about to fill. Show it as the work-list, never as a blocker. |
+| **`releaseVerdict`** | Per-release artefacts (`environment.json`, `secrets.json`, `releases/<id>/*`) | **Ignored here.** Those belong to `setup`, not `setup-service`. |
+
+1. Invoke the `/test-preflight` skill. It runs `Test-PreFlight.ps1`, attempts auto-remediation, writes `.zed-agent/readiness.json → preflight` (now with `envVerdict`, `configVerdict`, `releaseVerdict`), and reports.
+2. Read the freshly-written readiness file.
+3. Branch on **`envVerdict`** (NOT the overall `verdict`):
+   - **`pass`** → show a one-line summary like *"Environment ✅ ready. Config gaps: {n} (this is what we're about to fill in)."* and continue to the Interactive Collection Flow.
+   - **`warn`** → show the env warnings, then ask via `ask_user`:
+     > *"Environment passed with {n} warning(s). These usually do not block setup-service. Continue?"*
      > Choices: `Continue`, `Stop — let me fix first`
-     On `Continue`, write `readiness.preflight.overridden = true` (via `Write-Readiness.ps1`) and proceed. On `Stop`, halt.
-   - **`fail`** → show the failure list and halt: *"Pre-flight has unresolved failures. Fix them (or re-run `test-preflight fix`) before re-running `setup-service`."* Do NOT offer an override path for hard failures — the wizard cannot do its job with a broken environment.
-4. Skip Phase 0 only when the dispatcher receives `setup-service validate` (validation is read-only and runs even on a broken environment).
+     On `Continue`, write `readiness.preflight.overridden = true` and proceed.
+   - **`fail`** → show the env failure list and halt: *"Environment has unresolved failures ({names}). Fix them (or re-run `test-preflight fix`) before re-running `setup-service`."* Do NOT offer an override path for env failures — the wizard cannot do its job with a broken `az` or missing skill scripts.
+4. **Never prompt about `configVerdict` or `releaseVerdict`.** A `fail` on either is the *expected* first-run state. Mentioning them as "failures requiring confirmation" confuses the release owner.
+5. Skip Phase 0 only when the dispatcher receives `setup-service validate` (validation is read-only and runs even on a broken environment).
 
 > **For `setup-service group <N>` jumps**: Phase 0 still runs. A broken `az` token will fail the very first ADO call in Group 11 anyway — surfacing it up-front saves the owner a wasted round of prompts.
 

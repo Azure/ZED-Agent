@@ -17,12 +17,23 @@ function Test-PreFlight {
 
     $ErrorActionPreference = 'Stop'
 
-    # --- Load service config ---
-    $cfg = & (Join-Path $PSScriptRoot 'Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
-
     $checks = @()
     $baseDir = Join-Path (Get-Location) ".zed-agent"
     $skillDir = Join-Path (git rev-parse --show-toplevel) ".github\skills\zed-agent"
+
+    # --- Load service config (tolerant) ---
+    # Preflight is documented as runnable on a fresh clone BEFORE setup-service
+    # has populated service-config.json. Load-ServiceConfig.ps1 is strict and
+    # throws on the first empty required field — catch that here, register a
+    # single fail row pointing at setup-service, and let every other check run.
+    $cfg = $null
+    try {
+        $cfg = & (Join-Path $PSScriptRoot 'Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
+        $checks += @{ name = "Service config"; status = "pass"; detail = $ServiceConfigPath }
+    } catch {
+        $msg = $_.Exception.Message
+        $checks += @{ name = "Service config"; status = "fail"; detail = "service-config.json is incomplete: $msg Run 'setup-service' to populate it." }
+    }
 
     # ── 1. Pipeline catalog ──
     $catalogPath = Join-Path $skillDir "pipeline-catalog.json"
@@ -209,8 +220,8 @@ function Test-PreFlight {
     # The agent runs the live Mail MCP test send in setup action 10.
 
     # ── 4b. Kusto connectivity ──
-    $kustoCluster = $cfg.kusto.canary.cluster
-    $kustoDb = $cfg.kusto.canary.database
+    $kustoCluster = if ($cfg) { $cfg.kusto.canary.cluster } else { $null }
+    $kustoDb      = if ($cfg) { $cfg.kusto.canary.database } else { $null }
     if ([string]::IsNullOrWhiteSpace($kustoCluster) -or [string]::IsNullOrWhiteSpace($kustoDb)) {
         $checks += @{ name = "Kusto connectivity"; status = "fail"; detail = "kusto.canary.cluster or kusto.canary.database not set in service-config.json. Populate both before running pre-flight." }
     } else {
@@ -336,15 +347,19 @@ function Test-PreFlight {
     }
 
     # ── 5b. Kusto queries ──
-    $requiredQueries = @($cfg.kusto.bvt.queryFile)
-    $missingQueries = @()
-    foreach ($q in $requiredQueries) {
-        if (-not (Test-Path (Join-Path $skillDir "queries" $q))) { $missingQueries += $q }
-    }
-    if ($missingQueries.Count -gt 0) {
-        $checks += @{ name = "Kusto queries"; status = "fail"; detail = "Missing: $($missingQueries -join ', ')" }
+    if ($cfg -and $cfg.kusto -and $cfg.kusto.bvt -and $cfg.kusto.bvt.queryFile) {
+        $requiredQueries = @($cfg.kusto.bvt.queryFile)
+        $missingQueries = @()
+        foreach ($q in $requiredQueries) {
+            if (-not (Test-Path (Join-Path $skillDir "queries" $q))) { $missingQueries += $q }
+        }
+        if ($missingQueries.Count -gt 0) {
+            $checks += @{ name = "Kusto queries"; status = "fail"; detail = "Missing: $($missingQueries -join ', ')" }
+        } else {
+            $checks += @{ name = "Kusto queries"; status = "pass"; detail = "All $($requiredQueries.Count) query files present" }
+        }
     } else {
-        $checks += @{ name = "Kusto queries"; status = "pass"; detail = "All $($requiredQueries.Count) query files present" }
+        $checks += @{ name = "Kusto queries"; status = "warn"; detail = "Cannot check — service-config.json missing kusto.bvt.queryFile. Will be validated after setup-service." }
     }
 
     # ── 6. Templates ──
@@ -390,8 +405,9 @@ function Test-PreFlight {
             }
 
             # watcher task
-            $taskName = "$($cfg.operational.watcherTaskPrefix)-$ReleaseId"
-            $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            $watcherPrefix = if ($cfg -and $cfg.operational -and $cfg.operational.watcherTaskPrefix) { $cfg.operational.watcherTaskPrefix } else { $null }
+            $taskName = if ($watcherPrefix) { "$watcherPrefix-$ReleaseId" } else { $null }
+            $task = if ($taskName) { Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } else { $null }
             if ($task) {
                 $checks += @{ name = "Watcher task"; status = "pass"; detail = "Task '$taskName' registered" }
             } else {

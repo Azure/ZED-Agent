@@ -465,7 +465,19 @@ function Test-PreFlight {
     $warnCount = ($checks | Where-Object { $_.status -eq "warn" }).Count
     $passCount = ($checks | Where-Object { $_.status -eq "pass" }).Count
 
-    $verdict        = if ($failCount -gt 0) { 'fail' } elseif ($warnCount -gt 0) { 'warn' } else { 'pass' }
+    # Overall verdict gate:
+    # - Without -ReleaseId (standalone preflight + setup-service phase 0), only
+    #   env + config categories are gating. Release artefacts are created by
+    #   setup, so they are informative but non-blocking here.
+    # - With -ReleaseId, all categories are gating (explicit release validation).
+    if ($PSBoundParameters.ContainsKey('ReleaseId') -and $ReleaseId) {
+        $verdict = if ($failCount -gt 0) { 'fail' } elseif ($warnCount -gt 0) { 'warn' } else { 'pass' }
+    } else {
+        $gateRows = @($checks | Where-Object { $_.category -in @('env','config') })
+        $gateFail = ($gateRows | Where-Object { $_.status -eq 'fail' }).Count
+        $gateWarn = ($gateRows | Where-Object { $_.status -eq 'warn' }).Count
+        $verdict = if ($gateFail -gt 0) { 'fail' } elseif ($gateWarn -gt 0) { 'warn' } else { 'pass' }
+    }
     $envVerdict     = _verdictOf ($checks | Where-Object { $_.category -eq 'env' })
     $configVerdict  = _verdictOf ($checks | Where-Object { $_.category -eq 'config' })
     $releaseVerdict = _verdictOf ($checks | Where-Object { $_.category -eq 'release' })

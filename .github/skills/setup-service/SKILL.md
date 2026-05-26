@@ -469,9 +469,9 @@ The phase has three parts: **locate**, **confirm**, **detect-mapping**. All thre
 
 #### Phase 4.6 — Canary stamp set
 
-The canary fleet is small and stable. **Kusto is the source of truth**: `Canary-DeploymentUnits.kql` (Phase 4.9) returns `StampName` + `DeploymentUnit set`, and `Get-StampInventory.ps1 -Scope canary` derives `clusterType` per stamp via `kusto.canary.clusterTypeExtraction`. AzureServiceConfig validates region resolution; the owner **confirms or edits** the Kusto-derived list — they no longer supply it from scratch.
+The canary fleet is small and stable. **Kusto is first source of truth**: `Canary-DeploymentUnits.kql` (Phase 4.9) returns `StampName` + `DeploymentUnit set`, and `Get-StampInventory.ps1 -Scope canary` derives `clusterType` per stamp via `kusto.canary.clusterTypeExtraction`. AzureServiceConfig validates region resolution; the owner **confirms or edits** the Kusto-derived list — they no longer supply it from scratch.
 
-**Kusto is mandatory.** If `kusto.canary.cluster` is unreachable or the query returns zero rows, the wizard **halts** — it does NOT fall back to owner-declared lists. This is intentional: a silent fallback is exactly how `{{canaryStamps}}` contamination across cluster types entered the catalog. Owner re-runs `setup-service group 4.9` to fix Kusto wiring, then resumes `setup-service group 4.6`.
+**SDS remains critical and always reconciled.** If Kusto fails or returns zero rows, the wizard falls back to SDS as degraded mode (`source = SDS-fallback`) so setup can continue; the owner can edit before persist. Even when Kusto succeeds, run SDS cross-check and surface drift (`kustoOnly`, `sdsOnly`) before final confirmation.
 
 > **AzureServiceConfig vocabulary — for the recap only**
 >
@@ -481,20 +481,35 @@ The canary fleet is small and stable. **Kusto is the source of truth**: `Canary-
 
 Prerequisite: `service.stampTag` (Group 1) **and Phase 4.9 canary half** must be populated. If `kusto.canary.cluster` is empty, jump back to Phase 4.9.
 
-1. **Run Kusto live.** Call:
+1. **Run Kusto live first.** Call:
 
    ```powershell
    $inv = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 -Scope canary -ViaKusto -NoCache
    ```
 
-   The script executes `kusto.canary.queryFile` against `kusto.canary.cluster` / `.database`, returns one row per stamp with `{ stampName, clusterType, region, layout, cloud }` (clusterType extracted from `DeploymentUnit` per `kusto.canary.clusterTypeExtraction.mode`). On any Kusto failure, surface the verbatim error and **halt** with: *"Canary Kusto is unreachable or empty. Re-run `setup-service group 4.9` to repair, then resume `setup-service group 4.6`. The wizard refuses to declare canary inventory without live evidence."*
+   The script executes `kusto.canary.queryFile` against `kusto.canary.cluster` / `.database`, returns one row per stamp with `{ stampName, clusterType, region, layout, cloud }` (clusterType extracted from `DeploymentUnit` per `kusto.canary.clusterTypeExtraction.mode`).
 
-2. **Resolve each Kusto-returned region against AzureServiceConfig.** For every distinct `region` in `$inv.stamps[].region`, look up `{ cloud, layout }` from `$asc.data.Clouds[].DataCenters[]`. Surface any region Kusto returned that AzureServiceConfig cannot find as `drift.unknownRegion` — the owner picks per row: *keep anyway* (mark `_unresolved: true`) or *drop*.
+   If Kusto fails or returns zero rows, surface the error and immediately run SDS fallback:
 
-3. **Show the owner the Kusto-derived list for confirmation:**
+   ```powershell
+   $inv = & .\.github\skills\zed-agent\scripts\Get-StampInventoryFromSds.ps1 -SdsPath <pinned path>
+   ```
+
+   Mark provenance as `_inventoryFrom: { source: "SDS-fallback", reason: "kusto-failed-or-empty", at: <UTC> }` and add a warning recap: *"Kusto failed, inventory sourced from SDS fallback. Re-run `setup-service group 4.9` and then `setup-service group 4.6` to restore live Kusto baseline."*
+
+2. **Cross-check Kusto vs SDS (always).** If Kusto succeeded, load SDS in parallel and diff by stamp name:
+
+   - `kustoOnly = Kusto - SDS`
+   - `sdsOnly = SDS - Kusto`
+
+   Render both sets before confirmation. Owner choices per set: `accept Kusto`, `accept SDS`, `manual edit`. Persist a `_reconcile` block with counts + owner decision.
+
+3. **Resolve each selected stamp list's regions against AzureServiceConfig.** For every distinct `region` in `$inv.stamps[].region`, look up `{ cloud, layout }` from `$asc.data.Clouds[].DataCenters[]`. Surface any unknown region as `drift.unknownRegion` — owner picks per row: *keep anyway* (mark `_unresolved: true`) or *drop*.
+
+4. **Show the owner the derived list for confirmation (Kusto or SDS-fallback):**
 
    ```
-   Canary inventory — from Kusto (Canary-DeploymentUnits.kql @ <UTC>)
+   Canary inventory — source: <Kusto live | SDS-fallback>
      ecy-pod01-prot1  | region=ecy   | cloud=Public  | clusterType=sfrp  | source=Kusto
      ccy-pod01-prot1  | region=ccy   | cloud=Public  | clusterType=sfrp  | source=Kusto
      ea-can02-prot1   | region=ea    | cloud=Canary  | clusterType=sfmc  | source=Kusto
@@ -502,70 +517,13 @@ Prerequisite: `service.stampTag` (Group 1) **and Phase 4.9 canary half** must be
    Choices: Looks right, Edit (drop / rename / re-classify a row), Re-run Kusto
    ```
 
-   - **`Looks right`** — persist `inventory.canary.stamps[]` verbatim from Kusto with `clusterType` populated; record `_inventoryFrom: { source: "Kusto live", queryFile, ranAt, rowCount }`.
+   - **`Looks right`** — persist `inventory.canary.stamps[]` from the selected source with `clusterType` populated where available; record `_inventoryFrom` and `_reconcile` (when both Kusto and SDS were available).
    - **`Edit`** — the owner may drop a row (e.g., a decommissioned stamp Kusto is still emitting telemetry for), correct a `clusterType` Kusto mis-classified, or annotate a region. Edits are recorded with `_ownerOverride: { field, was, now, reason }` so the next setup pass can re-warn if Kusto disagrees again.
    - **`Re-run Kusto`** — useful if the owner just fixed an issue (token, query); jumps back to step 1.
 
-4. **Validate immediately** by calling `Get-StampInventory.ps1 -Scope canary` (this time without `-ViaKusto`; it now reads the persisted catalog and re-validates against AzureServiceConfig). If `$inv.drift` is non-empty, render the drift table and re-prompt. If `$inv.stamps.Count -eq 0`, halt and re-run Phase 4.6 from step 1.
+5. **Validate immediately** by calling `Get-StampInventory.ps1 -Scope canary` (this time without `-ViaKusto`; it now reads the persisted catalog and re-validates against AzureServiceConfig). If `$inv.drift` is non-empty, render the drift table and re-prompt. If `$inv.stamps.Count -eq 0`, halt and re-run Phase 4.6 from step 1.
 
-5. **Recap + remind:** *"Canary inventory pinned. {N} stamps across {M} regions; cluster types observed: {distinct list}. This list is Kusto-derived; if Kusto telemetry changes (stamp added/removed, cluster type changed), re-run `setup-service group 4.6` to refresh."*
-
-1. **Fetch AzureServiceConfig** by calling:
-
-   ```powershell
-   $asc = & .\.github\skills\zed-agent\scripts\Get-AzureServiceConfig.ps1
-   ```
-
-   Live-first; cache and committed snapshot are fallbacks. If the call falls back, tell the release owner — they may want to fix `az login` before continuing so validation is grounded in truth. If the call throws or `$asc.data.Clouds.Count -eq 0`, halt and surface the error.
-
-2. **Ask the owner for the canary region short names.** Read any existing `inventory.canary.regionPrefixHints` from disk first; if non-empty, offer the saved list as a one-tap default. Otherwise (and on re-runs where the owner says "change"), ask:
-
-   > *"Which regions are canary regions for your service? List the region short names exactly as they appear in your stamp names. Comma-separated, lowercase. The agent will look each one up in AzureServiceConfig to confirm it exists and find its cloud + layout. Example: `ea-can, ecy, ccy`."*
-
-   If Phase 4.9 has already been completed and `kusto.canary.stampPrefixFilter` is set, derive a suggested default from it (e.g. the `startswith '<token>'` tokens) and offer:
-   `1. Use <suggested list>   2. Provide my own   3. None of my regions are canary (skip Phase 4.6)`.
-
-   Persist the trimmed lowercase list to `inventory.canary.regionPrefixHints`.
-
-3. **Resolve each owner-provided short name against AzureServiceConfig.** For every short name `p` in the list, scan `$asc.data.Clouds[*].DataCenters[*]` and find every datacenter where `"$($dc.ShortName)-$($cloud.Layout)" -like "$p*"` (case-insensitive). This matches both exact short names (`ecy`) and shape-anchored prefixes (`ea-can` resolves to `(Canary, ea, can02)` because the full token `ea-can02` starts with `ea-can`).
-
-   - **Zero matches** for a token → halt and re-prompt step 2 with: *"`<p>` doesn't match any datacenter in AzureServiceConfig. Check spelling, or remove it from the list."*
-   - **Multiple matches across clouds** for a token → render the choices and ask the owner to pick which one is canary.
-   - **One match per cloud** → record the `{ cloud, region: shortName, layout }` triple for that token. Multiple tokens may legitimately resolve to different `(cloud, layout)` triples — that's the multi-cloud case.
-
-4. **For each resolved `(cloud, region, layout)` triple, determine the stamp list.** **Do not** ask the owner for an index list up front. Instead, walk the source-of-truth precedence chain:
-
-   1. **SDS first (Phase 4.5):** Run `Get-StampInventoryFromSds.ps1 -SdsPath <pinned path> -Cloud <cloud> -Region <region>`. If the result is non-empty, use the returned stamp names verbatim and recap the count to the owner.
-   2. **YAML defaults second (Phase 4.4):** If SDS returned nothing for this `(cloud, region)`, look in `pipelines.<canaryKey>.yamlIntrospection.flatDefaults.stamps` (or `perCloudDefaults.<cloud>.stamps`) for entries matching this region. If found, use them and recap.
-   3. **AzureServiceConfig grammar fallback (last resort):** If neither (1) nor (2) has stamp names for this region, prompt the owner explicitly:
-      > ⚠️ *"SDS and YAML defaults are both unavailable for `<cloud> / <region>` — using grammar approximation `<region>-<layout>-<stampTag><index>`. How many `{region}-{layout}-{stampTag}{index}` stamps does your service run here? (Comma-separated indexes — e.g. `1, 1d, 2`. Please correct if the grammar approximation is wrong.)"*
-
-      For each index, build `stampName = "<region>-<layout>-<stampTag><index>"`. **Always** log a fallback via `Add-Learning.ps1 -Source agent-discovery -Category infrastructure` describing the missing SDS / YAML source.
-
-   For every stamp, push `{ stampName, cloud, region, layout, clusterType: null }` to `inventory.canary.stamps`. **Never prompt for `clusterType`.**
-
-5. **Validate immediately** by calling:
-
-   ```powershell
-   $inv = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 -Scope canary
-   ```
-
-   - If `$inv.drift` is non-empty, render the drift table (`stampName`, `reason`) and re-prompt for each drifted stamp. Common reasons: region not in the named cloud, stampTag mismatch, grammar mismatch.
-   - If `$inv.stamps.Count -eq 0`, halt and re-run Phase 4.6 from step 2.
-
-6. **Recap + confirm.** Render the full stamp list as a table. The `clusterType` column **must not** assert that `canaryRouting.mode` is anything — that decision lives in Phase 4.2. If Phase 4.2 set the mode to `cluster-type` and Phase 4.9 canary half is configured, the lazy resolver fills the column at validation time; otherwise it reads `(unresolved — set by Phase 4.2)`. Never infer `static` from a null `clusterType`.
-
-   | Cloud | Region | Layout | HAS_PASSIVE | Stamps | clusterType | source |
-   |-------|--------|--------|-------------|--------|-------------|--------|
-   | Public | ecy | pod01 | yes | ecy-pod01-prot1 | (unresolved — set by Phase 4.2) | SDS |
-   | Public | ccy | pod01 | yes | ccy-pod01-prot1 | (unresolved — set by Phase 4.2) | YAML defaults |
-   | Canary | ea | can02 | no | ea-can02-prot1 | (unresolved — set by Phase 4.2) | AzureServiceConfig grammar (fallback ⚠) |
-
-   Then `ask_user`:
-   > *"Does this canary stamp list look right? Picking `Edit` lets you redo the region list from step 2. Picking `Yes — looks good` finalizes the list and continues to Phase 4.7."*
-   > Choices: `Yes — looks good`, `Edit`
-
-   On `Edit`, jump back to step 2. On `Yes — looks good`, persist and remind the owner that any stamp added or decommissioned needs a re-run of `setup-service group 4.6`.
+6. **Recap + remind:** *"Canary inventory pinned. {N} stamps across {M} regions; cluster types observed: {distinct list}. Source: {Kusto live | SDS-fallback}. If fallback was used, re-run `setup-service group 4.9` and then `setup-service group 4.6` to refresh from live telemetry."*
 
 ---
 
@@ -608,7 +566,14 @@ Prerequisite: `service.stampTag` (Group 1), Phase 4.5 (SDS pinned), and Phase 4.
 
    Stamp names are captured **verbatim from Kusto** — the wizard does **not** synthesize names via grammar on this branch. Regions are derived per stamp by `Resolve-StampParts` (the short-name prefix). `clusterType` is populated per stamp when the `queryFile` form was used. Source label: `Kusto live (<queryFile>@<UTC ISO>)`.
 
-   On Kusto error for Public (auth, query syntax, empty result set), surface the verbatim error and **halt** — do NOT fall through to SDS / YAML / grammar for Public. Owner repairs Kusto (`Repair-AzAuth.ps1` for token; `setup-service group 4.9` for query) and re-runs Phase 4.7. SDS / YAML / grammar fallbacks remain wired for **sovereign clouds only** (3b–3d below), where the agent's identity cannot reach Kusto.
+   On Kusto error for Public (auth, query syntax, empty result set), surface the verbatim error, then run SDS fallback for Public and mark `_scopeFrom.source = "SDS-fallback"` with `_scopeFrom.reason = "kusto-failed-or-empty"`. Setup may proceed, but recap must include: *"Public scope is degraded (SDS fallback). Re-run `setup-service group 4.9` and then `setup-service group 4.7` to restore Kusto baseline."*
+
+   **Public SDS cross-check (always):** when Kusto succeeds, also run SDS for Public and compute drift before owner confirmation:
+
+   - `kustoOnly = Public(Kusto) - Public(SDS)`
+   - `sdsOnly = Public(SDS) - Public(Kusto)`
+
+   Render drift table and require owner decision: `accept Kusto`, `accept SDS`, `manual merge`. Persist the decision under `inventory.production.Public._reconcile` with counts + timestamp.
 
    When Phase 4.9 production half has NOT been run yet, the wizard MUST surface the recap (not silence it): *"Built Public scope from SDS. Run `setup-service group 4.9` to enable live Kusto reconciliation, then re-run `setup-service group 4.7` to refresh the baseline from telemetry."*
 

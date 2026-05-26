@@ -64,6 +64,54 @@ $cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPat
 if (-not $AdoOrg)     { $AdoOrg     = $cfg.ado.organization }
 if (-not $AdoProject) { $AdoProject = $cfg.ado.project }
 
+function Get-AdoBaseCandidates {
+    param([string]$Org,[string]$Proj)
+    if ($Org -ieq 'msazure' -and $Proj -ieq 'One') {
+        return @("https://msazure.visualstudio.com/$Proj", "https://dev.azure.com/$Org/$Proj")
+    }
+    return @("https://dev.azure.com/$Org/$Proj", "https://$Org.visualstudio.com/$Proj")
+}
+
+$adoBases = Get-AdoBaseCandidates -Org $AdoOrg -Proj $AdoProject
+
+function Invoke-AdoJsonGet {
+    param([string]$RelativeApiPath,[hashtable]$Headers)
+    $lastErr = $null
+    foreach ($base in $adoBases) {
+        $uri = "$base/_apis/$RelativeApiPath"
+        try {
+            $resp = Invoke-WebRequest -Uri $uri -Headers $Headers -UseBasicParsing -ErrorAction Stop
+            if ($resp.Content) { return ($resp.Content | ConvertFrom-Json) }
+            throw "Empty response body from $uri"
+        } catch {
+            $lastErr = $_.Exception.Message
+            continue
+        }
+    }
+    throw "ADO GET failed for '$RelativeApiPath' on all hosts: $lastErr"
+}
+
+function Invoke-AdoTextGet {
+    param([string]$AbsoluteOrRelativeUrl,[hashtable]$Headers)
+    $lastErr = $null
+    $uris = @()
+    if ($AbsoluteOrRelativeUrl -match '^https?://') {
+        $uris += $AbsoluteOrRelativeUrl
+    } else {
+        foreach ($base in $adoBases) { $uris += "$base/_apis/$AbsoluteOrRelativeUrl" }
+    }
+    foreach ($u in $uris) {
+        try {
+            $resp = Invoke-WebRequest -Uri $u -Headers $Headers -UseBasicParsing -ErrorAction Stop
+            return [string]$resp.Content
+        } catch {
+            $lastErr = $_.Exception.Message
+            continue
+        }
+    }
+    throw "ADO GET text failed for '$AbsoluteOrRelativeUrl': $lastErr"
+}
+
 # ── 1. Multi-cloud EV2 endpoints ──
 $ev2Endpoints = @{
     Prod     = "https://azureservicedeploy.msft.net"
@@ -157,8 +205,7 @@ if (-not $RolloutId) {
         $cloudPrefix = switch ($RolloutInfra) { 'Fairfax' { 'FF:' } 'Mooncake' { 'MC:' } }
         Write-Host "   Looking for $cloudPrefix stages in ADO build timeline..." -ForegroundColor DarkCyan
 
-        $timelineUri = "https://dev.azure.com/$AdoOrg/$AdoProject/_apis/build/builds/$BuildId/timeline?api-version=7.0"
-        $timeline = Invoke-RestMethod -Uri $timelineUri -Headers $adoHeaders -ErrorAction Stop
+        $timeline = Invoke-AdoJsonGet -RelativeApiPath "build/builds/$BuildId/timeline?api-version=7.0" -Headers $adoHeaders
 
         # Find records in the gov-cloud stage that have "Rollout Progress" or "Ev2Agentless" tasks
         $govStageIds = @($timeline.records | Where-Object {
@@ -191,7 +238,8 @@ if (-not $RolloutId) {
             foreach ($task in $govTasks) {
                 $logUrl = $task.log.url
                 if (-not $logUrl) { continue }
-                $logContent = Invoke-RestMethod -Uri $logUrl -Headers $adoHeaders -ErrorAction SilentlyContinue
+                $logContent = $null
+                try { $logContent = Invoke-AdoTextGet -AbsoluteOrRelativeUrl $logUrl -Headers $adoHeaders } catch { }
                 if (-not $logContent) { continue }
 
                 # Parse portal URL: ev2portal.azure.net/#/rollouts/{Cloud}/{SvcTreeId}/{SG}/{RolloutId}
@@ -230,11 +278,11 @@ if (-not $RolloutId) {
         }
     } else {
         # ── Prod: search all build logs for rollout ID ──
-        $logsUri = "https://dev.azure.com/$AdoOrg/$AdoProject/_apis/build/builds/$BuildId/logs?api-version=7.0"
-        $logsList = Invoke-RestMethod -Uri $logsUri -Headers $adoHeaders -ErrorAction Stop
+        $logsList = Invoke-AdoJsonGet -RelativeApiPath "build/builds/$BuildId/logs?api-version=7.0" -Headers $adoHeaders
 
         foreach ($logEntry in $logsList.value) {
-            $logContent = Invoke-RestMethod -Uri $logEntry.url -Headers $adoHeaders -ErrorAction SilentlyContinue
+            $logContent = $null
+            try { $logContent = Invoke-AdoTextGet -AbsoluteOrRelativeUrl $logEntry.url -Headers $adoHeaders } catch { }
             if (-not $logContent) { continue }
 
             if ($logContent -match 'Rollout\s*ID[:\s]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') {

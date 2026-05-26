@@ -4,15 +4,25 @@ function Register-ReleaseWatcherTask {
     $tLogon = New-ScheduledTaskTrigger -AtLogOn -User $User
     # Recurring trigger: restart watcher every 30 minutes to survive sleep/lock/crash
     $tRecurring = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30)
-    # MultipleInstances=StopExisting: on each 30-min trigger, kill any zombie
-    # watcher (e.g. a process frozen by DevBox hibernation) before starting a
-    # fresh instance. Without this the default IgnoreNew causes Task Scheduler
-    # to log 0x800710E0 and silently drop the respawn while the zombie holds
-    # watcher.lock — exactly the symptom we hit during the 2026-05 release.
+    # Prefer MultipleInstances=StopExisting so each 30-min trigger can replace
+    # a zombie watcher. Some Windows builds expose only Parallel/Queue/IgnoreNew,
+    # so detect capability at runtime and fall back safely.
+    $multipleInstances = 'StopExisting'
+    try {
+        [void][System.Enum]::Parse([Microsoft.PowerShell.Cmdletization.GeneratedTypes.ScheduledTask.MultipleInstancesEnum], $multipleInstances)
+    } catch {
+        $multipleInstances = 'IgnoreNew'
+        Write-Warning "This host does not support MultipleInstances='StopExisting'; falling back to 'IgnoreNew'. Zombie watcher replacement is reduced on this OS."
+    }
+
+    # MultipleInstances=StopExisting (when supported): on each 30-min trigger,
+    # kill any zombie watcher (e.g. frozen by hibernation) before starting a
+    # fresh instance. Without this the default IgnoreNew can log 0x800710E0 and
+    # silently drop the respawn while the zombie holds watcher.lock.
     # WakeToRun: ask Windows to wake from S3/S4 sleep to fire the trigger.
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-        -WakeToRun -MultipleInstances StopExisting `
+        -WakeToRun -MultipleInstances $multipleInstances `
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $TaskName -Action $a -Trigger @($tLogon, $tRecurring) -Settings $settings -Description $Description -Force | Out-Null
 }

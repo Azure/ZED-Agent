@@ -177,6 +177,10 @@ All emails are sent via the **Mail MCP tool** (`SendEmailWithAttachments`), whic
 
 **Email delivery method**: Use the `SendEmailWithAttachments` MCP tool for all emails. Render HTML body via `Expand-Template` first, then pass the rendered HTML string to the tool's `body` parameter with `contentType: "HTML"`.
 
+**Body argument is literal-only**: the `body` field passed to `SendEmailWithAttachments` MUST contain the final rendered HTML payload in the same call. Do NOT pass placeholders such as `PLACEHOLDER_WILL_BE_REPLACED`, and do NOT rely on clipboard/file indirection unless a wrapper explicitly reads that file and injects it before the MCP call.
+
+**Owner-name source of truth**: any salutation/display name in an owner-facing email MUST come from `release.json -> releaseOwner.name` (fallback `releaseOwner.alias` only when name is empty). Never infer a first name from alias. Pre-send check: if the body contains a salutation first-name token not present in `releaseOwner.name`, block send and regenerate.
+
 **No fallback.** Mail MCP is the only supported email transport. If the `SendEmailWithAttachments` tool is unavailable (the `mail` MCP server is not registered in `~/.copilot/mcp-config.json`, the `agency` CLI is missing from `PATH`, Graph auth failed, or the network is down), the agent must **halt the current step with `failed`**, surface the actual MCP error, and tell the release owner: *"Mail MCP is required. Run `setup` to (re-)verify and register the `mail` MCP server before continuing."* Do NOT attempt to send via Outlook COM, SMTP, mailto:, or any other channel.
 
 **Recipient resolution** — never hardcode `CONFIG[notifications.groups.X]` at a send site. Always resolve recipients via the helper:

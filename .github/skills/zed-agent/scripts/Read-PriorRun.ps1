@@ -28,6 +28,10 @@
     GET /pipelines/{id}/runs/{runId}. Each run is still cross-checked
     against -PipelineId (mismatches are skipped with a warning) and
     -ResultFilter (mismatches are dropped). -Top is ignored in this mode.
+
+.PARAMETER RunRefs
+    Optional. Accepts either bare integer ids ("28471") or full ADO run URLs
+    of form .../_build/results?buildId=<id>. Parsed ids are merged with -RunIds.
 #>
 [CmdletBinding()]
 param(
@@ -37,7 +41,8 @@ param(
     [int]$Top = 3,
     [ValidateSet('succeeded','failed','canceled','any')]
     [string]$ResultFilter = 'succeeded',
-    [int[]]$RunIds
+    [int[]]$RunIds,
+    [string[]]$RunRefs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,38 +53,102 @@ if (-not $adoToken) {
     throw "Failed to acquire ADO API token. Run 'az login --tenant microsoft.com' and retry."
 }
 $headers = @{ Authorization = "Bearer $adoToken" }
-$orgBase = "https://dev.azure.com/$Organization/$Project/_apis"
+
+function Get-AdoBaseCandidates {
+    param([string]$Org,[string]$Proj)
+    # Known org quirk: msazure/One can 404 on dev.azure.com for some build APIs,
+    # while visualstudio.com succeeds with the same token.
+    if ($Org -ieq 'msazure' -and $Proj -ieq 'One') {
+        return @("https://msazure.visualstudio.com/$Proj", "https://dev.azure.com/$Org/$Proj")
+    }
+    return @("https://dev.azure.com/$Org/$Proj", "https://$Org.visualstudio.com/$Proj")
+}
+
+function Invoke-AdoJsonGet {
+    param([string]$RelativeApiPath)
+    $lastErr = $null
+    foreach ($base in $adoBases) {
+        $uri = "$base/_apis/$RelativeApiPath"
+        try {
+            $resp = Invoke-WebRequest -Uri $uri -Headers $headers -UseBasicParsing -ErrorAction Stop
+            if ($resp.Content) { return ($resp.Content | ConvertFrom-Json) }
+            throw "Empty response body from $uri"
+        } catch {
+            $lastErr = $_.Exception.Message
+            continue
+        }
+    }
+    throw "ADO GET failed for '$RelativeApiPath' on all hosts: $lastErr"
+}
+
+function Parse-RunRefToId {
+    param([string]$Ref)
+    if (-not $Ref) { return $null }
+    $s = $Ref.Trim()
+    if ($s -match '^\d+$') { return [int]$s }
+    if ($s -match '[\?&]buildId=(\d+)') { return [int]$Matches[1] }
+    return $null
+}
+
+$adoBases = Get-AdoBaseCandidates -Org $Organization -Proj $Project
+$browserBase = $adoBases[0]
 
 # ── Build the candidate run list ──
-if ($PSBoundParameters.ContainsKey('RunIds') -and $RunIds -and $RunIds.Count -gt 0) {
+@($RunRefs) | ForEach-Object {
+    if (-not $_) { return }
+    $rid = Parse-RunRefToId -Ref $_
+    if (-not $rid) { Write-Warning "Could not parse run id from reference '$_' — expected integer or ...buildId=<id>." }
+}
+
+$requestedRunIds = @()
+if ($PSBoundParameters.ContainsKey('RunIds') -and $RunIds) { $requestedRunIds += @($RunIds) }
+if ($PSBoundParameters.ContainsKey('RunRefs') -and $RunRefs) {
+    foreach ($rr in $RunRefs) {
+        $rid = Parse-RunRefToId -Ref $rr
+        if ($rid) { $requestedRunIds += $rid }
+    }
+}
+$requestedRunIds = @($requestedRunIds | Select-Object -Unique)
+
+if ($requestedRunIds -and $requestedRunIds.Count -gt 0) {
     # Explicit-id mode: fetch each run directly, cross-check pipeline + result.
-    $candidates = foreach ($rid in $RunIds) {
-        $detailUri = "$orgBase/pipelines/$PipelineId/runs/${rid}?api-version=7.1-preview.1"
+    $candidates = foreach ($rid in $requestedRunIds) {
+        # 1) Build API lookup: validates run exists and belongs to the target
+        # pipeline definition, regardless of how the id was supplied (URL/int).
         try {
-            $r = Invoke-RestMethod -Uri $detailUri -Headers $headers -ErrorAction Stop
+            $build = Invoke-AdoJsonGet -RelativeApiPath "build/builds/${rid}?api-version=7.1"
         } catch {
-            Write-Warning "Run ${rid}: fetch failed against pipeline $PipelineId — $($_.Exception.Message)"
+            Write-Warning "Run ${rid}: build lookup failed — $($_.Exception.Message)"
             continue
         }
-        # The Pipelines API scopes the URL to {pipelineId}; a wrong-pipeline run
-        # comes back as 404 above. Belt-and-braces: also reject if pipeline.id
-        # disagrees in case ADO ever loosens the URL scoping.
-        if ($r.pipeline -and $r.pipeline.id -and ($r.pipeline.id -ne $PipelineId)) {
-            Write-Warning "Run ${rid}: belongs to pipeline $($r.pipeline.id), not $PipelineId — skipped."
+
+        $defId = $null
+        if ($build.definition -and $build.definition.id) { $defId = [int]$build.definition.id }
+        if ($defId -and $defId -ne $PipelineId) {
+            Write-Warning "Run ${rid}: belongs to pipeline definition $defId, not $PipelineId — skipped."
             continue
         }
-        if (($ResultFilter -ne 'any') -and ($r.result -ne $ResultFilter)) {
-            Write-Warning "Run ${rid}: result = '$($r.result)', expected '$ResultFilter' — skipped."
+
+        $buildResult = "$($build.result)"
+        if (($ResultFilter -ne 'any') -and ($buildResult -ne $ResultFilter)) {
+            Write-Warning "Run ${rid}: result = '$buildResult', expected '$ResultFilter' — skipped."
             continue
         }
-        $r
+
+        # 2) Pipeline run fetch keeps templateParameters/sourceBranch shape used
+        # by downstream phases.
+        try {
+            Invoke-AdoJsonGet -RelativeApiPath "pipelines/$PipelineId/runs/${rid}?api-version=7.1-preview.1"
+        } catch {
+            Write-Warning "Run ${rid}: pipeline run detail fetch failed — $($_.Exception.Message)"
+            continue
+        }
     }
     $candidates = @($candidates)
 } else {
     # Auto mode: list the most-recent runs, filter, take Top N.
-    $listUri = "$orgBase/pipelines/$PipelineId/runs?api-version=7.1-preview.1"
     try {
-        $list = Invoke-RestMethod -Uri $listUri -Headers $headers -ErrorAction Stop
+        $list = Invoke-AdoJsonGet -RelativeApiPath "pipelines/$PipelineId/runs?api-version=7.1-preview.1"
     } catch {
         throw "ADO pipeline $PipelineId run list failed: $($_.Exception.Message)"
     }
@@ -98,9 +167,8 @@ if (-not $candidates -or $candidates.Count -eq 0) {
 # ── For each candidate, fetch full run detail (templateParameters + variables) ──
 $out = foreach ($run in $candidates) {
     $runId = $run.id
-    $detailUri = "$orgBase/pipelines/$PipelineId/runs/${runId}?api-version=7.1-preview.1"
     try {
-        $detail = Invoke-RestMethod -Uri $detailUri -Headers $headers -ErrorAction Stop
+        $detail = Invoke-AdoJsonGet -RelativeApiPath "pipelines/$PipelineId/runs/${runId}?api-version=7.1-preview.1"
     } catch {
         Write-Warning "Run $runId detail fetch failed: $($_.Exception.Message)"
         continue
@@ -114,7 +182,7 @@ $out = foreach ($run in $candidates) {
 
     [PSCustomObject]@{
         runId              = $runId
-        runUrl             = "https://dev.azure.com/$Organization/$Project/_build/results?buildId=$runId"
+        runUrl             = "$browserBase/_build/results?buildId=$runId"
         finishedAt         = $detail.finishedDate
         sourceBranch       = $detail.resources.repositories.self.refName
         result             = $detail.result

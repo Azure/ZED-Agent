@@ -29,14 +29,22 @@
     Seconds to wait between queue and cancel. Default 5.
 
 .PARAMETER DryRunBranch
-    Branch ref to use as the run's sourceBranch. Default: refs/heads/setup-service-dry-run.
-    The branch does NOT need to exist — ADO validates the ref at agent-pickup
-    time, which we never reach.
+    Branch the run targets. Accepts either short ('develop') or full ref
+    ('refs/heads/develop'). Default: 'develop'.
+
+    The branch MUST exist in the target repo — ADO validates the ref
+    synchronously at queue time (NOT at agent-pickup, contrary to the earlier
+    docstring). The script derives:
+      - branchRef   = 'refs/heads/<short>'  used ONLY for resources.repositories.self.refName
+      - branchShort = '<short>'             used for {{currentBranch}} substitution in templateParameters
+
+    templateParameters whose names contain 'Branch' / 'BranchName' are
+    consumed by YAML as plain SHORT strings, not git refs.
 
 .OUTPUTS
     PSCustomObject:
       pipelineKey, pipelineId, runId, runUrl, queuedAt, cancelledAt,
-      finalState, queuedParameters, error (when something failed)
+      finalState, queuedParameters, droppedParams, error (when something failed)
 #>
 [CmdletBinding()]
 param(
@@ -45,17 +53,22 @@ param(
     [Parameter(Mandatory = $true)][string]$PipelineKey,
     [Parameter(Mandatory = $true)][string]$CatalogPath,
     [int]$CancelAfterSeconds = 5,
-    [string]$DryRunBranch = 'refs/heads/setup-service-dry-run'
+    [string]$DryRunBranch = 'develop'
 )
 
 $ErrorActionPreference = 'Stop'
 
+# ── Normalize branch: accept short or full ref, derive both forms ──
+$branchShort = if ($DryRunBranch -match '^refs/heads/(.+)$') { $Matches[1] } else { $DryRunBranch }
+$branchRef   = "refs/heads/$branchShort"
+
 # ── Reserved-token stub values used ONLY during dry-runs ──
 # These are intentionally inert: validateOnly=true means EV2 would no-op even
-# if cancellation failed; currentBranch is the stub dry-run branch; stamp /
-# region lists are empty so even if the run ever picked up nothing would deploy.
+# if cancellation failed; currentBranch is the SHORT branch name (templateParameters
+# expect short, not refs/heads/X); stamp / region lists are empty so even if the
+# run ever picked up nothing would deploy.
 $stubs = @{
-    '{{currentBranch}}'  = $DryRunBranch
+    '{{currentBranch}}'  = $branchShort
     '{{excludeStamps}}'  = ''
     '{{pubRegions}}'     = ''
     '{{ffStamps}}'       = ''
@@ -90,14 +103,59 @@ if ($PipelineKey -eq 'officialBuild') {
 }
 if (-not $entry) { throw "Pipeline key '$PipelineKey' not found in $CatalogPath." }
 
-# ── Substitute reserved tokens ──
-$substituted = @{}
-foreach ($p in $entry.templateParameters.PSObject.Properties) {
-    $v = $p.Value
-    if ($v -is [string] -and $stubs.ContainsKey($v)) {
-        $v = $stubs[$v]
+# ── Substitute reserved tokens + drop params undeclared by YAML ──
+# Token substitution is delegated to Resolve-TemplateParams.ps1 — it knows the
+# token table, reads inventory + routing, filters stamps by clusterType when
+# routing mode is "cluster-type", and throws CLUSTER_TYPE_CONTAMINATION if a
+# stamp would land in a pipeline whose clusterType does not match. Keeping
+# substitution out of this script means the dry-run and Step 15 (real release)
+# can never diverge on token semantics.
+#
+# YAML-undeclared param drop stays here: ADO rejects the entire queue request
+# on ANY templateParameter the YAML does not declare on the target branch.
+# Surface dropped names so the caller can persist them to
+# catalog.<group>.<key>._learnedFrom.dryRun.droppedParams[].
+$declared = $null
+if ($entry.yamlIntrospection -and $entry.yamlIntrospection.parameters) {
+    $declared = @($entry.yamlIntrospection.parameters | ForEach-Object { $_.name })
+}
+
+$resolverScope = $null
+$resolverKey   = $null
+if ($resolvedKey -match '^(canary|production)\.(.+)$') {
+    $resolverScope = $Matches[1]
+    $resolverKey   = $Matches[2]
+}
+
+$substituted    = @{}
+$droppedParams  = @()
+$resolverDiag   = $null
+
+if ($resolverScope) {
+    # canary / production pipeline — delegate substitution to the resolver.
+    $resolveScript = Join-Path $PSScriptRoot 'Resolve-TemplateParams.ps1'
+    if (-not (Test-Path $resolveScript)) { throw "Resolve-TemplateParams.ps1 sibling script missing at $resolveScript." }
+    $r = & $resolveScript -PipelineKey $resolverKey -Scope $resolverScope -CurrentBranch $branchShort -PipelineCatalogPath $CatalogPath
+    $resolverDiag = $r
+    foreach ($k in $r.templateParameters.Keys) {
+        if ($declared -and ($declared -notcontains $k)) {
+            $droppedParams += $k
+            continue
+        }
+        $substituted[$k] = $r.templateParameters[$k]
     }
-    $substituted[$p.Name] = $v
+} else {
+    # officialBuild — no clusterType, no inventory tokens. Apply legacy stubs
+    # inline for currentBranch / validateOnly / sdpType.
+    foreach ($p in $entry.templateParameters.PSObject.Properties) {
+        if ($declared -and ($declared -notcontains $p.Name)) {
+            $droppedParams += $p.Name
+            continue
+        }
+        $v = $p.Value
+        if ($v -is [string] -and $stubs.ContainsKey($v)) { $v = $stubs[$v] }
+        $substituted[$p.Name] = $v
+    }
 }
 
 # ── Token ──
@@ -111,7 +169,7 @@ $queueUri = "$orgBase/pipelines/$($entry.id)/runs?api-version=7.1-preview.1"
 $body = @{
     resources = @{
         repositories = @{
-            self = @{ refName = $DryRunBranch }
+            self = @{ refName = $branchRef }
         }
     }
     templateParameters = $substituted
@@ -136,6 +194,7 @@ try {
         cancelledAt      = $null
         finalState       = 'queue-failed'
         queuedParameters = $substituted
+        droppedParams    = $droppedParams
         error            = $queueError
     }
 }
@@ -177,5 +236,6 @@ return [PSCustomObject]@{
     cancelledAt      = $cancelledAt
     finalState       = $finalState
     queuedParameters = $substituted
+    droppedParams    = $droppedParams
     error            = $cancelError
 }

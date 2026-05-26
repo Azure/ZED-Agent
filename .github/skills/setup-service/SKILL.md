@@ -85,6 +85,16 @@ Implementation pattern for every prompt:
 
 The "show what changed" confirmation at the end of a group is a *recap* of what was just persisted — it is NOT the moment of writing. Writing happens per-answer.
 
+**⚠️ Phase-boundary lesson sweep (silent, no owner prompt).** At the end of every Group / Phase that wrote at least one row to `audit.jsonl`, the wizard MUST run this sweep **before** advancing to the next phase. The owner is NEVER prompted during this sweep — the agent just writes the missing lessons.
+
+1. Read `audit.jsonl` since this phase started; collect every row that matches a Behavior Rule 10 deterministic trigger (a–g) — warnings, errors, owner-corrections, script edits under `.github/skills/zed-agent/scripts/*.ps1`, unexpected API/tool shapes, mandated-step skips, hallucinated assumptions.
+2. For each trigger row, check whether a `type:"lesson"` row exists within ± 5 minutes of its timestamp.
+3. For every trigger with no time-adjacent lesson, **the agent calls `Add-Lesson.ps1` itself**, reconstructing the `Step` / `Symptom` / `RootCause` / `Fix` from the audit row and surrounding conversation context. Append `(backfilled)` to the `Step` field when the lesson is written after the trigger turn.
+4. Persist one summary audit row `{type:"lesson-sweep", phase:"<N>", triggers:<N>, lessonsBefore:<L>, lessonsAfter:<L'>, backfilled:<B>}` and advance.
+5. If no audit triggers fired this phase, the sweep is a no-op.
+
+This sweep is the forcing function for Behavior Rule 10. "Capture lessons immediately" is the in-turn ideal; the sweep is the safety net for turns the agent missed. The owner reviews the resulting `lessons-learned.md` at `teardown`, not during the wizard.
+
 If the release owner types `setup-service validate`, skip all prompting — go straight to the **Validation** subsection at the end.
 
 **`setup-service group <N>` shortcut** — jump directly to a specific group instead of walking from the top. Supported group identifiers:
@@ -459,21 +469,46 @@ The phase has three parts: **locate**, **confirm**, **detect-mapping**. All thre
 
 #### Phase 4.6 — Canary stamp set
 
-The canary fleet is small, stable, and **owner-declared**. Some services have all canary stamps in one purpose-built cloud (e.g. the `Canary` cloud); others have canary stamps inside the **Public** cloud (e.g. `ecy`, `ccy` regions). Each stamp carries its own `{ cloud, region, layout }` so multi-cloud setups are represented natively.
+The canary fleet is small and stable. **Kusto is the source of truth**: `Canary-DeploymentUnits.kql` (Phase 4.9) returns `StampName` + `DeploymentUnit set`, and `Get-StampInventory.ps1 -Scope canary` derives `clusterType` per stamp via `kusto.canary.clusterTypeExtraction`. AzureServiceConfig validates region resolution; the owner **confirms or edits** the Kusto-derived list — they no longer supply it from scratch.
 
-**The owner is the only source of truth for which regions are canary.** The agent does **not** scan AzureServiceConfig looking for "canary datacenters" — AzureServiceConfig has no reliable, service-agnostic tag for that. AzureServiceConfig is used only as a **lookup table** to (a) map each owner-provided region short name to its `{ cloud, layout }`, (b) catch typos before they reach a release, and (c) surface whether a region has a passive recovery stamp.
-
-`clusterType` is never prompted in Phase 4.6 — it is filled lazily by `Get-StampInventory.ps1` running the Phase 4.9 canary-half Kusto query when `canaryRouting.mode == "cluster-type"`.
+**Kusto is mandatory.** If `kusto.canary.cluster` is unreachable or the query returns zero rows, the wizard **halts** — it does NOT fall back to owner-declared lists. This is intentional: a silent fallback is exactly how `{{canaryStamps}}` contamination across cluster types entered the catalog. Owner re-runs `setup-service group 4.9` to fix Kusto wiring, then resumes `setup-service group 4.6`.
 
 > **AzureServiceConfig vocabulary — for the recap only**
 >
 > Each `Clouds[].DataCenters[]` entry carries a `DatacenterType` comma-list. Two values matter for the recap:
 > - **`PASSIVE`** — this datacenter IS a recovery-only copy. Never targeted as a canary stamp.
 > - **`HAS_PASSIVE`** — this datacenter has an additional passive (recovery) copy behind the primary. Purely informational; surface it so the owner knows which regions have a recovery copy.
->
-> Many services only use `ACTIVE` / `PASSIVE` / `HAS_PASSIVE` and never tag canary datacenters at all. That is fine — the agent does not need that tag because the owner already told us which regions are canary.
 
-Prerequisite: `service.stampTag` must already be set (Group 1). If it is empty, jump back to Group 1.
+Prerequisite: `service.stampTag` (Group 1) **and Phase 4.9 canary half** must be populated. If `kusto.canary.cluster` is empty, jump back to Phase 4.9.
+
+1. **Run Kusto live.** Call:
+
+   ```powershell
+   $inv = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 -Scope canary -ViaKusto -NoCache
+   ```
+
+   The script executes `kusto.canary.queryFile` against `kusto.canary.cluster` / `.database`, returns one row per stamp with `{ stampName, clusterType, region, layout, cloud }` (clusterType extracted from `DeploymentUnit` per `kusto.canary.clusterTypeExtraction.mode`). On any Kusto failure, surface the verbatim error and **halt** with: *"Canary Kusto is unreachable or empty. Re-run `setup-service group 4.9` to repair, then resume `setup-service group 4.6`. The wizard refuses to declare canary inventory without live evidence."*
+
+2. **Resolve each Kusto-returned region against AzureServiceConfig.** For every distinct `region` in `$inv.stamps[].region`, look up `{ cloud, layout }` from `$asc.data.Clouds[].DataCenters[]`. Surface any region Kusto returned that AzureServiceConfig cannot find as `drift.unknownRegion` — the owner picks per row: *keep anyway* (mark `_unresolved: true`) or *drop*.
+
+3. **Show the owner the Kusto-derived list for confirmation:**
+
+   ```
+   Canary inventory — from Kusto (Canary-DeploymentUnits.kql @ <UTC>)
+     ecy-pod01-prot1  | region=ecy   | cloud=Public  | clusterType=sfrp  | source=Kusto
+     ccy-pod01-prot1  | region=ccy   | cloud=Public  | clusterType=sfrp  | source=Kusto
+     ea-can02-prot1   | region=ea    | cloud=Canary  | clusterType=sfmc  | source=Kusto
+     …
+   Choices: Looks right, Edit (drop / rename / re-classify a row), Re-run Kusto
+   ```
+
+   - **`Looks right`** — persist `inventory.canary.stamps[]` verbatim from Kusto with `clusterType` populated; record `_inventoryFrom: { source: "Kusto live", queryFile, ranAt, rowCount }`.
+   - **`Edit`** — the owner may drop a row (e.g., a decommissioned stamp Kusto is still emitting telemetry for), correct a `clusterType` Kusto mis-classified, or annotate a region. Edits are recorded with `_ownerOverride: { field, was, now, reason }` so the next setup pass can re-warn if Kusto disagrees again.
+   - **`Re-run Kusto`** — useful if the owner just fixed an issue (token, query); jumps back to step 1.
+
+4. **Validate immediately** by calling `Get-StampInventory.ps1 -Scope canary` (this time without `-ViaKusto`; it now reads the persisted catalog and re-validates against AzureServiceConfig). If `$inv.drift` is non-empty, render the drift table and re-prompt. If `$inv.stamps.Count -eq 0`, halt and re-run Phase 4.6 from step 1.
+
+5. **Recap + remind:** *"Canary inventory pinned. {N} stamps across {M} regions; cluster types observed: {distinct list}. This list is Kusto-derived; if Kusto telemetry changes (stamp added/removed, cluster type changed), re-run `setup-service group 4.6` to refresh."*
 
 1. **Fetch AzureServiceConfig** by calling:
 
@@ -557,28 +592,23 @@ Prerequisite: `service.stampTag` (Group 1), Phase 4.5 (SDS pinned), and Phase 4.
 
    > Kusto is the **finalizing signal** for the Public cloud — a stamp emitting telemetry right now is a stamp that exists. The chain still falls back to SDS / YAML / grammar for sovereign clouds (out of reach from the agent's identity) and for the case where Phase 4.9's production half has not been collected yet.
 
-   **3a. Kusto live inventory query (Public cloud only) — preferred when available.**
+   **3a. Kusto live — cluster-type query preferred (Public cloud, mandatory when configured).**
 
-   Gate: this branch runs **only** when `cloud == "Public"` AND the production-half Kusto config from Phase 4.9 is populated. Required fields:
+   Gate: this branch runs **whenever** `cloud == "Public"` AND `kusto.production.cluster` / `.database` are populated (Phase 4.9). Two queries are usable, in order of preference:
 
-   - `kusto.production.cluster`
-   - `kusto.production.database`
-   - `kusto.production.inventoryQueryFile` (default `Production-StampInventory.kql` — the **inventory-only** query that returns a single `StampName` column; distinct from `queryFile` which is the cluster-type/`DeploymentUnit` query)
-   - `kusto.production.serviceFilter` (substituted into `{{SERVICE_FILTER}}`)
-   - `kusto.production.stampPrefixFilter` (substituted into `{{STAMP_PREFIX_FILTER}}` — auto-derived from AzureServiceConfig in Phase 4.9 production half; may be empty when the query does not use the placeholder)
+   1. **`kusto.production.queryFile`** (default `Production-DeploymentUnits.kql`) — returns `StampName, set<DeploymentUnit>`. `Get-StampInventory.ps1` derives `clusterType` per stamp via `kusto.production.clusterTypeExtraction`. **Preferred** because each stamp carries an authoritative `clusterType` from the same pass that enumerated it — no separate query is needed at run time.
+   2. **`kusto.production.inventoryQueryFile`** (default `Production-StampInventory.kql`) — returns `StampName` only. Used when `queryFile` isn't configured yet; stamps come back with `clusterType: null` and Phase 4.10's cluster-type checks will refuse to proceed in `cluster-type` mode until the cluster-type query is configured.
 
-   This branch does **not** require `queryFile` or `clusterTypeExtraction` — those are only consumed by the cluster-type resolver at runtime (`Resolve-PipelinesByClusterType.ps1 -Scope production`).
-
-   When gated open, run the inventory query verbatim:
+   `kusto.production.serviceFilter` (substituted into `{{SERVICE_FILTER}}`) and `kusto.production.stampPrefixFilter` (substituted into `{{STAMP_PREFIX_FILTER}}`) are required for both. Both are auto-derived in Phase 4.9 production half.
 
    ```powershell
    $kustoRows = & .\.github\skills\zed-agent\scripts\Get-StampInventory.ps1 `
-       -Scope production -Cloud Public -EmitRaw
+       -Scope production -Cloud Public -NoCache
    ```
 
-   `Get-StampInventory.ps1` loads `.github/skills/zed-agent/queries/<kusto.production.inventoryQueryFile>` (preferring `inventoryQueryFile` over `queryFile`), substitutes `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}`, executes it against `kusto.production.cluster` / `.database`, and returns rows shaped `{ StampName }`. Stamp names are captured **verbatim from Kusto** — the wizard does **not** synthesize names via the `<region>-<layout>-<stampTag><index>` grammar on this branch. Regions are derived per stamp by `Resolve-StampParts` (the short-name prefix). Source label: `Kusto live (<inventoryQueryFile>@<UTC ISO>)`.
+   Stamp names are captured **verbatim from Kusto** — the wizard does **not** synthesize names via grammar on this branch. Regions are derived per stamp by `Resolve-StampParts` (the short-name prefix). `clusterType` is populated per stamp when the `queryFile` form was used. Source label: `Kusto live (<queryFile>@<UTC ISO>)`.
 
-   On Kusto error (auth, query syntax, empty result set), surface the error verbatim and **fall through to 3b**. Do not halt — Kusto is the preferred signal, not a hard dependency.
+   On Kusto error for Public (auth, query syntax, empty result set), surface the verbatim error and **halt** — do NOT fall through to SDS / YAML / grammar for Public. Owner repairs Kusto (`Repair-AzAuth.ps1` for token; `setup-service group 4.9` for query) and re-runs Phase 4.7. SDS / YAML / grammar fallbacks remain wired for **sovereign clouds only** (3b–3d below), where the agent's identity cannot reach Kusto.
 
    When Phase 4.9 production half has NOT been run yet, the wizard MUST surface the recap (not silence it): *"Built Public scope from SDS. Run `setup-service group 4.9` to enable live Kusto reconciliation, then re-run `setup-service group 4.7` to refresh the baseline from telemetry."*
 
@@ -797,7 +827,7 @@ For each pipeline (official build + canary + production), synthesize a single pr
 
 The agent reserves these `{{...}}` tokens and substitutes them at runtime — **never** ask the owner to provide a value for them, and **never** drop them when they appear inside `templateParameters` discovered from prior runs or YAML:
 
-- `{{currentBranch}}` — replaced with the active release branch (e.g., `releases/svc2604`).
+- `{{currentBranch}}` — replaced with the active release branch as a **SHORT** name (e.g., `releases/svc2604`, NOT `refs/heads/releases/svc2604`). templateParameters whose YAML type is `string` and whose name contains `Branch` / `BranchName` are consumed by the YAML as plain short branch identifiers, not git refs. Only `resources.repositories.self.refName` in the run-queue body uses the full `refs/heads/<short>` form. Any token-as-full-ref will make ADO try to resolve the value as a pipeline-version identifier and return `400 No version was found for the pipeline`.
 - `{{canaryStamps}}`, `{{canaryRegions}}` — replaced with the live `inventory.canary.stamps[].stampName` / distinct `inventory.canary.stamps[].region` from `service-config.json` (Phase 4.6). For `cluster-type` routing, the agent further filters by the pipeline's declared `clusterType` (Phase 4.2) before joining into the parameter format the pipeline expects (CSV, JSON array, etc. — auto-detected from prior-run shape in `canary.<key>.discoveryNotes.stampNameStyle`).
 - `{{excludeStamps}}`, `{{pubRegions}}`, `{{ffStamps}}`, `{{ffRegions}}` (and any cloud-prefixed analogues like `{{mcRegions}}`, `{{mcStamps}}`) — at **real release time** (Step 15), replaced with CCOA / SafeFly-narrowed region scope minus the live exclusion list. Source universe is `inventory.production.<cloud>` (Phase 4.7); CCOA filter and exclusion list narrow it. At **dry-run time** (Phase 4.12), only the universe applies.
 - `{{sdpType}}`, `{{validateOnly}}` — replaced based on rollout mode.
@@ -805,6 +835,23 @@ The agent reserves these `{{...}}` tokens and substitutes them at runtime — **
 > **Why canary stamps are tokenized, not literal**: prior runs are stale by definition — a stamp added or decommissioned since the last successful run would silently rot into `templateParameters` and only surface at real-release time. Phase 4.6 is the owner-curated source of truth, validated against AzureServiceConfig. Treating canary stamp/region values as reserved tokens makes the dry-run an honest preview of what the next real run will send: shape learned from prior runs, values pulled live from Phase 4.6.
 
 When the agent shows owner-facing diffs, render these as **highlighted tokens with a one-line tooltip** explaining the runtime substitution.
+
+#### Catalog completeness check (end of Phase 4.10)
+
+After the owner accepts the proposed `templateParameters` for a pipeline, the agent MUST run **two** intersections — against the YAML (catalog drift) and against the inventory (cluster-type contamination) — **before** moving to the next pipeline:
+
+**A. YAML intersection (catalog drift):** Intersect the accepted map's keys with `pipelines.<key>.yamlIntrospection.parameters[].name` (Phase 4.4) and surface drift in both directions:
+
+- **Undeclared params** — keys in `templateParameters` that the YAML on `ado.baseBranch` does NOT declare. ADO will reject the entire queue request on any one of these (full rejection, not a warning), so they MUST be reconciled now — either dropped from the catalog or added to the YAML. Persist any kept-anyway entries to `<scope>.<key>._learnedFrom.dryRun.droppedParams[]` so Phase 4.12 can drop them at queue time and Step 15 can refuse to fire until the YAML is amended.
+- **Required-but-missing params** — YAML-declared params with no default and no entry in the accepted map. Already checked by the existing required-param logic; mentioned here only for symmetry.
+
+**B. Cluster-type precondition (inventory contamination):** When `canaryRouting.mode == "cluster-type"` (canary scope) or `productionRouting.mode == "cluster-type"` (production scope), the agent MUST verify:
+
+1. `<scope>.<key>.clusterType` is non-empty for every pipeline whose params are being proposed.
+2. That `clusterType` appears in the live set returned by inventory: `distinct(inventory.<scope>.stamps[].clusterType)` (Phase 4.6 for canary, Phase 4.7 for production). A pipeline whose declared `clusterType` doesn't match any stamp's `clusterType` will, by definition, be triggered with stamps it has no business touching.
+3. Every stamp the proposed `templateParameters` would substitute into `{{canaryStamps}}` / `{{canaryRegions}}` / `{{pubRegions}}` / etc. — derived via `Resolve-TemplateParams.ps1` — must share that pipeline's `clusterType`. The resolver throws `CLUSTER_TYPE_CONTAMINATION:` listing the offending stamps; the agent refuses to persist the proposal and surfaces the list to the owner with the explicit instruction to either fix `<scope>.<key>.clusterType`, fix the offending stamps' `clusterType` in inventory, or fix the routing mode.
+
+Do NOT defer either check to Phase 4.12 — catching contamination at proposal time avoids both a wasted dry-run cycle and the much worse failure mode of an SFRP stamp routed to an SFMC pipeline.
 
 #### Auth & cost
 
@@ -927,14 +974,14 @@ $results = $canaryKeys | ForEach-Object -Parallel {
 `Invoke-PipelineDryRun.ps1` performs, per pipeline:
 
 1. Resolve the entry from `pipeline-catalog.json`. Substitute reserved tokens with the **same values a real release would send today** — exceptions: the branch (dummy ref) and the rollout-mode tokens (force `validateOnly = true`):
-   - `{{currentBranch}}` → `refs/heads/setup-service-dry-run`
+   - `{{currentBranch}}` → SHORT branch name from `ado.baseBranch` (e.g., `develop` — not `refs/heads/develop`). templateParameters take short form.
    - `{{canaryStamps}}` → joined `inventory.canary.stamps[].stampName` (Phase 4.6), filtered by `entry.clusterType` when `canaryRouting.mode == "cluster-type"`, joined using `canary.<key>.discoveryNotes.stampNameStyle`.
    - `{{canaryRegions}}` → joined `inventory.canary.regions` using the same style.
    - `{{excludeStamps}}` → `""` *(dry-run never excludes anything)*.
    - `{{pubRegions}}`, `{{ffRegions}}`, `{{ffStamps}}`, `{{mcRegions}}`, `{{mcStamps}}`, … — for **canary** dry-run, `""`; for **production** dry-run (Phase 4.12), joined from `inventory.production.<cloud>`. Cloud inferred from token prefix; unmapped tokens flag `agentGaps: token-cloud-unmapped: <token>`.
    - `{{sdpType}}` → `"Express"`
    - `{{validateOnly}}` → `"true"`
-2. `POST https://dev.azure.com/{org}/{project}/_apis/pipelines/{id}/runs?api-version=7.1-preview.1` with body `{ "resources": { "repositories": { "self": { "refName": "refs/heads/setup-service-dry-run" } } }, "templateParameters": <substituted map> }`. Capture `runId` and `runUrl`.
+2. `POST https://dev.azure.com/{org}/{project}/_apis/pipelines/{id}/runs?api-version=7.1-preview.1` with body `{ "resources": { "repositories": { "self": { "refName": "refs/heads/<ado.baseBranch>" } } }, "templateParameters": <substituted map> }`. Note: `refName` is the only place that uses the FULL `refs/heads/<short>` form; everything in `templateParameters` uses short names. Capture `runId` and `runUrl`.
 3. Sleep 5 seconds.
 4. `PATCH https://dev.azure.com/{org}/{project}/_apis/build/builds/{runId}?api-version=7.0` with body `{ "status": "cancelling" }` (retry up to 3 times).
 5. Return `{ pipelineKey, runId, runUrl, queuedAt, cancelledAt, finalState, queuedParameters }`.
@@ -1210,10 +1257,24 @@ If validation fails, list the missing/invalid fields and offer the release owner
 
 ```powershell
 & .\.github\skills\zed-agent\scripts\Write-Readiness.ps1 -Stage 'setupService' -Data @{
-    status        = '<pass|incomplete|fail>'   # pass = full validation green; incomplete = owner exited mid-wizard or some required field still empty; fail = validation hit type errors / placeholder values
+    status        = '<pass|incomplete|fail>'   # pass = full validation green AND dry-run executed; incomplete = owner exited mid-wizard or some required field still empty; fail = validation hit type errors / placeholder values
     lastGroup     = '<last group identifier successfully persisted, e.g., "4.13" or "5b">'
     missingFields = @('<dotted.path>', '...')   # empty array on pass
+    dryRun        = @{
+        executed        = $false                # flipped to $true ONLY after Phase 4.12 step 2 returns from Invoke-PipelineDryRun.ps1 for every consented production pipeline
+        pipelinesQueued = 0                     # count of pipelines that received a real queue+cancel (queue-failed counts as queued for gate purposes)
+        consented       = 0                     # count of pipelines under setupService.dryRun.consent at Phase 4.11/4.12 entry
+        lastRunAt       = '<UTC ISO or null>'
+    }
 }
 ```
+
+**Hard gate — `status = 'pass'` is REFUSED unless all three of these hold:**
+
+1. Validation block returned no missing/invalid fields.
+2. `dryRun.executed == $true`.
+3. `dryRun.pipelinesQueued >= dryRun.consented`.
+
+If the gate fails, the agent persists `status = 'incomplete'` with `lastGroup = '4.12'` (or the actual blocking phase), surfaces *"Cannot mark setupService complete: dry-run was consented for N pipelines but only M were queued. Re-run `setup-service group 4.12` to finish."* and exits. The owner does NOT get a yes/no — the gate is mechanical. This closes the loop on the Phase 4.12 process bug where consent was conflated with execution.
 
 Incremental rule: also call `Write-Readiness -Stage setupService -Data @{ status = 'incomplete'; lastGroup = '<N>' }` after each group completes, so a chat interruption mid-wizard still produces a meaningful record. The `run` command's chain check will see `status = 'incomplete'` and tell the owner exactly where to resume.

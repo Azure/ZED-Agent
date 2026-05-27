@@ -225,24 +225,9 @@ If both modes are `static`, skip the per-pipeline `clusterType` ask entirely.
 
 For each pipeline collected in Phase 4.1 (official build + canary + production), read prior successful production runs. The agent uses these runs as **evidence** for two things: (a) Phase 4.4's YAML branch resolution, and (b) Phase 4.10's `templateParameters` merge.
 
-For each pipeline, ask via `ask_user`:
+For each pipeline the agent does **two sequential** things — always auto-fetch the last 3 successful runs first, then optionally let the owner pin a known-good reference run on top.
 
-> *"For `{key}` (`{name}`), do you want to point me at specific successful runs to learn from, or should I just grab the last 3 successful production runs automatically?"*
-> Choices: `I'll provide run IDs / URLs`, `Use last 3 successful runs (auto)`
-
-**On `I'll provide run IDs / URLs`** — collect a comma-separated list of run IDs or full ADO run URLs via `ask_user`. Parse each entry (extract the integer `runId` from URLs of the form `…/_build/results?buildId=<id>`), then resolve each one through `Read-PriorRun.ps1` in single-run mode:
-
-```powershell
-$runs = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
-    -Organization $cfg.ado.organization `
-    -Project $cfg.ado.project `
-    -PipelineId $entry.id `
-    -RunIds @(<ids parsed from owner input>)
-```
-
-For each ID, verify it (a) belongs to this `PipelineId`, (b) has `result = succeeded`. If any fail those checks, surface the exact reason (*"Run 28471 belongs to pipeline 3528, not 3527"* / *"Run 28471 finished with `result = failed`"*) and re-prompt the owner — either correct the list or fall back to auto.
-
-**On `Use last 3 successful runs (auto)`** — run the auto-fetch:
+**Step A — auto-fetch last 3 successful runs (always runs).**
 
 ```powershell
 $runs = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
@@ -254,6 +239,25 @@ $runs = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
 ```
 
 The script returns normalized objects: `{ runId, runUrl, finishedAt, sourceBranch, templateParameters }`. If fewer than 3 runs exist (new pipeline), return whatever's available; if zero, tell the owner *"No prior successful runs found for `{key}` — I'll rely on YAML only in Phase 4.4 / 4.10 and lean more heavily on your review."*
+
+**Step B — optional pinned reference run.** After Step A returns, ask via `ask_user`:
+
+> *"For `{key}` (`{name}`), do you want to pin a specific known-good production run as an additional reference (e.g., the last clean release)? Paste run IDs / URLs, or skip."*
+> Choices: `Pin a run`, `Skip — auto-3 is enough`
+
+**On `Pin a run`** — collect a comma-separated list of run IDs or full ADO run URLs via `ask_user`. Parse each entry (extract the integer `runId` from URLs of the form `…/_build/results?buildId=<id>`), then resolve through `Read-PriorRun.ps1` in single-run mode:
+
+```powershell
+$pinned = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
+    -Organization $cfg.ado.organization `
+    -Project $cfg.ado.project `
+    -PipelineId $entry.id `
+    -RunIds @(<ids parsed from owner input>)
+```
+
+For each ID, verify it (a) belongs to this `PipelineId`, (b) has `result = succeeded`. If any fail those checks, surface the exact reason (*"Run 28471 belongs to pipeline 3528, not 3527"* / *"Run 28471 finished with `result = failed`"*) and re-prompt — correct the list or skip pinning.
+
+Tag pinned entries with `pinnedByOwner = true` and **prepend** them to the run set (pinned first, then auto-3). Phase 4.10's tiebreaker for conflicting parameter values prefers pinned runs over auto runs.
 
 **Branch capture (new behavior)** — after the runs are returned, inspect `$runs[*].sourceBranch`:
 
@@ -715,7 +719,8 @@ For each pipeline key, fan out in parallel using `ForEach-Object -Parallel` and:
 2. **Concrete values**: prior-run values from `<scope>.<key>._learnedFrom.runs[].templateParameters` (Phase 4.3), mode-of-values across the runs (most common wins). If the runs disagree, flag the parameter as `mode-disagreement` in `agentGaps`.
 3. **Reserved-token preservation**: if a prior-run value matches one of the reserved `{{...}}` tokens **or** the YAML's `default` is a reserved token, keep it as the token (do not substitute the literal from history).
 4. **Canary stamp / region detection (token replaces literal)**: prior-run values are excellent for *teaching the agent the parameter shape* (CSV vs JSON array, naming style, count) but they are **not** trusted as the actual values to send — Phase 4.6's `inventory.canary.stamps` is the truth. For each parameter whose prior-run value looks like a canary stamp list or canary region list (values are a subset of `inventory.canary.stamps[].stampName` / distinct `inventory.canary.stamps[].region`, or look like `<region>-<layout>-<stampTag><index>` triples), **replace the literal with the matching reserved token** (`{{canaryStamps}}` or `{{canaryRegions}}`) in the proposal. Record the detected delivery shape (CSV / semicolon-list / JSON array) under `canary.<key>.discoveryNotes.stampNameStyle` so the runtime substitution knows how to join the inventory values. If detection is ambiguous (prior-run value contains stamps NOT in `inventory.canary.stamps`), flag `agentGaps: stamp-list-drift: [<stamps not in inventory>]` and surface in the proposal review.
-5. **Production stamp / region detection** — same shape, against `inventory.production.<cloud>` (Phase 4.7); tokens become `{{pubRegions}}` / `{{ffStamps}}` / etc. depending on the matching cloud.
+   - **Wildcard sentinel rule**: if the parameter name contains `Stamps` or `Regions` (case-insensitive) AND the prior-run value is `*`, `all`, `ALL`, empty string, or null, treat it as a token candidate even when no stamp-list match is possible. Use the parameter name's cloud prefix to pick the token: a name containing `canary` (case-insensitive) → `{{canaryStamps}}` / `{{canaryRegions}}`; names containing `pub`/`public`/`prod` (and no sovereign prefix) → `{{pubStamps}}` / `{{pubRegions}}`; `ff`/`fairfax` → `{{ffStamps}}` / `{{ffRegions}}`; `mc`/`mooncake` → `{{mcStamps}}` / `{{mcRegions}}`; `usnat` → `{{usnatStamps}}` / `{{usnatRegions}}`; `ussec` → `{{ussecStamps}}` / `{{ussecRegions}}`. Flag `agentGaps: wildcard-collapsed-to-token: <param>=<original>` so the owner sees the collapse during proposal review and can override.
+5. **Production stamp / region detection** — same shape (including the wildcard sentinel rule from step 4), against `inventory.production.<cloud>` (Phase 4.7); tokens become `{{pubRegions}}` / `{{ffStamps}}` / etc. depending on the matching cloud.
 6. **Cluster-type cross-check**: if `canaryRouting.mode == "cluster-type"` (or production equivalent) and the owner declared `entry.clusterType` in Phase 4.2, scan the YAML and prior runs for stamp-list / region-list parameters whose values cluster around a single suffix (e.g., all entries end in `-sfmc`). If the inferred suffix **disagrees** with the owner-declared cluster type, flag `agentGaps: clusterType-mismatch: declared <X>, evidence suggests <Y>`. If `clusterType` was NOT declared, fall back to the inferred value as the proposal.
 7. **Unknown / new params**: parameters in YAML that have no prior-run value and no `default` → mark `requiresOwnerInput: true` in the proposal.
 
@@ -823,32 +828,30 @@ $results = $canaryKeys | ForEach-Object -Parallel {
 4. `PATCH https://dev.azure.com/{org}/{project}/_apis/build/builds/{runId}?api-version=7.0` with body `{ "status": "cancelling" }` (retry up to 3 times).
 5. Return `{ pipelineKey, runId, runUrl, queuedAt, cancelledAt, finalState, queuedParameters }`.
 
-Aggregate results and render an owner review block:
+Aggregate `$results` and hand them to `Confirm-DryRunResults.ps1` — it owns the review block, the verdict prompt, the audit row, and the `readiness.json → dryRun.reviewed` flip. The phase cannot advance until the script returns `verdict='ok'`.
 
-```
-Canary dry-run results — 3 pipelines, all queued and cancelled.
-
-✓ SVC-SFMC    run #28591 cancelled @ +4.8s  → <url>
-✓ SVC-SFRP    run #28592 cancelled @ +5.1s  → <url>
-✗ SVC-EAP     run #28593 queue FAILED — HTTP 400: "PubCanaryStamps invalid format"
-
-Open run pages and verify the queued-run parameters match your expectations.
-When done, tell me which (if any) had discrepancies.
-
-Choices: All good → continue to production, Report a discrepancy, Re-run dry-runs
+```powershell
+$render = & .\.github\skills\zed-agent\scripts\Confirm-DryRunResults.ps1 -Mode render -Results $results -Scope canary
+# Agent echoes $render.table verbatim, then asks $render.prompt with $render.choices via ask_user.
+$answer = <user choice>
+$verdict = switch ($answer) { 'All good — proceed' {'ok'} 'Report a discrepancy' {'discrepancy'} 'Re-run dry-runs' {'rerun'} }
+$record = & .\.github\skills\zed-agent\scripts\Confirm-DryRunResults.ps1 -Mode record -Results $results -Scope canary -Verdict $verdict -Discrepancy $discrepancyText
 ```
 
-On `Report a discrepancy`, enter the **discrepancy loop**:
+Loop semantics:
 
-1. Ask which pipeline.
-2. Ask what's wrong (free-text via `ask_user`).
-3. Classify the fix:
-   - **(a) Catalog-only fix** — owner gives a corrected value; agent updates `canary.<key>.templateParameters` and re-runs the dry-run for that one pipeline.
-   - **(b) Reserved-token semantics drift** — same as (a) but record the discrepancy in `canary.<key>.discoveryNotes.freeText`.
-   - **(c) Skill / agent.md edit required** — trigger the MD edit proposal flow (show current text + proposed text, persist as `md-edit-proposal` in `audit.jsonl`, apply on owner confirmation).
-4. Re-run the dry-run for that pipeline and loop until the owner says `All good`.
+- **`verdict='ok'`** — persist `canary.<key>._validated = { at: <UTC ISO>, lastDryRunId: <id>, by: <owner email or 'wizard'> }` for every key in `$record.validatedKeys`. Advance to Phase 4.12.
+- **`verdict='discrepancy'`** — enter the discrepancy loop:
+  1. Ask which pipeline.
+  2. Ask what's wrong (free-text via `ask_user`).
+  3. Classify the fix:
+     - **(a) Catalog-only fix** — owner gives a corrected value; agent updates `canary.<key>.templateParameters` and re-runs the dry-run for that one pipeline.
+     - **(b) Reserved-token semantics drift** — same as (a) but record the discrepancy in `canary.<key>.discoveryNotes.freeText`.
+     - **(c) Skill / agent.md edit required** — trigger the MD edit proposal flow (show current text + proposed text, persist as `md-edit-proposal` in `audit.jsonl`, apply on owner confirmation).
+  4. Re-run `Invoke-PipelineDryRun.ps1` for the affected pipeline(s), then call `Confirm-DryRunResults.ps1 -Mode render` again. Loop until owner picks `All good`.
+- **`verdict='rerun'`** — re-fan-out the full set with `Invoke-PipelineDryRun.ps1` and call `Confirm-DryRunResults.ps1 -Mode render` again.
 
-Persist `_validated` per pipeline once its dry-run is clean: `canary.<key>._validated = { at: <UTC ISO>, lastDryRunId: <id>, by: <owner email or 'wizard'> }`.
+`readiness.json → dryRun.reviewed` only flips to `true` on `verdict='ok'`, and `Write-Readiness.ps1` refuses to promote `setupService.status='pass'` while it is `false` (mirrors the refusal to `audit.jsonl` as `readiness-gate-refused`).
 
 ---
 
@@ -878,7 +881,7 @@ Fan out using `Invoke-PipelineDryRun.ps1 -PipelineKey "production:<key>"`. Subst
 
 **Step 15 drift handshake** — the baseline persisted in `inventory.production.<cloud>` is the **same** baseline `Resolve-RegionScope.ps1` diffs against at real-release time. A clean dry-run today means the next real release only prompts for drift if AzureServiceConfig actually changed since this scope, not because dry-run and real-release have different scope-computation paths. (Drift contract: see end of Phase 4.7.)
 
-Validation loop is identical to Phase 4.11 step 2 — aggregate, render the review block, run the discrepancy loop, persist `production.<key>._validated` on success.
+Validation loop is identical to Phase 4.11 step 2 — aggregate, call `Confirm-DryRunResults.ps1 -Mode render -Scope production`, run the discrepancy loop on `verdict='discrepancy'`, re-fan-out on `verdict='rerun'`, persist `production.<key>._validated` per key returned in `$record.validatedKeys` on `verdict='ok'`. The same `readiness.json → dryRun.reviewed` gate applies before `setupService.status='pass'` is allowed.
 
 If `productionRouting.mode == "cluster-type"`, the per-pipeline `clusterType` inference (Phase 4.10) runs against production runs / YAML and populates `productionRouting.clusterTypeMap`.
 

@@ -91,13 +91,36 @@ if ($PipelineKey -eq 'officialBuild') {
 if (-not $entry) { throw "Pipeline key '$PipelineKey' not found in $CatalogPath." }
 
 # ── Substitute reserved tokens ──
-$substituted = @{}
-foreach ($p in $entry.templateParameters.PSObject.Properties) {
-    $v = $p.Value
-    if ($v -is [string] -and $stubs.ContainsKey($v)) {
-        $v = $stubs[$v]
+# For canary/production scopes, delegate to Resolve-TemplateParams.ps1 so we get
+# inventory-driven values, cluster-type filtering, and contamination assertion.
+# officialBuild uses the inline stub map below (no inventory to consult).
+$substituted   = @{}
+$droppedStamps = @()
+$agentGaps     = @()
+$branchShort   = if ($DryRunBranch -match '^refs/heads/(.+)$') { $Matches[1] } else { $DryRunBranch }
+
+if ($resolvedKey -match '^(canary|production)\.(.+)$') {
+    $resolverScope = $Matches[1]
+    $resolverKey   = $Matches[2]
+    $resolverPath  = Join-Path $PSScriptRoot 'Resolve-TemplateParams.ps1'
+    if (-not (Test-Path $resolverPath)) { throw "Resolve-TemplateParams.ps1 not found at $resolverPath" }
+    $r = & $resolverPath `
+            -PipelineKey         $resolverKey `
+            -Scope               $resolverScope `
+            -CurrentBranch       $branchShort `
+            -ServiceConfigPath   $ServiceConfigPath `
+            -PipelineCatalogPath $CatalogPath `
+            -DryRun
+    # Resolved templateParameters from the resolver are authoritative.
+    foreach ($k in $r.templateParameters.Keys) { $substituted[$k] = $r.templateParameters[$k] }
+    $droppedStamps = @($r.droppedStamps)
+    $agentGaps     = @($r.agentGaps)
+} else {
+    foreach ($p in $entry.templateParameters.PSObject.Properties) {
+        $v = $p.Value
+        if ($v -is [string] -and $stubs.ContainsKey($v)) { $v = $stubs[$v] }
+        $substituted[$p.Name] = $v
     }
-    $substituted[$p.Name] = $v
 }
 
 # ── Token ──
@@ -136,6 +159,8 @@ try {
         cancelledAt      = $null
         finalState       = 'queue-failed'
         queuedParameters = $substituted
+        droppedStamps    = $droppedStamps
+        agentGaps        = $agentGaps
         error            = $queueError
     }
 }
@@ -177,5 +202,7 @@ return [PSCustomObject]@{
     cancelledAt      = $cancelledAt
     finalState       = $finalState
     queuedParameters = $substituted
+    droppedStamps    = $droppedStamps
+    agentGaps        = $agentGaps
     error            = $cancelError
 }

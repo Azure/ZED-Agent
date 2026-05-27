@@ -64,13 +64,53 @@ param(
     [switch] $DryRun,
 
     [Parameter()]
-    [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\..\service-config.json')
+    [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\..\service-config.json'),
+
+    [Parameter()]
+    [string]$PipelineCatalogPath = (Join-Path $PSScriptRoot '..\..\pipeline-catalog.json')
 )
 
 $ErrorActionPreference = "Stop"
 
 # --- Load service config ---
 $cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
+
+# --- Resolve SafeFly ServiceGroupName from pipeline-catalog.ev2ServiceGroups ---
+# Source of truth is pipeline-catalog.json -> ev2ServiceGroups (collected in
+# setup-service Phase 4.13). Production keys decide what SafeFly bills against.
+# An explicit service-config.json -> safefly.serviceGroupName overrides when set
+# (e.g., ambiguous catalog or non-pipeline R2D).
+$resolvedServiceGroupName = $null
+if ($cfg.safefly.PSObject.Properties['serviceGroupName'] -and $cfg.safefly.serviceGroupName) {
+    $resolvedServiceGroupName = [string]$cfg.safefly.serviceGroupName
+} else {
+    if (-not (Test-Path $PipelineCatalogPath)) {
+        throw "pipeline-catalog.json not found at $PipelineCatalogPath. Run 'setup-service group 4.13' to populate ev2ServiceGroups, or set safefly.serviceGroupName in service-config.json."
+    }
+    $catalog = Get-Content $PipelineCatalogPath -Raw | ConvertFrom-Json
+    if (-not $catalog.ev2ServiceGroups) {
+        throw "pipeline-catalog.json has no ev2ServiceGroups block. Run 'setup-service group 4.13' to populate it, or set safefly.serviceGroupName in service-config.json."
+    }
+    $prodKeys = @()
+    if ($catalog.production) { $prodKeys = @($catalog.production.PSObject.Properties.Name) }
+    $candidates = @()
+    foreach ($k in $prodKeys) {
+        $v = $catalog.ev2ServiceGroups.$k
+        if ($v) { $candidates += [string]$v }
+    }
+    if (-not $candidates) {
+        # Fall back to all ev2ServiceGroups values if no production-keyed entries.
+        $candidates = @($catalog.ev2ServiceGroups.PSObject.Properties.Value | Where-Object { $_ })
+    }
+    $distinct = @($candidates | Sort-Object -Unique)
+    if ($distinct.Count -eq 0) {
+        throw "pipeline-catalog.json -> ev2ServiceGroups has no values for production pipelines. Run 'setup-service group 4.13', or set safefly.serviceGroupName in service-config.json."
+    } elseif ($distinct.Count -eq 1) {
+        $resolvedServiceGroupName = $distinct[0]
+    } else {
+        throw "pipeline-catalog.json -> ev2ServiceGroups has multiple distinct values across production pipelines: $($distinct -join ', '). Set safefly.serviceGroupName in service-config.json to pick the one SafeFly should attach the R2D to."
+    }
+}
 
 # --- Constants ---
 $SafeFlyEndpoint   = "https://www.safefly.azure.com"
@@ -121,7 +161,7 @@ $payload = @{
         ADOBuildId           = $BuildId
         DeploymentTool       = "EV2"
         DeploymentToolInputs = @{
-            ServiceGroupName = "Backup (MAB)"
+            ServiceGroupName = $resolvedServiceGroupName
             BuildNumber      = $BuildNumber
         }
     }

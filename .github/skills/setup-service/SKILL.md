@@ -1097,6 +1097,7 @@ Ask for:
 - `safefly.tags` — SafeFly tags array (e.g., ["Prot_Regular_Rollout"])
 - `safefly.additionalNotifiers` — Extra emails notified on SafeFly changes (array)
 - `safefly.monitoringLink` — Monitoring link (e.g., Geneva MDM dashboard URL)
+- `safefly.serviceGroupName` — **Optional override.** SafeFly `DeploymentDetails.DeploymentToolInputs.ServiceGroupName`. Default behavior is to derive this from `pipeline-catalog.json → ev2ServiceGroups` (the values collected in Phase 4.13): if all production pipelines share one value, it's used automatically; if they diverge, the SafeFly script throws and the owner must set this override to pick which one SafeFly attaches the R2D to. Do not prompt unless the owner explicitly opts in or `New-SafeFlyRequest.ps1` reports the ambiguity error.
 
 **Group 7 — Commit Excel**
 Ask for:

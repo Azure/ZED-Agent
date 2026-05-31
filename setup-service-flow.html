@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ZED Agent — setup-service flow</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #7ee787;
+    --warn: #d29922;
+    --danger: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.55;
+  }
+  header {
+    background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 24px 32px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0; font-size: 22px; }
+  header .sub { color: var(--muted); margin-top: 4px; font-size: 13px; }
+  nav { padding: 12px 32px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  main { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+  section { margin-bottom: 48px; }
+  h2 { color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-top: 0; }
+  h3 { color: var(--accent-2); margin-top: 32px; }
+  details { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin: 12px 0; }
+  details summary { cursor: pointer; font-weight: 600; color: var(--text); user-select: none; }
+  details[open] summary { margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    margin: 16px 0;
+    overflow: auto;
+    position: relative;
+  }
+  .diagram .pan-hint {
+    position: absolute; top: 8px; right: 12px;
+    font-size: 11px; color: var(--muted);
+    background: rgba(13,17,23,.7);
+    padding: 2px 8px; border-radius: 4px;
+    pointer-events: none;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend span::before { content: "■"; margin-right: 6px; }
+  .lg-gate::before { color: var(--warn); }
+  .lg-script::before { color: var(--accent); }
+  .lg-prompt::before { color: var(--accent-2); }
+  .lg-write::before { color: #c678dd; }
+  .lg-fail::before { color: var(--danger); }
+  code { background: #1c2128; padding: 1px 6px; border-radius: 3px; font-size: 13px; color: var(--accent-2); }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  th { background: var(--panel); color: var(--accent); }
+  .callout { border-left: 3px solid var(--warn); background: rgba(210, 153, 34, 0.08); padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 12px 0; font-size: 13px; }
+  .footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; border-top: 1px solid var(--border); margin-top: 48px; }
+  .footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ZED Agent — <code>setup-service</code> wizard flow</h1>
+  <div class="sub">One-time onboarding wizard that populates <code>service-config.json</code> + <code>pipeline-catalog.json</code>. Source of truth: <a href="./.github/skills/setup-service/SKILL.md" style="color: var(--accent);">SKILL.md</a></div>
+</header>
+
+<nav>
+  <a href="#overview">Top-level flow</a>
+  <a href="#groups">Groups 1–10</a>
+  <a href="#phase4">Group 4 sub-phases</a>
+  <a href="#routing">Routing decision (4.2)</a>
+  <a href="#stamps">Stamp source-of-truth</a>
+  <a href="#dryrun">Dry-run pipeline (4.10→4.12)</a>
+  <a href="#readiness">Readiness state machine</a>
+  <a href="#legend">Legend</a>
+</nav>
+
+<main>
+
+<section id="overview">
+  <h2>1. Top-level flow</h2>
+  <p>From <code>setup-service</code> command to commit-ready config files. Every <code>ask_user</code> persists the answer to disk before the next prompt.</p>
+  <div class="diagram"><span class="pan-hint">scroll to zoom · drag to pan</span>
+    <pre class="mermaid">
+flowchart TD
+  start([release owner types<br/><code>setup-service</code>]) --> p0{Phase 0:<br/>test-preflight}
+  p0 -- envVerdict=fail --> halt0([HALT: fix env first]):::fail
+  p0 -- envVerdict=warn --> confirm[confirm continue]
+  p0 -- envVerdict=pass --> g1
+  confirm --> g1
+
+  g1[Group 1<br/>Service Identity] --> g2[Group 2<br/>Azure DevOps] --> g3[Group 3<br/>Service Tree ID] --> g4[Group 4<br/>Topology + Pipelines + Kusto]
+  g4 --> g5a[Group 5a<br/>Notification Groups] --> g5b[Group 5b<br/>Notification Routing]
+  g5b --> g6[Group 6<br/>SafeFly / R2D] --> g7[Group 7<br/>Commit Excel]
+  g7 --> g8[Group 8<br/>SharePoint] --> g9[Group 9<br/>Operational Params]
+  g9 --> g10[Group 10<br/>Step Gates]
+  g10 --> gen[Generation:<br/>finalize defaults<br/>+ schema validate]
+  gen --> done([commit the two JSON files<br/>then run <code>setup</code>]):::ok
+
+  classDef fail fill:#3a0f12,stroke:#f85149,color:#fff;
+  classDef ok fill:#0a2e1a,stroke:#7ee787,color:#fff;
+    </pre>
+  </div>
+</section>
+
+<section id="groups">
+  <h2>2. What each group collects</h2>
+  <table>
+    <tr><th>Group</th><th>Writes to</th><th>Key fields</th></tr>
+    <tr><td><b>1</b> Service Identity</td><td>service-config.json</td><td><code>service.name</code>, <code>displayName</code>, <code>stampTag</code></td></tr>
+    <tr><td><b>2</b> Azure DevOps</td><td>service-config.json</td><td><code>ado.organization</code>, <code>project</code>, <code>repository</code>, <code>branchPrefix</code>, <code>baseBranch</code></td></tr>
+    <tr><td><b>3</b> Service Tree</td><td>service-config.json</td><td><code>serviceTreeIds.safefly</code> + EV2 cloud copies (one GUID → 4 fields)</td></tr>
+    <tr><td><b>4</b> Topology + Pipelines + Kusto</td><td>both files</td><td>13 sub-phases — see <a href="#phase4">below</a></td></tr>
+    <tr><td><b>5a</b> Notification Groups</td><td>service-config.json</td><td><code>notifications.groups.{permanent, cc, teams, teamsExtended}</code></td></tr>
+    <tr><td><b>5b</b> Notification Routing</td><td>service-config.json</td><td>16 steps × 3 outcomes (success / failure / halt) routing grid</td></tr>
+    <tr><td><b>6</b> SafeFly / R2D</td><td>service-config.json</td><td><code>safefly.{titleTemplate, tags, additionalNotifiers, monitoringLink}</code></td></tr>
+    <tr><td><b>7</b> Commit Excel</td><td>service-config.json</td><td><code>commitExcel.{sheetNameTemplate, sharePointFolder}</code></td></tr>
+    <tr><td><b>8</b> SharePoint</td><td>service-config.json</td><td><code>sharepoint.sitePath</code></td></tr>
+    <tr><td><b>9</b> Operational Params</td><td>service-config.json</td><td>timeouts, poll intervals, watcher prefix (defaults shown)</td></tr>
+    <tr><td><b>10</b> Step Gates</td><td>service-config.json</td><td>16-step gate ON/OFF matrix (step 14 always ON)</td></tr>
+  </table>
+</section>
+
+<section id="phase4">
+  <h2>3. Group 4 — the big one (13 sub-phases)</h2>
+  <p>Single contiguous block covering everything pipeline- and topology-related. Order matters: SDS is pinned <em>before</em> stamp-count prompts; prior-run branch is captured <em>before</em> YAML introspection.</p>
+  <div class="diagram"><span class="pan-hint">scroll to zoom · drag to pan</span>
+    <pre class="mermaid">
+flowchart TD
+  p41[4.1<br/>Pipeline identity<br/><i>name, id, key only</i>]
+  p42{4.2<br/>Routing mode<br/><b>static vs cluster-type</b>}
+  p43[4.3<br/>Prior-run analysis<br/><i>auto-3 + optional pin</i><br/>captures sourceBranch]
+  p44[4.4<br/>YAML introspection<br/><i>fetch + extract facts</i>]
+  p45[4.5<br/>SDS discovery<br/><i>pin Phobos 2022 file</i>]
+  p46[4.6<br/>Canary stamp set<br/><i>owner-declared regions</i>]
+  p47[4.7<br/>Production scope<br/><i>per-cloud stamp list</i>]
+  p48[4.8<br/>BVT Kusto<br/><i>query + filter</i>]
+  p49[4.9<br/>Cluster-type Kusto<br/><i>canary + production</i><br/><b>+ dry-run check</b>]
+  p410[4.10<br/>Param proposal<br/><i>per-pipeline review</i>]
+  p411[4.11<br/>Canary resolver<br/>+ dry-run]
+  p412[4.12<br/>Production resolver<br/>+ dry-run]
+  p413[4.13<br/>EV2 metadata]
+
+  p41 --> p42 --> p43 --> p44 --> p45 --> p46 --> p47 --> p48 --> p49 --> p410 --> p411 --> p412 --> p413
+
+  p42 -.skip per-pipeline clusterType<br/>if both modes static.-> p43
+  p49 -.skip entirely if both<br/>modes static.-> p410
+  p411 -. cluster-type mode only<br/>fires resolver .-> p411
+  p412 -. cluster-type mode only<br/>fires resolver .-> p412
+
+  style p42 fill:#2d2a14,stroke:#d29922
+  style p49 fill:#2d2a14,stroke:#d29922
+  style p410 fill:#0a2230,stroke:#58a6ff
+  style p411 fill:#0a2230,stroke:#58a6ff
+  style p412 fill:#0a2230,stroke:#58a6ff
+    </pre>
+  </div>
+
+  <p style="color: var(--muted); font-size: 13px; margin-top: 16px;">Expand any sub-phase below for the detailed step graph. <span style="color:#d29922">yellow</span> = owner prompt · <span style="color:#58a6ff">blue</span> = script · <span style="color:#7ee787">green</span> = decision · <span style="color:#c678dd">purple</span> = JSON write.</p>
+
+  <details>
+    <summary>4.1 — Pipeline identity</summary>
+    <p>Collects only <code>key</code>, <code>name</code>, <code>id</code> for: 1 official build, N canary, M production. No params, no clusterType yet.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  q1["ask: official build name + id"]:::prompt --> w1["write: officialBuild.{name,id}"]:::write
+  w1 --> q2["ask: how many canary pipelines?"]:::prompt
+  q2 --> loop1["per canary: ask key, name, id"]:::prompt
+  loop1 --> w2["write: canary.&lt;key&gt;.{name,id}"]:::write
+  w2 --> q3["ask: how many production pipelines?"]:::prompt
+  q3 --> loop2["per production: ask key, name, id"]:::prompt
+  loop2 --> w3["write: production.&lt;key&gt;.{name,id}"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.2 — Routing mode (load-bearing answer)</summary>
+    <p>Asks <code>static</code> vs <code>cluster-type</code> for canary, then separately for production. When <code>cluster-type</code>, also collects per-pipeline <code>clusterType</code> and builds <code>clusterTypeMap</code>. <b>Never auto-defaults.</b></p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  q1{{"ask: structured by<br/>region OR cluster-type?"}}:::decide
+  q1 -- "(a) region" --> wa["write: canaryRouting.mode=static<br/>productionRouting.mode=static"]:::write
+  wa --> done([continue to 4.3])
+  q1 -- "(b) cluster-type" --> wb["write: canaryRouting.mode=cluster-type"]:::write
+  wb --> q2{{"ask production separately:<br/>same split or static?"}}:::decide
+  q2 -- static --> wps["write: productionRouting.mode=static"]:::write
+  q2 -- cluster-type --> wpc["write: productionRouting.mode=cluster-type"]:::write
+  wps --> col1["per canary pipeline:<br/>ask clusterType"]:::prompt
+  wpc --> col1
+  wpc --> col2["per production pipeline:<br/>ask clusterType"]:::prompt
+  col1 --> wmap["write: canary.&lt;key&gt;.clusterType<br/>+ canaryRouting.clusterTypeMap"]:::write
+  col2 --> wmap2["write: production.&lt;key&gt;.clusterType<br/>+ productionRouting.clusterTypeMap"]:::write
+  wmap --> done
+  wmap2 --> done
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.3 — Prior-run analysis (auto-3 + optional pin)</summary>
+    <p><b>Step A:</b> always fetch last 3 successful runs. Branch capture uses <b>auto-3 only</b> — pinned runs can be months stale.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  s1["Read-PriorRun.ps1<br/>-Top 3 -ResultFilter succeeded"]:::script
+  s1 --> chk{{"&gt;0 runs returned?"}}:::decide
+  chk -- no --> warn["recap: no prior runs<br/>4.4/4.10 rely on YAML only"]:::write
+  chk -- yes --> br{{"sourceBranch agrees<br/>across 3 runs?"}}:::decide
+  br -- yes --> w1["write: yamlRepos.&lt;repo&gt;.baseBranch"]:::write
+  br -- no --> ask1["ask: which branch to use?"]:::prompt
+  ask1 --> w1
+  w1 --> sB{{"ask: pin a known-good run?"}}:::decide
+  warn --> sB
+  sB -- skip --> w2["write: _learnedFrom.runs (auto-3)"]:::write
+  sB -- pin --> ask2["ask: run IDs or URLs (CSV)"]:::prompt
+  ask2 --> s2["Read-PriorRun.ps1 -RunIds @(...)<br/>verify pipelineId + result=succeeded"]:::script
+  s2 --> okPin{{"all IDs valid?"}}:::decide
+  okPin -- no --> ask2
+  okPin -- yes --> w3["write: _learnedFrom.runs<br/>(pinned prepended, pinnedByOwner=true)"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.4 — YAML introspection</summary>
+    <p><code>Get-PipelineYamlIntrospection.ps1</code> is a <b>dumb extractor</b> — finds parameters, EV2 inputs, SDS hints, cloud convention. The agent does the judgment in 4.10.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  s1["Read-PipelineYaml.ps1<br/>GET /_apis/pipelines/{id}"]:::script
+  s1 --> prop["propose branch:<br/>1) yamlRepos cache (4.3)<br/>2) cfg.ado.baseBranch<br/>3) ADO default"]:::script
+  prop --> q1{{"ask: use this YAML?<br/>repo / path / branch"}}:::decide
+  q1 -- use this --> fetch["fetch YAML<br/>follow extends: chain"]:::script
+  q1 -- change branch --> ask1["ask: new branch name"]:::prompt
+  q1 -- different YAML --> ask2["ask: repo:branch:path"]:::prompt
+  q1 -- no YAML --> skip["write: _learnedFrom.yamlSource=absent"]:::write
+  ask1 --> fetch
+  ask2 --> fetch
+  fetch --> s2["Get-PipelineYamlIntrospection.ps1<br/><i>dumb extractor</i>"]:::script
+  s2 --> out["extracts:<br/>• cloudConvention, cloudsDetected<br/>• stampParamShape, defaults<br/>• ev2.* task block<br/>• sdsHint.{fileName,repoPath}<br/>• selfRepo.{name,baseBranch}<br/>• parameters[]"]:::write
+  out --> w["write: pipelines.&lt;key&gt;.yamlIntrospection"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.5 — SDS discovery</summary>
+    <p>Pins the Service Datacenter Settings JSON (Phobos 2022) referenced by each production pipeline. Used at runtime by <code>Get-StampInventory.ps1</code>.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  s1["locate SDS file<br/>(use sdsHint from 4.4)<br/>local clone → ADO Git items"]:::script
+  s1 --> q1["ask per pipeline:<br/>confirm SDS path?"]:::prompt
+  q1 --> w1["write: sds.&lt;key&gt;.{repo,branch,path,<br/>fileName,confirmedAt,confirmedBy}"]:::write
+  w1 --> s2["Get-StampInventoryFromSds.ps1 -Detect<br/>show mapping + sample values"]:::script
+  s2 --> ck{{"any sample null<br/>/ &lt;unresolved&gt;?"}}:::decide
+  ck -- yes --> q2["ask: dictate corrected<br/>dotted path"]:::prompt
+  q2 --> w2["write: sdsFieldMapping.&lt;key&gt;"]:::write
+  ck -- no --> smoke
+  w2 --> smoke["Get-StampInventoryFromSds.ps1<br/>(smoke test all clouds)"]:::script
+  smoke --> q3["ask: inventory.driftToleranceCount<br/>(default 0)"]:::prompt
+  q3 --> q4["ask: inventory.production.approvalRequired<br/>(recommended yes)"]:::prompt
+  q4 --> w3["write: inventory.driftToleranceCount<br/>+ inventory.production.approvalRequired"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.6 — Canary stamp set</summary>
+    <p>Owner declares region prefixes. Stamp list built via precedence: SDS → YAML defaults → grammar fallback.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  s1["Get-AzureServiceConfig.ps1<br/>(live → cache → snapshot)"]:::script
+  s1 --> q1["ask: canary region short names<br/>(comma list)"]:::prompt
+  q1 --> s2["resolve each token against<br/>ASC Clouds[].DataCenters[]"]:::script
+  s2 --> chk{{"matches found?"}}:::decide
+  chk -- 0 --> halt["halt + re-prompt"]:::write
+  chk -- "&gt;1 across clouds" --> q2["ask: which one is canary?"]:::prompt
+  chk -- 1 each --> chain
+  q2 --> chain
+  halt --> q1
+  chain{{"per cloud/region:<br/>stamp source?"}}:::decide
+  chain -- "1) SDS" --> sds["Get-StampInventoryFromSds.ps1<br/>-Cloud X -Region Y"]:::script
+  chain -- "2) YAML" --> yaml["read pipelines.&lt;canaryKey&gt;<br/>.yamlIntrospection.flatDefaults.stamps"]:::script
+  chain -- "3) grammar ⚠" --> q3["ask: indexes per region<br/>+ Add-Learning fallback"]:::prompt
+  sds --> valid["Get-StampInventory.ps1 -Scope canary<br/>(drift check)"]:::script
+  yaml --> valid
+  q3 --> valid
+  valid --> q4["ask: stamp list look right?<br/>Yes / Edit"]:::prompt
+  q4 -- edit --> q1
+  q4 -- yes --> w["write: inventory.canary.stamps[]<br/>+ regionPrefixHints"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.7 — Production scope</summary>
+    <p>Per-cloud stamp list — used by 4.12 dry-runs and by Step 15 drift detection.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  s1["Get-AzureServiceConfig.ps1<br/>(re-use 4.6 result)"]:::script
+  s1 --> q1["ask: pick production clouds<br/>(multi-select, exclude Canary/BVTD3)"]:::prompt
+  q1 --> w1["write: inventory.production.cloudsActive"]:::write
+  w1 --> loop[per chosen cloud]
+  loop --> chain{{"stamp source?"}}:::decide
+  chain -- "1) SDS" --> sds["Get-StampInventoryFromSds.ps1<br/>-Cloud X"]:::script
+  chain -- "2) YAML" --> yaml["perCloudDefaults.&lt;cloud&gt;"]:::script
+  chain -- "3) grammar ⚠" --> gram["ASC + grammar expansion<br/>+ Add-Learning"]:::script
+  sds --> show["show per-cloud scope:<br/>layout, regions, stamps"]:::script
+  yaml --> show
+  gram --> show
+  show --> q2["ask: Looks right / Edit regions /<br/>Edit stamps / Skip cloud"]:::prompt
+  q2 -- edit --> q2
+  q2 -- skip --> wskip["write: inventory.production.&lt;cloud&gt;<br/>= {skipped:true, reason}"]:::write
+  q2 -- looks right --> w2["write: inventory.production.&lt;cloud&gt;<br/>{layout, regions, stamps, _scopeFrom}"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.8 — BVT Kusto</summary>
+    <p><b>Hard rule:</b> always print full query verbatim. Optional dry-run via Kusto MCP.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  s1["print default .kql verbatim<br/>(hard rule)"]:::script
+  s1 --> s2["show column contract +<br/>required placeholders"]:::script
+  s2 --> q1{{"ask: is service Azure Backup?"}}:::decide
+  q1 -- yes --> wbk["write defaults:<br/>cluster=mabprod1<br/>db=AzureBackup<br/>queryFile=MAB-BVT-FailureAnalysis.kql"]:::write
+  wbk --> q2["ask: RESPONSIBLE_TEAM<br/>(only field)"]:::prompt
+  q2 --> wdone["write: kusto.bvt.queryVariables.RESPONSIBLE_TEAM"]:::write
+  q1 -- no --> qm["ask: choose mechanism<br/>(1) Custom Kusto query"]:::prompt
+  qm --> qa["ask: cluster, database"]:::prompt
+  qa --> qb{{"ask: Paste KQL or<br/>point at .kql file?"}}:::decide
+  qb -- paste --> qc["ask multi-line KQL<br/>write to queries/&lt;name&gt;-bvt.kql"]:::prompt
+  qb -- file --> qd["ask: relative path<br/>validate exists"]:::prompt
+  qc --> neg["negotiate placeholders:<br/>{{PIPELINE_TRIGGER_TIME}},<br/>{{RESPONSIBLE_TEAM}}, scoping,<br/>failure semantics, displayColumns"]:::prompt
+  qd --> neg
+  neg --> dr["optional dry-run via Kusto MCP<br/>ago(7d)"]:::script
+  dr --> wcustom["write: kusto.bvt.{cluster,database,<br/>queryFile,queryVariables,<br/>displayColumns,scopingNotes}"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.9 — Cluster-type detection Kusto (canary + production)</summary>
+    <p>Configures both halves. <b>Same hard rule</b> as 4.8. <b>Dry-run check</b> catches filter typos before they leak into 4.11/4.12.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  gate{{"both routing modes static?"}}:::decide
+  gate -- yes --> skip["SKIP Phase 4.9 entirely<br/>(can re-run later)"]:::write
+  gate -- no --> show["print default canary query<br/>verbatim (hard rule)"]:::script
+  show --> contract["show column + placeholder contract"]:::script
+  contract --> canQ{{"canaryRouting.mode<br/>= cluster-type?"}}:::decide
+  canQ -- no --> prodSec
+  canQ -- yes --> canFit{{"ask: Azure Backup schema fit?"}}:::decide
+  canFit -- yes --> wcan["write defaults:<br/>cluster=mabprod1<br/>db=MABKustoProd1<br/>queryFile=Canary-DeploymentUnits.kql<br/>clusterTypeExtraction=deployment-unit-substring"]:::write
+  wcan --> askF["ask: serviceFilter + stampPrefixFilter"]:::prompt
+  canFit -- no --> custom["walk custom-query flow<br/>(cluster, db, paste/file,<br/>extraction mode, resultColumns)"]:::prompt
+  custom --> dr1["dry-run check (recommended):<br/>print substituted query verbatim<br/>then Kusto MCP exec ago(7d)"]:::script
+  askF --> dr1
+  dr1 --> err{{"Kusto error?"}}:::decide
+  err -- yes --> edit["surface error verbatim<br/>owner edits file/filters<br/>re-run dry-run"]:::prompt
+  err -- no --> recap["recap rows + top-5 sample"]:::script
+  edit --> dr1
+  recap --> prodSec
+  prodSec{{"productionRouting.mode<br/>= cluster-type?"}}:::decide
+  prodSec -- no --> wfinal
+  prodSec -- yes --> wprod["write production defaults:<br/>auto-derive stampPrefixFilter from ASC<br/>(Public ShortNames)"]:::write
+  wprod --> askF2["ask: serviceFilter (only field)"]:::prompt
+  askF2 --> dr2["dry-run check (recommended):<br/>print + exec ago(7d)"]:::script
+  dr2 --> wfinal["write: kusto.canary.* / kusto.production.*"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.10 — Per-pipeline parameter proposal</summary>
+    <p>Single point of human approval. Reserved tokens replace literal stamp lists. Wildcard sentinel collapses <code>*</code>/<code>all</code>/empty by parameter-name prefix.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  base["baseline: union of YAML parameters<br/>(from 4.4)"]:::script
+  base --> mode["mode-of-values across prior runs<br/>(from 4.3)<br/>disagreement → mode-disagreement gap"]:::script
+  mode --> tok["reserved-token preservation:<br/>{{currentBranch}}, {{sdpType}},<br/>{{validateOnly}}"]:::script
+  tok --> det["canary/production stamp+region detection:<br/>literal subset of inventory<br/>→ replace with reserved token<br/>({{canaryStamps}}, {{pubRegions}}, etc.)"]:::script
+  det --> wild{{"wildcard sentinel?<br/>(*/all/ALL/empty/null<br/>+ Stamps|Regions in name)"}}:::decide
+  wild -- yes --> collapse["collapse to token by name prefix:<br/>canary→{{canaryStamps}}<br/>pub|public|prod→{{pubStamps}}<br/>ff|fairfax→{{ffStamps}}<br/>mc, usnat, ussec → ..."]:::script
+  wild -- no --> xc
+  collapse --> gap1["flag: agentGaps:<br/>wildcard-collapsed-to-token"]:::write
+  gap1 --> xc
+  xc["cluster-type cross-check:<br/>declared (4.2) vs inferred suffix<br/>(e.g. all values end -sfmc)"]:::script
+  xc --> gap2["flag: agentGaps:<br/>clusterType-mismatch (if disagree)"]:::write
+  gap2 --> uk["new YAML params w/o defaults:<br/>requiresOwnerInput=true"]:::script
+  uk --> render["render proposal block per pipeline:<br/>• token highlights + tooltips<br/>• clusterType line<br/>• Gaps section"]:::prompt
+  render --> q{{"ask: Accept / Edit / Reject /<br/>Show diff vs YAML defaults"}}:::decide
+  q -- edit --> editVal["ask: which key + new value"]:::prompt
+  editVal --> render
+  q -- reject --> legacy["fallback to legacy:<br/>paste-YAML / paste-JSON / manual"]:::prompt
+  q -- accept --> w["write:<br/>&lt;scope&gt;.&lt;key&gt;.templateParameters<br/>+ _learnedFrom + discoveryNotes<br/>+ agentGaps + clusterType (if inferred)"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.11 — Canary resolver + dry-run</summary>
+    <p>Queue+cancel per resolved pipeline. Review loop until owner says OK.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  mode{{"canaryRouting.mode?"}}:::decide
+  mode -- static --> stat["use full canary.* key set"]:::script
+  mode -- cluster-type --> verify{{"Phase 4.9 canary half<br/>complete?"}}:::decide
+  verify -- no --> halt["halt: re-run setup-service group 4.9"]:::write
+  verify -- yes --> res["Resolve-PipelinesByClusterType.ps1<br/>-Scope canary<br/>(uses 4.9 canary query)"]:::script
+  res --> recap["recap: resolved set,<br/>cluster types observed,<br/>skipped keys"]:::script
+  stat --> dr
+  recap --> dr["Invoke-PipelineDryRun.ps1<br/>per pipeline:<br/>POST run + immediate cancel<br/>returns {runId, droppedStamps, agentGaps}"]:::script
+  dr --> rev["Confirm-DryRunResults.ps1 -Mode render<br/>show verdict table"]:::script
+  rev --> q{{"owner verdict?"}}:::decide
+  q -- fix --> edit["ask: which key + new value<br/>re-resolve params"]:::prompt
+  edit --> dr
+  q -- ok --> w["Confirm-DryRunResults.ps1 -Mode record<br/>write audit + readiness.dryRun.reviewed<br/>(canary half)"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.12 — Production resolver + dry-run</summary>
+    <p>Mirror of 4.11. Writing the production dry-run review is the gate for <code>setupService.pass</code>.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  mode{{"productionRouting.mode?"}}:::decide
+  mode -- static --> stat["use full production.* key set"]:::script
+  mode -- cluster-type --> verify{{"Phase 4.9 production half<br/>complete?"}}:::decide
+  verify -- no --> halt["halt: re-run setup-service group 4.9"]:::write
+  verify -- yes --> res["Resolve-PipelinesByClusterType.ps1<br/>-Scope production"]:::script
+  res --> recap["recap resolved set"]:::script
+  stat --> dr
+  recap --> dr["Invoke-PipelineDryRun.ps1<br/>per cloud × pipeline:<br/>substitutes {{pubRegions}}, {{ffStamps}}, ...<br/>from inventory.production.&lt;cloud&gt; (4.7)"]:::script
+  dr --> rev["Confirm-DryRunResults.ps1 -Mode render"]:::script
+  rev --> q{{"owner verdict?"}}:::decide
+  q -- fix --> edit["edit value → re-queue"]:::prompt
+  edit --> dr
+  q -- ok --> w["Confirm-DryRunResults.ps1 -Mode record<br/>write readiness.dryRun.reviewed<br/>(production half)<br/>= GATE for setupService.pass"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>4.13 — EV2 metadata</summary>
+    <p>Cross-checked against 4.4's <code>cloudsDetected</code> — mismatches surface as discrepancies.</p>
+    <div class="diagram"><span class="pan-hint">scroll · drag</span>
+      <pre class="mermaid">
+flowchart TD
+  q1["ask per pipeline:<br/>ev2ServiceGroups.&lt;key&gt;"]:::prompt
+  q1 --> q2["ask per pipeline:<br/>ev2CloudCoverage.&lt;key&gt;<br/>(multi-select)"]:::prompt
+  q2 --> xc{{"matches yamlIntrospection<br/>.cloudsDetected (4.4)?"}}:::decide
+  xc -- no --> q3["ask: add to coverage OR<br/>remove from YAML?<br/>(audit yaml-coverage-discrepancy)"]:::prompt
+  xc -- yes --> reuse
+  q3 --> reuse["serviceTreeIds.ev2.&lt;cloud&gt;:<br/>reuse Group 3 GUID<br/>only ask if missing cloud"]:::script
+  reuse --> ck{{"any cloud missing<br/>from serviceTreeIds.ev2?"}}:::decide
+  ck -- yes --> qST["ask: EV2 Service Tree ID<br/>(per missing cloud)"]:::prompt
+  qST --> w
+  ck -- no --> w
+  w["write: ev2ServiceGroups<br/>+ ev2CloudCoverage<br/>+ serviceTreeIds.ev2.&lt;cloud&gt; (if added)"]:::write
+classDef prompt fill:#3a2a0f,stroke:#d29922,color:#fff
+classDef script fill:#0a2230,stroke:#58a6ff,color:#fff
+classDef decide fill:#0a2e1a,stroke:#7ee787,color:#fff
+classDef write fill:#2a1a35,stroke:#c678dd,color:#fff
+      </pre>
+    </div>
+  </details>
+</section>
+
+<section id="routing">
+  <h2>4. Routing decision (Phase 4.2) — the load-bearing answer</h2>
+  <div class="diagram"><span class="pan-hint">scroll to zoom · drag to pan</span>
+    <pre class="mermaid">
+flowchart TD
+  q[/Pipelines structured by:/]
+  q --> a[by region/stamp only]
+  q --> b[by cluster type<br/>SFMC + SFRP etc.]
+
+  a --> as[canaryRouting.mode = static<br/>productionRouting.mode = static]
+  as --> noClusterType[skip per-pipeline clusterType<br/>skip Phase 4.9]
+
+  b --> bask[ask production separately:<br/>same split or static?]
+  bask --> bsp[productionRouting.mode = static]
+  bask --> bcp[productionRouting.mode = cluster-type]
+
+  bsp --> collectC[collect canary.&lt;key&gt;.clusterType<br/>for each canary pipeline]
+  bcp --> collectCP[collect canary AND production<br/>per-pipeline clusterType]
+
+  collectC --> p49[Phase 4.9 canary half only]
+  collectCP --> p49b[Phase 4.9 both halves]
+
+  style q fill:#2d2a14,stroke:#d29922
+  style p49 fill:#0a2230,stroke:#58a6ff
+  style p49b fill:#0a2230,stroke:#58a6ff
+    </pre>
+  </div>
+</section>
+
+<section id="stamps">
+  <h2>5. Stamp source-of-truth precedence</h2>
+  <p>Wherever a stamp list is needed (4.6, 4.7, runtime), the agent walks this chain top-down. First non-empty hit wins.</p>
+  <div class="diagram"><span class="pan-hint">scroll to zoom · drag to pan</span>
+    <pre class="mermaid">
+flowchart LR
+  k[1. Kusto live query<br/><i>strongest evidence</i><br/>Public cloud only]
+  s[2. SDS Phobos 2022<br/><i>authoritative declared</i><br/>covers sovereign clouds]
+  y[3. YAML hardcoded defaults<br/><i>flatDefaults / perCloudDefaults</i>]
+  g[4. AzureServiceConfig + grammar<br/><i>last resort, warning surfaced</i>]
+
+  k -- miss --> s
+  s -- miss --> y
+  y -- miss --> g
+
+  k --> hit1([use these stamps])
+  s --> hit1
+  y --> hit1
+  g --> hit2([use + log fallback learning])
+
+  style k fill:#0a2e1a,stroke:#7ee787
+  style g fill:#3a2a0f,stroke:#d29922
+    </pre>
+  </div>
+</section>
+
+<section id="dryrun">
+  <h2>6. Dry-run pipeline (Phase 4.10 → 4.11 → 4.12)</h2>
+  <p>Sequence: parameter proposal → owner accepts → resolver picks pipelines (if cluster-type) → queue+cancel via ADO → review verdict → loop until OK.</p>
+  <div class="diagram"><span class="pan-hint">scroll to zoom · drag to pan</span>
+    <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant O as Release Owner
+  participant A as Agent
+  participant R as Resolve-TemplateParams.ps1
+  participant K as Kusto MCP
+  participant D as Invoke-PipelineDryRun.ps1
+  participant ADO as Azure DevOps API
+  participant C as Confirm-DryRunResults.ps1
+  participant W as Write-Readiness.ps1
+
+  Note over A: Phase 4.10 — per pipeline
+  A->>A: merge YAML params + prior-run values
+  A->>A: detect stamp/region params → reserved tokens
+  A->>O: render proposal block + Accept/Edit/Reject
+  O-->>A: Accept
+
+  Note over A: Phase 4.11 — canary
+  A->>K: run Phase 4.9 canary query (cluster-type mode)
+  K-->>A: live cluster types
+  A->>R: resolve templateParameters per pipeline
+  R-->>A: token-substituted params + droppedStamps + agentGaps
+  A->>D: queue dry-run
+  D->>ADO: POST /pipelines/{id}/runs
+  ADO-->>D: 200 + runId
+  D->>ADO: PATCH /runs/{runId} cancel
+  D-->>A: { runId, droppedStamps, agentGaps }
+
+  A->>C: render verdict table
+  C-->>O: show table + ask verdict
+  O-->>C: ok / fix / re-run
+  alt verdict = fix
+    O->>A: edit value
+    A->>D: re-queue
+  else verdict = ok
+    C->>W: write readiness.dryRun.reviewed = true
+  end
+
+  Note over A: Phase 4.12 — production (mirror)
+  A->>K: run Phase 4.9 production query
+  Note over A,W: same loop as 4.11
+
+  W->>W: gate: refuse setupService.pass<br/>unless dryRun.executed && reviewed
+    </pre>
+  </div>
+</section>
+
+<section id="readiness">
+  <h2>7. Readiness state machine</h2>
+  <p><code>Write-Readiness.ps1</code> is the only writer. <code>setupService.status='pass'</code> is gated on dry-run completion.</p>
+  <div class="diagram"><span class="pan-hint">scroll to zoom · drag to pan</span>
+    <pre class="mermaid">
+stateDiagram-v2
+  [*] --> empty
+  empty --> preflight_ok: test-preflight passes
+  preflight_ok --> config_collected: groups 1–4.9 done
+  config_collected --> dryRun_executed: 4.11/4.12 queue+cancel succeed
+  dryRun_executed --> dryRun_reviewed: owner verdict = ok
+  dryRun_reviewed --> setupService_pass: gate check OK
+  setupService_pass --> [*]
+
+  config_collected --> dryRun_executed: pipelinesQueued >= consented
+  dryRun_executed --> dryRun_executed: verdict = fix<br/>(re-queue)
+
+  note right of setupService_pass
+    Write-Readiness refuses pass
+    unless dryRun.executed
+    && dryRun.reviewed
+    && pipelinesQueued >= consented
+    Refusals mirrored to audit.jsonl
+    as readiness-gate-refused
+  end note
+    </pre>
+  </div>
+</section>
+
+<section id="legend">
+  <h2>8. Legend + conventions</h2>
+  <div class="legend">
+    <span class="lg-gate">Gate / decision point</span>
+    <span class="lg-script">Script invocation</span>
+    <span class="lg-prompt">Owner prompt (<code>ask_user</code>)</span>
+    <span class="lg-write">File write (per-answer)</span>
+    <span class="lg-fail">Halt / failure path</span>
+  </div>
+  <div class="callout">
+    <b>Incremental persistence rule:</b> Every <code>ask_user</code> answer is written to disk <em>before</em> the next prompt. Buffering answers in memory and dumping at the end is a bug. The chat session being killed mid-wizard never loses an answer; re-running <code>setup-service</code> picks up exactly where it left off.
+  </div>
+  <div class="callout">
+    <b>Script vs AI:</b> Scripts are <em>dumb extractors</em> (find params, find EV2 inputs, find SDS references, return JSON). The agent is the <em>judge</em> (decide what those facts mean, propose params, detect drift, render diffs). Clean separation — deterministic where it matters, flexible where it helps.
+  </div>
+</section>
+
+</main>
+
+<div class="footer">
+  Generated <span id="ts"></span> · source: <a href="./.github/skills/setup-service/SKILL.md">SKILL.md</a> · diagrams: <a href="https://mermaid.js.org">Mermaid</a>
+</div>
+
+<script>
+  document.getElementById('ts').textContent = new Date().toISOString().slice(0, 10);
+
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#161b22',
+      primaryColor: '#1c2128',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#30363d',
+      lineColor: '#8b949e',
+      secondaryColor: '#0a2230',
+      tertiaryColor: '#0a2e1a',
+      fontSize: '14px'
+    },
+    flowchart: { curve: 'basis', htmlLabels: true, useMaxWidth: false },
+    sequence: { useMaxWidth: false, mirrorActors: false }
+  });
+
+  mermaid.run().then(() => {
+    // Add pan/zoom to every rendered SVG
+    document.querySelectorAll('.diagram svg').forEach(svg => {
+      svg.style.maxWidth = '100%';
+      svg.style.height = 'auto';
+      try {
+        svgPanZoom(svg, {
+          zoomEnabled: true,
+          controlIconsEnabled: false,
+          mouseWheelZoomEnabled: true,
+          panEnabled: true,
+          fit: true,
+          center: true,
+          minZoom: 0.5,
+          maxZoom: 8
+        });
+      } catch (e) { /* ignore */ }
+    });
+  });
+</script>
+
+</body>
+</html>

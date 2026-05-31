@@ -152,7 +152,7 @@ Tell the release owner: *"You can find your Service Tree ID at https://microsoft
 
 Group 4 is the **single contiguous wizard block** covering everything pipeline- and topology-related: pipeline identity, routing mode, evidence-driven parameter discovery, the cloud-agnostic SDS stamp source, canary + production stamp lists, Kusto detection queries, dry-run validation, and EV2 metadata. It collapses the previously separate Kusto/stamps and pipeline-catalog sections into one ordered flow so that:
 
-- **SDS** (Service Datacenter Settings, the cloud-agnostic stamp source) is discovered **before** the wizard asks "how many stamps per region?" — eliminating the old `4d` ordering bug that assumed one stamp per region.
+- **SDS** (Service Datacenter Settings, the cloud-agnostic stamp source) is discovered **before** the wizard asks "how many stamps per region?" — eliminating a ordering bug that assumed one stamp per region.
 - **Prior-run `sourceBranch`** is captured **before** YAML introspection, so `Get-PipelineYamlIntrospection.ps1` reads the branch the team actually develops on, not the pipeline definition's stale default.
 - Owner-facing prompts use plain words — `stamp list`, `current scope`, `AzureServiceConfig`, `datacenter` — rather than the older internal jargon (`snapshot`, `ASC`, `DC`).
 
@@ -240,10 +240,19 @@ $runs = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
 
 The script returns normalized objects: `{ runId, runUrl, finishedAt, sourceBranch, templateParameters }`. If fewer than 3 runs exist (new pipeline), return whatever's available; if zero, tell the owner *"No prior successful runs found for `{key}` — I'll rely on YAML only in Phase 4.4 / 4.10 and lean more heavily on your review."*
 
-**Step B — optional pinned reference run.** After Step A returns, ask via `ask_user`:
+**Branch capture (auto-3 only)** — immediately after Step A returns, inspect `$runs[*].sourceBranch`. This step uses **only the auto-fetched runs** (not any pinned reference run added in Step B) because a pinned run can be months stale and on a long-lived release branch, which would mislead Phase 4.4's YAML fetch:
+
+- **If all observed branches agree** AND the runs target the wizard's `selfRepo` (the repo whose YAML the pipeline reads), persist that branch as `yamlRepos.<selfRepo>.baseBranch` so Phase 4.4's YAML fetch reads the correct branch. Recap: *"Captured `sourceBranch = <branch>` from `<N>` recent runs of `<key>` — Phase 4.4 will read YAML from this branch."*
+- **If branches disagree** across the 3 runs (e.g., some on `develop`, some on a release branch), surface the disagreement and ask the owner to pick one:
+  > *"The last 3 runs of `{key}` queued from different source branches: `{branch_a}` (×2), `{branch_b}` (×1). Which branch do you want me to introspect the YAML from for parameter discovery?"*
+
+  Persist the owner's choice to `yamlRepos.<selfRepo>.baseBranch`.
+- **If runs target a different repo** (cross-repo pipeline), record `_learnedFrom.crossRepo = true` against this pipeline key and leave `yamlRepos` alone — Phase 4.4 will handle the cross-repo branch confirmation per-repo.
+
+**Step B — optional pinned reference run.** After Branch capture completes, ask via `ask_user`:
 
 > *"For `{key}` (`{name}`), do you want to pin a specific known-good production run as an additional reference (e.g., the last clean release)? Paste run IDs / URLs, or skip."*
-> Choices: `Pin a run`, `Skip — auto-3 is enough`
+> Choices: `Pin a run`, `Skip`
 
 **On `Pin a run`** — collect a comma-separated list of run IDs or full ADO run URLs via `ask_user`. Parse each entry (extract the integer `runId` from URLs of the form `…/_build/results?buildId=<id>`), then resolve through `Read-PriorRun.ps1` in single-run mode:
 
@@ -257,16 +266,7 @@ $pinned = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
 
 For each ID, verify it (a) belongs to this `PipelineId`, (b) has `result = succeeded`. If any fail those checks, surface the exact reason (*"Run 28471 belongs to pipeline 3528, not 3527"* / *"Run 28471 finished with `result = failed`"*) and re-prompt — correct the list or skip pinning.
 
-Tag pinned entries with `pinnedByOwner = true` and **prepend** them to the run set (pinned first, then auto-3). Phase 4.10's tiebreaker for conflicting parameter values prefers pinned runs over auto runs.
-
-**Branch capture (new behavior)** — after the runs are returned, inspect `$runs[*].sourceBranch`:
-
-- **If all observed branches agree** AND the runs target the wizard's `selfRepo` (the repo whose YAML the pipeline reads), persist that branch as `yamlRepos.<selfRepo>.baseBranch` so Phase 4.4's YAML fetch reads the correct branch. Recap: *"Captured `sourceBranch = <branch>` from `<N>` recent runs of `<key>` — Phase 4.4 will read YAML from this branch."*
-- **If branches disagree** across the 3 runs (e.g., some on `develop`, some on a release branch), surface the disagreement and ask the owner to pick one:
-  > *"The last 3 runs of `{key}` queued from different source branches: `{branch_a}` (×2), `{branch_b}` (×1). Which branch do you want me to introspect the YAML from for parameter discovery?"*
-
-  Persist the owner's choice to `yamlRepos.<selfRepo>.baseBranch`.
-- **If runs target a different repo** (cross-repo pipeline), record `_learnedFrom.crossRepo = true` against this pipeline key and leave `yamlRepos` alone — Phase 4.4 will handle the cross-repo branch confirmation per-repo.
+Tag pinned entries with `pinnedByOwner = true` and **prepend** them to the run set (pinned first, then auto-3). Phase 4.10's tiebreaker for conflicting parameter values prefers pinned runs over auto runs. Pinned runs do **not** influence `yamlRepos.<selfRepo>.baseBranch` — Branch capture above already locked that in from the auto-3 evidence.
 
 Persist the normalized run objects under `<scope>.<key>._learnedFrom.runs` so Phase 4.10 can read them without re-fetching.
 
@@ -550,6 +550,8 @@ Prerequisite: `service.stampTag` (Group 1), Phase 4.5 (SDS pinned), and Phase 4.
 
 The agent runs a built-in BVT failure-analysis query to decide whether canary BVTs passed. The default query expects a specific schema. Walk the release owner through it before asking for cluster details:
 
+> **Hard rule — always show the query**: Whenever the agent references, discusses, validates, or dry-runs a Kusto query in this phase, it MUST display the full query text in a fenced `kql` code block. Never summarize, paraphrase, or refer to a query without printing it verbatim first. This applies to: the default query (step 1), any pasted custom query (step B.4), any file-based query (step B.5), and the dry-run execution (step B.7).
+
 1. **Show the default query** by reading `.github/skills/zed-agent/queries/<default file>.kql` from disk and printing it verbatim in a fenced code block. If no default file exists in the repo yet, show the canonical version from the BVT Failure Analysis section of this spec.
 2. **Show the required column contract** the agent depends on for downstream logic:
    ```
@@ -665,7 +667,9 @@ Both halves are persisted under `kusto.canary.*` / `kusto.production.*` and used
 
    **(B) `No — Use a different query`** — walk the owner through the custom-query flow (cluster, database, paste-vs-file, scoping reconciliation, `clusterTypeExtraction` mode selection, `resultColumns`). Persist under `kusto.canary.*`.
 
-5. **Hard reminder** before finishing the canary half:
+5. **Dry-run check (recommended)** — before finishing the canary half, offer to execute the finalized query once via the Kusto MCP against `kusto.canary.cluster` / `kusto.canary.database`, substituting `{{SERVICE_FILTER}}` and `{{STAMP_PREFIX_FILTER}}` with the collected values and using `ago(7d)` for any time window. **Always print the substituted query verbatim in a fenced `kql` code block before executing** (per the Phase 4.8 hard rule — same applies here). On success, recap row count and the distinct `StampName` / `DeploymentUnit` sample (top 5) so the owner can sanity-check shape. On error, surface the Kusto error verbatim and let the owner edit `kusto.canary.queryFile` / `serviceFilter` / `stampPrefixFilter` and re-run the dry-run. Ask via `ask_user` whether to run it: `Yes — dry-run now`, `Skip — I'll trust the values`.
+
+6. **Hard reminder** before finishing the canary half:
    > ⚠️ **Contract**: Steps 5/7/10 will run this query verbatim, substituting `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}` / any custom placeholders. The agent then (a) extracts the SET of cluster types via `kusto.canary.clusterTypeExtraction` and intersects with `canaryRouting.clusterTypeMap` (Phase 4.2) to pick canary pipelines, and (b) joins rows back by `StampName` to fill `inventory.canary.stamps[*].clusterType`. Edit `.github/skills/zed-agent/queries/{queryFile}` any time — the agent re-reads it on every run.
 
 **Production half** (only when `productionRouting.mode == "cluster-type"`):
@@ -683,6 +687,7 @@ Mirrors the canary half but persists under `kusto.production.*`. Defaults differ
   4. Recap: *"Auto-filled `kusto.production.stampPrefixFilter` from AzureServiceConfig Public cloud (N short names). Edit `service-config.json` directly any time to add/remove entries — the wizard will not overwrite a non-empty value on re-run."*
   5. **Sovereign clouds note**: this query covers Public only — Fairfax / Mooncake / USNat / USSec stamps live in AME-tenant Kusto this agent cannot reach. SDS (Phase 4.5) is the stamp source for them; cluster-type for sovereign-cloud stamps remains out-of-band (mechanism TBD).
 - Ask only `kusto.production.serviceFilter`.
+- **Dry-run check (recommended)** — same shape as the canary half: offer to execute the finalized production query once via the Kusto MCP against `kusto.production.cluster` / `kusto.production.database`, substituting `{{SERVICE_FILTER}}` / `{{STAMP_PREFIX_FILTER}}` and using `ago(7d)`. **Always print the substituted query verbatim in a fenced `kql` code block before executing.** Recap row count + sample `StampName` / `DeploymentUnit` on success; surface the Kusto error verbatim on failure and let the owner edit the file / filters and re-run. Ask via `ask_user`: `Yes — dry-run now`, `Skip — I'll trust the values`.
 
 > ⚠️ **Contract**: Step 10 (Roll-Forward) and Step 15 (Production Rollout) will invoke `Resolve-PipelinesByClusterType.ps1 -Scope production` **once per release** — not per cloud. The resolver runs this query verbatim, extracts cluster types, and intersects with `productionRouting.clusterTypeMap` to decide which production pipeline(s) to trigger. Each resolved pipeline then pushes to whichever clouds are listed under `ev2CloudCoverage.<key>` (Phase 4.13).
 

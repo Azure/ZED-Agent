@@ -103,6 +103,30 @@ $description = if ($CommitExcelUrl) { "<a href='$CommitExcelUrl'>Commit Analysis
 # --- Build test results URL ---
 $testUrl = "https://$($cfg.ado.organization).visualstudio.com/$($cfg.ado.project)/_build/results?buildId=$BuildId&view=ms.vss-test-web.build-test-results-tab"
 
+# --- Reconcile targeted regions against SafeFly's accepted region enum ---
+# SafeFly's region enum drifts behind ASC/Get-RegionMapping: some names differ and
+# some newer regions aren't onboarded yet. Dropping the known-unsupported names
+# prevents the R2D filing from 400ing whenever ASC adds a region SafeFly hasn't
+# onboarded. (Ideal: fetch SafeFly's allowed list and intersect; this static list
+# captures the drift observed 2026-07 during TEST-2026-07-i1 — extend as harvested.)
+$safeFlyUnsupportedRegions = @(
+    'Denmark East', 'India South Central', 'Northeast US 5', 'Saudi Arabia East',
+    'Southeast Asia 3', 'Southeast US 5', 'Southwest US', 'USSec West Central',
+    'West Central US FRE'
+)
+if ($TargetedRegions) {
+    $before = @($TargetedRegions).Count
+    $TargetedRegions = @($TargetedRegions | Where-Object { $safeFlyUnsupportedRegions -notcontains $_ })
+    $dropped = $before - @($TargetedRegions).Count
+    if ($dropped -gt 0) { Write-Host "  [SafeFly] dropped $dropped region(s) not in SafeFly's enum (submitting $(@($TargetedRegions).Count))" -ForegroundColor DarkYellow }
+}
+
+# --- Resolve SafeFly service group (service-agnostic: must come from config, never hard-coded) ---
+$serviceGroupName = $cfg.safefly.serviceGroupName
+if ([string]::IsNullOrWhiteSpace($serviceGroupName)) {
+    throw "safefly.serviceGroupName is missing from service-config.json. It is the service's registered SafeFly/EV2 DeploymentTool service group (e.g. 'Backup (MAB)'). Add it via setup-service — ZED must not assume a service group."
+}
+
 # --- Build the full payload ---
 $payload = @{
     OrgName       = $OrgName
@@ -112,7 +136,7 @@ $payload = @{
     # People & risk
     ResponsibleEM       = $ReleaseOwnerAlias
     TeamAssessedRisk    = $TeamAssessedRisk
-    AdditionalNotifiers = ($cfg.safefly.additionalNotifiers -join '; ')
+    AdditionalNotifiers = @($cfg.safefly.additionalNotifiers)
 
     # Deployment details
     DeploymentDetails = @{
@@ -121,7 +145,7 @@ $payload = @{
         ADOBuildId           = $BuildId
         DeploymentTool       = "EV2"
         DeploymentToolInputs = @{
-            ServiceGroupName = "Backup (MAB)"
+            ServiceGroupName = $serviceGroupName
             BuildNumber      = $BuildNumber
         }
     }
@@ -155,7 +179,7 @@ $payload = @{
     PreProdTesting = @(
         @{
             PreProdTestingType   = "End to End Testing"
-            PreProdTestingDetail = "<a href='https://apps.powerapps.com/play/e/e0ca1138-391d-e478-ac51-cc525c75c801/a/46095e8c-bb8a-4c92-bf51-a7ad2df04396?&source=portal'>BVT Dashboard</a>"
+            PreProdTestingDetail = "https://apps.powerapps.com/play/e/e0ca1138-391d-e478-ac51-cc525c75c801/a/46095e8c-bb8a-4c92-bf51-a7ad2df04396?&source=portal"
         }
     )
 

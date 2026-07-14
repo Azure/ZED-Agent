@@ -1,0 +1,119 @@
+{
+  "$schema": "./pipeline-catalog.schema.json",
+  "description": "ZedForge pre-filled pipeline catalog seed for Mgmt-RecoverySvcs-BackupDataPlane. Copied into the target repo before every validation run. STATIC routing (all canary.* and all production.* are triggered). Canary/production ids + parameter shapes were extracted from the GOLDEN reference runs (see requirements/reference-runs.json). Variant values use reserved {{tokens}} resolved by ZED's Resolve-TemplateParams; fixed values are literals in the golden syntax (@(\"x\") arrays, regions(...) lists).",
+  "_setup": {
+    "READ_ME": "All pipeline ids are REAL: canary/production from the golden reference runs; officialBuild=282413 (Official-CloudBuild). DT-* variants (DT-SFMC 421110 / DT-SFRP 395577 canary; DTPROT-SFMC 421108 / DTPROT-SFRP 403182 prod) can be added from requirements/reference-runs.json. Full per-pipeline parameter sets are cached there.",
+    "idsFilled": true,
+    "officialBuildIdPending": false,
+    "staticParams": "Stamp/region/exclude/SdpType values are STATIC golden (from reference-runs.json); only {{currentBranch}} and {{validateOnly}} are dynamic (proven approach, learning d8d18b57). isc-01/ne5s-01 removed from SFMC excludes + their regions (indiasouthcentral,northeastus5) added (onboarded). Owner updates per-release CCOA excludes + region deltas."
+  },
+  "ev2ServiceTreeIds": {
+    "Prod": "00000000-0000-0000-0000-000000000000"
+  },
+  "ev2ServiceGroups": {
+    "PROT-SFMC": "Microsoft.Azure.Backup.Service.Component.ACTIVE",
+    "PROT-SFRP": "Microsoft.Azure.Backup.Service.Component.ACTIVE"
+  },
+  "ev2CloudCoverage": {
+    "PROT-SFMC": [
+      "Prod",
+      "Fairfax"
+    ],
+    "PROT-SFRP": [
+      "Prod",
+      "Fairfax"
+    ]
+  },
+  "officialBuild": {
+    "name": "Mgmt-RecoverySvcs-BackupDataPlane-Official-CloudBuild",
+    "id": 282413,
+    "sourceBranch": "refs/heads/{{currentBranch}}",
+    "templateParameters": {
+      "CloudBuildQueue": "CDP_Mgmt-RecoverySvcs-BackupDataPlane_Official-MSBuild",
+      "debug": "False"
+    }
+  },
+  "canary": {
+    "PROT-SFMC": {
+      "name": "Mgmt-RecoverySvcs-BackupDataPlane-PROT-SF-Service-Upgrade-Canary-SDP-SFMC",
+      "id": 421103,
+      "sourceBranch": "refs/heads/{{currentBranch}}",
+      "clusterType": "sfmc",
+      "templateParameters": {
+        "ArtifactsBranch": "{{currentBranch}}",
+        "CanaryScript": "true",
+        "Canarystamps": "@(\"ea-01\")",
+        "CanaryRegions": "regions(eastasia)",
+        "CanarystampsProd": "@(\"ecy-01\",\"ccy-01\")",
+        "ValidateOnlyRollOut": "{{validateOnly}}",
+        "rolloutType": "normal"
+      }
+    },
+    "PROT-SFRP": {
+      "name": "Mgmt-RecoverySvcs-BackupDataPlane-PROT-SF-Service-Upgrade-Canary-SDP",
+      "id": 403183,
+      "sourceBranch": "refs/heads/{{currentBranch}}",
+      "clusterType": "sfrp",
+      "templateParameters": {
+        "ArtifactsBranch": "{{currentBranch}}",
+        "CanaryScript": "false",
+        "Canarystamps": "@()",
+        "CanaryRegions": "regions()",
+        "CanarystampsProd": "@(\"ecy-01\")",
+        "ValidateOnlyRollOut": "{{validateOnly}}",
+        "rolloutType": "normal"
+      }
+    }
+  },
+  "production": {
+    "PROT-SFMC": {
+      "name": "Mgmt-RecoverySvcs-BackupDataPlane-PROT-SF-Service-Upgrade-PROD-SDP-SFMC",
+      "id": 421104,
+      "sourceBranch": "refs/heads/{{currentBranch}}",
+      "clusterType": "sfmc",
+      "templateParameters": {
+        "ArtifactsBranch": "{{currentBranch}}",
+        "PublicScript": "True",
+        "Publicstamps": "*",
+        "PublicExcludestamps": "@()",
+        "PubRegions": "regions(eastus2euap,centraluseuap,eastasia,westcentralus,australiaeast,australiacentral,australiasoutheast,canadaeast,northcentralus,norwayeast,southafricanorth,swedencentral,switzerlandnorth,ukwest,australiacentral2,centralus,francecentral,germanynorth,japanwest,polandcentral,swedensouth,westus3,westus,westeurope,brazilsoutheast,chilecentral,canadacentral,francesouth,malaysiasouth,malaysiawest,norwaywest,newzealandnorth,taiwannorth,indonesiacentral,italynorth,mexicocentral,spaincentral,taiwannorthwest,uksouth,southeastasia,southeastus,koreacentral,centralindia,indiasouthcentral,northeastus5)",
+        "PubExcludeRegions": " ",
+        "FFScript": "True",
+        "FFstamps": "@(\"uga-01\")",
+        "FFRegions": "regions(usgovarizona)",
+        "SdpType": "Standard",
+        "ValidateOnlyRollOut": "{{validateOnly}}",
+        "rolloutType": "normal"
+      }
+    },
+    "PROT-SFRP": {
+      "name": "Mgmt-RecoverySvcs-BackupDataPlane-PROT-SF-Service-Upgrade-PROD-SDP",
+      "id": 403190,
+      "sourceBranch": "refs/heads/{{currentBranch}}",
+      "clusterType": "sfrp",
+      "templateParameters": {
+        "ArtifactsBranch": "{{currentBranch}}",
+        "PublicScript": "True",
+        "Publicstamps": "*",
+        "PublicExcludestamps": "@()",
+        "PubRegions": "regions(eastus2euap,westcentralus,brazilsouth,eastus2,eastus,germanywestcentral,southindia,westindia,jioindiacentral,jioindiawest,japaneast,koreasouth,northeurope,southafricawest,southcentralus,switzerlandwest,westeurope,westus2,austriaeast,southeastus3,southcentralus2,belgiumcentral,denmarkeast,southwestus,southeastus5,eastus3)",
+        "PubExcludeRegions": " ",
+        "FFScript": "True",
+        "FFstamps": "*",
+        "FFRegions": "regions(usdodcentral,usdodeast,usgovtexas,usgovvirginia)",
+        "SdpType": "Standard",
+        "ValidateOnlyRollOut": "{{validateOnly}}",
+        "rolloutType": "normal"
+      }
+    }
+  },
+  "canaryRouting": {
+    "mode": "static",
+    "clusterTypeMap": {}
+  },
+  "productionRouting": {
+    "mode": "static",
+    "clusterTypeMap": {}
+  },
+  "yamlRepos": {}
+}

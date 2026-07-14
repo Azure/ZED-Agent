@@ -331,7 +331,7 @@
     "safefly": {
       "type": "object",
       "description": "SafeFly change-request configuration.",
-      "required": ["titleTemplate", "descriptionTemplate", "tags"],
+      "required": ["titleTemplate", "descriptionTemplate", "tags", "serviceGroupName"],
       "additionalProperties": true,
       "properties": {
         "titleTemplate": {
@@ -359,6 +359,42 @@
           "type": "string",
           "description": "Monitoring dashboard URL (e.g., Geneva MDM monitors link).",
           "format": "uri"
+        },
+        "serviceGroupName": {
+          "type": "string",
+          "description": "SafeFly DeploymentToolInputs ServiceGroupName — the service's registered EV2/SafeFly deployment-tool service group (e.g. 'Backup (MAB)'). Service-specific; ZED reads this from config and must never hard-code it.",
+          "minLength": 1
+        }
+      }
+    },
+
+    "regions": {
+      "type": "object",
+      "description": "Region source-of-truth for deployment/SafeFly region discovery (consumed by Get-RegionMapping.ps1). Service-specific; ZED reads these instead of hard-coding a region source.",
+      "additionalProperties": true,
+      "properties": {
+        "ascRepo": {
+          "type": "string",
+          "description": "ADO repo (in msazure/One) holding the AzureServiceConfig.json region source-of-truth."
+        },
+        "ascPath": {
+          "type": "string",
+          "description": "Path within ascRepo to AzureServiceConfig.json."
+        },
+        "ascBranch": {
+          "type": "string",
+          "description": "Branch of ascRepo to fetch from (e.g. 'develop')."
+        },
+        "supplementaryRegions": {
+          "type": "array",
+          "description": "SafeFly-only regions without physical deployment stamps, not yet in ASC. Each item: { DataCenterName, RegionShortName }.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "DataCenterName":  { "type": "string" },
+              "RegionShortName": { "type": "string" }
+            }
+          }
         }
       }
     },
@@ -640,6 +676,11 @@
       "type": "string",
       "description": "Email address that receives feedback about the ZED agent itself. Hardcoded to the agent author; do not change.",
       "default": "gwazire@microsoft.com"
+    },
+    "stampPrefixToRegion": {
+      "type": "object",
+      "description": "Optional service-specific map from a stamp-name PREFIX to its Azure region short name, e.g. { \"isc\": \"indiasouthcentral\", \"ne5s\": \"northeastus5\", \"uae\": \"uaecentral\", \"ilc\": \"israelcentral\", \"qac\": \"qatarcentral\" }. Stamps are named {prefix}-{layout}-{serviceTag}{n} and the prefix is NOT always the literal region code (e.g. 'uae' maps to uaecentral via short code 'uac'). Steps that add a stamp's region to a pipeline's PubRegions (onboarding/reclassifying a stamp) look the region up here instead of guessing. Service-agnostic — each service supplies its own map.",
+      "additionalProperties": { "type": "string" }
     }
   }
 }

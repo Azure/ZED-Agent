@@ -133,6 +133,31 @@ This repo is the upstream source of truth. To improve the agent:
 The two configuration files in this repo are intentionally empty — never push
 service-specific data here.
 
+## ZedForge — self-improving development agent
+
+`ZedForge` (`.github/agents/ZedForge.agent.md` + `.github/skills/zed-forge/`) is a **meta-agent**
+that hardens ZED through an autonomous **fix → validate → harvest** loop. Each iteration it:
+
+1. Implements the pending **learnings** (`.github/skills/zed-forge/learnings/learnings.md`) as
+   edits to ZED.
+2. Seeds a target deployment repo (default `Q:\bdp3`) with the LATEST ZED + the pre-filled
+   `config-seed/` configs (`Seed-DeploymentRepo.ps1`).
+3. Runs the ZED **true test run** (fast, non-destructive: every pipeline is triggered then cancelled
+   within seconds, capturing the posted parameters to `test-run-capture.json`).
+4. Polls it (`Watch-ValidationRun.ps1`) and **verifies** the captured parameters + step outcomes
+   against the **requirements/end-state** (`requirements/success-criteria.json`,
+   `Test-RunRequirements.ps1`).
+5. Harvests new learnings from failures + the run's `lessons-learned.md`, and loops until a clean
+   run.
+
+Two intake files, two meanings: **requirements** = the end state (never weakened); **learnings** =
+the backlog to implement. Run it from Copilot Chat in this repo: `@ZedForge start`.
+
+> **Ready to run**: all pipeline ids in
+> `.github/skills/zed-forge/config-seed/pipeline-catalog.json` are real (canary/production from the
+> golden reference runs; `officialBuild` = 282413). Verify `service-config.json` +
+> `success-criteria.json`, then `@ZedForge start`.
+
 ## License
 
 See `LICENSE` (add your preferred license; Microsoft-managed repos typically

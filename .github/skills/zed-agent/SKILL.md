@@ -65,7 +65,7 @@ git commit -m "feat(zed): onboard ZED Agent"
 
 ## Region Mapping (Source of Truth)
 
-The `Get-RegionMapping.ps1` script fetches `AzureServiceConfig.json` from the `Mgmt-RecoverySvcs-DeploymentExtn` repo (branch: `develop`) via ADO Git Items API. This is the **MAB-wide** source of truth for all microservice deployment regions — not service-specific.
+The `Get-RegionMapping.ps1` script fetches `AzureServiceConfig.json` from the region source-of-truth repo configured in `service-config.json` (`regions.ascRepo`, `regions.ascPath`, `regions.ascBranch`) via ADO Git Items API. This is the deployment-region source of truth for the service.
 
 ```powershell
 # All regions across all 5 deployment clouds + supplementary SafeFly regions (~170 regions)

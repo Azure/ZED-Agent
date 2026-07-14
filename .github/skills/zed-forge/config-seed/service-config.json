@@ -1,0 +1,1056 @@
+{
+  "$schema": "./service-config.schema.json",
+  "version": "1.0",
+  "service": {
+    "name": "Prot",
+    "displayName": "Protection Service",
+    "description": "",
+    "stampTag": "prot"
+  },
+  "serviceTreeIds": {
+    "safefly": "fb10185a-465d-42cd-b339-7d0d9331c340",
+    "ev2": {
+      "Prod": "fb10185a-465d-42cd-b339-7d0d9331c340",
+      "Fairfax": "fb10185a-465d-42cd-b339-7d0d9331c340",
+      "Mooncake": "fb10185a-465d-42cd-b339-7d0d9331c340"
+    }
+  },
+  "ado": {
+    "organization": "msazure",
+    "project": "One",
+    "repository": "Mgmt-RecoverySvcs-BackupDataPlane",
+    "branchPrefix": "releases/prot",
+    "baseBranch": "develop"
+  },
+  "kusto": {
+    "bvt": {
+      "queryVariables": {
+        "RESPONSIBLE_TEAM": "Prot"
+      },
+      "cluster": "https://mabprod1.kusto.windows.net/",
+      "database": "AzureBackup",
+      "queryFile": "bvt-prot-failures.kql"
+    },
+    "canary": {
+      "queryVariables": {},
+      "scopingNotes": "",
+      "cluster": "https://mabprod1.kusto.windows.net/",
+      "database": "MABKustoProd1",
+      "queryFile": "Canary-DeploymentUnits.kql",
+      "clusterTypeExtraction": {
+        "mode": "deployment-unit-substring"
+      },
+      "serviceFilter": "ServiceName == 'prot'",
+      "stampPrefixFilter": "StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'"
+    },
+    "production": {
+      "queryVariables": {},
+      "scopingNotes": "",
+      "cluster": "https://mabprod1.kusto.windows.net/",
+      "database": "MABKustoProd1",
+      "queryFile": "Production-DeploymentUnits.kql",
+      "clusterTypeExtraction": {
+        "mode": "deployment-unit-substring"
+      },
+      "serviceFilter": "ServiceName == 'prot'",
+      "stampPrefixFilter": "StampName startswith 'acl' or StampName startswith 'acl2' or StampName startswith 'ae' or StampName startswith 'ase' or StampName startswith 'aue' or StampName startswith 'bec' or StampName startswith 'brs' or StampName startswith 'bse' or StampName startswith 'ccy' or StampName startswith 'clc' or StampName startswith 'cnc' or StampName startswith 'cne' or StampName startswith 'cus' or StampName startswith 'dke' or StampName startswith 'ea' or StampName startswith 'ecy' or StampName startswith 'eus' or StampName startswith 'eus2' or StampName startswith 'eus3' or StampName startswith 'frc' or StampName startswith 'frs' or StampName startswith 'gn' or StampName startswith 'gwc' or StampName startswith 'idc' or StampName startswith 'ilc' or StampName startswith 'iln' or StampName startswith 'inc' or StampName startswith 'ins' or StampName startswith 'inw' or StampName startswith 'isc' or StampName startswith 'itn' or StampName startswith 'jic' or StampName startswith 'jiw' or StampName startswith 'jpe' or StampName startswith 'jpw' or StampName startswith 'krc' or StampName startswith 'krs' or StampName startswith 'mxc' or StampName startswith 'mys' or StampName startswith 'myw' or StampName startswith 'ncus' or StampName startswith 'ne' or StampName startswith 'ne5s' or StampName startswith 'nwe' or StampName startswith 'nww' or StampName startswith 'nzn' or StampName startswith 'plc' or StampName startswith 'qac' or StampName startswith 'sae' or StampName startswith 'san' or StampName startswith 'saw' or StampName startswith 'scus' or StampName startswith 'sdc' or StampName startswith 'sds' or StampName startswith 'sea' or StampName startswith 'sg3' or StampName startswith 'spc' or StampName startswith 'swus' or StampName startswith 'szn' or StampName startswith 'szw' or StampName startswith 'tnw' or StampName startswith 'tst' or StampName startswith 'twn' or StampName startswith 'uac' or StampName startswith 'uan' or StampName startswith 'uks' or StampName startswith 'ukw' or StampName startswith 'usc2' or StampName startswith 'use' or StampName startswith 'use3' or StampName startswith 'use5' or StampName startswith 'wcus' or StampName startswith 'we' or StampName startswith 'wfre' or StampName startswith 'wus' or StampName startswith 'wus2' or StampName startswith 'wus3'"
+    }
+  },
+  "notifications": {
+    "groups": {
+      "permanent": [
+        "rranganath@microsoft.com",
+        "gwazire@microsoft.com"
+      ],
+      "cc": [],
+      "teams": [
+        "ZED Onboarding to PROT"
+      ],
+      "teamsExtended": [
+        "ZED Onboarding to PROT"
+      ]
+    },
+    "routing": {
+      "10-roll-forward": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "12-post-rollforward-signoff": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "7-rollback": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "14-crb-review": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "8-post-rollback-bvt": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "11-post-rollforward-bvt": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "3-wait-build": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "6-bvt-check": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "13-create-r2d": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": [
+            "cc"
+          ]
+        }
+      },
+      "16-merge-back": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "5-deploy-canary": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "4-collect-commits": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [
+            "teamsExtended"
+          ],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "2-cut-branch": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "1-send-reminder": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [
+            "teams"
+          ],
+          "emailGroups": [
+            "permanent"
+          ],
+          "ccGroups": []
+        }
+      },
+      "9-post-rollback-signoff": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "15-production-rollout": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [
+            "permanent",
+            "cc"
+          ],
+          "ccGroups": []
+        }
+      }
+    }
+  },
+  "inventory": {
+    "production": {
+      "approvalRequired": true,
+      "cloudsActive": [
+        "Public",
+        "Fairfax",
+        "Mooncake"
+      ],
+      "Public": {
+        "_scopeFrom": {
+          "at": "2026-06-04T09:20:03.6092541Z",
+          "source": "SDS"
+        },
+        "stampCount": 144,
+        "stamps": [
+          {
+            "stampId": "acl2-02"
+          },
+          {
+            "stampId": "acl2-01"
+          },
+          {
+            "stampId": "acl-02"
+          },
+          {
+            "stampId": "acl-01"
+          },
+          {
+            "stampId": "ae-02"
+          },
+          {
+            "stampId": "ae-03"
+          },
+          {
+            "stampId": "ae-01"
+          },
+          {
+            "stampId": "ase-02"
+          },
+          {
+            "stampId": "ase-03"
+          },
+          {
+            "stampId": "ase-01"
+          },
+          {
+            "stampId": "brs-02"
+          },
+          {
+            "stampId": "brs-01"
+          },
+          {
+            "stampId": "brs-03"
+          },
+          {
+            "stampId": "bse-01"
+          },
+          {
+            "stampId": "ccy-01"
+          },
+          {
+            "stampId": "cnc-02"
+          },
+          {
+            "stampId": "cnc-01"
+          },
+          {
+            "stampId": "cne-02"
+          },
+          {
+            "stampId": "cne-01"
+          },
+          {
+            "stampId": "cus-02"
+          },
+          {
+            "stampId": "cus-03"
+          },
+          {
+            "stampId": "cus-01"
+          },
+          {
+            "stampId": "ea-01"
+          },
+          {
+            "stampId": "ecy-01"
+          },
+          {
+            "stampId": "eus2-02"
+          },
+          {
+            "stampId": "eus2-03"
+          },
+          {
+            "stampId": "eus2-04"
+          },
+          {
+            "stampId": "eus2-05"
+          },
+          {
+            "stampId": "eus2-06"
+          },
+          {
+            "stampId": "eus2-01"
+          },
+          {
+            "stampId": "eus-02"
+          },
+          {
+            "stampId": "eus-04"
+          },
+          {
+            "stampId": "eus-05"
+          },
+          {
+            "stampId": "eus-06"
+          },
+          {
+            "stampId": "eus-07"
+          },
+          {
+            "stampId": "eus-08"
+          },
+          {
+            "stampId": "eus-09"
+          },
+          {
+            "stampId": "eus-10"
+          },
+          {
+            "stampId": "eus-01"
+          },
+          {
+            "stampId": "frc-01"
+          },
+          {
+            "stampId": "frc-02"
+          },
+          {
+            "stampId": "frs-02"
+          },
+          {
+            "stampId": "frs-01"
+          },
+          {
+            "stampId": "gn-01"
+          },
+          {
+            "stampId": "gwc-01"
+          },
+          {
+            "stampId": "inc-01"
+          },
+          {
+            "stampId": "inc-02"
+          },
+          {
+            "stampId": "ins-02"
+          },
+          {
+            "stampId": "ins-01"
+          },
+          {
+            "stampId": "inw-02"
+          },
+          {
+            "stampId": "inw-01"
+          },
+          {
+            "stampId": "jic-01"
+          },
+          {
+            "stampId": "jiw-01"
+          },
+          {
+            "stampId": "jpe-02"
+          },
+          {
+            "stampId": "jpe-03"
+          },
+          {
+            "stampId": "jpe-01"
+          },
+          {
+            "stampId": "jpw-02"
+          },
+          {
+            "stampId": "jpw-01"
+          },
+          {
+            "stampId": "krc-01"
+          },
+          {
+            "stampId": "krc-02"
+          },
+          {
+            "stampId": "krs-02"
+          },
+          {
+            "stampId": "krs-01"
+          },
+          {
+            "stampId": "ncus-02"
+          },
+          {
+            "stampId": "ncus-03"
+          },
+          {
+            "stampId": "ncus-01"
+          },
+          {
+            "stampId": "ne-02"
+          },
+          {
+            "stampId": "ne-03"
+          },
+          {
+            "stampId": "ne-04"
+          },
+          {
+            "stampId": "ne-05"
+          },
+          {
+            "stampId": "ne-06"
+          },
+          {
+            "stampId": "ne-07"
+          },
+          {
+            "stampId": "ne-01"
+          },
+          {
+            "stampId": "nwe-01"
+          },
+          {
+            "stampId": "nww-01"
+          },
+          {
+            "stampId": "san-01"
+          },
+          {
+            "stampId": "san-02"
+          },
+          {
+            "stampId": "saw-02"
+          },
+          {
+            "stampId": "saw-01"
+          },
+          {
+            "stampId": "scus-02"
+          },
+          {
+            "stampId": "scus-03"
+          },
+          {
+            "stampId": "scus-01"
+          },
+          {
+            "stampId": "sdc-01"
+          },
+          {
+            "stampId": "sds-01"
+          },
+          {
+            "stampId": "sea-02"
+          },
+          {
+            "stampId": "sea-03"
+          },
+          {
+            "stampId": "sea-01"
+          },
+          {
+            "stampId": "szn-01"
+          },
+          {
+            "stampId": "szw-01"
+          },
+          {
+            "stampId": "uac-02"
+          },
+          {
+            "stampId": "uac-01"
+          },
+          {
+            "stampId": "uan-02"
+          },
+          {
+            "stampId": "uan-01"
+          },
+          {
+            "stampId": "uks-02"
+          },
+          {
+            "stampId": "uks-03"
+          },
+          {
+            "stampId": "uks-04"
+          },
+          {
+            "stampId": "uks-01"
+          },
+          {
+            "stampId": "ukw-02"
+          },
+          {
+            "stampId": "ukw-01"
+          },
+          {
+            "stampId": "wcus-01"
+          },
+          {
+            "stampId": "we-02"
+          },
+          {
+            "stampId": "we-03"
+          },
+          {
+            "stampId": "we-05"
+          },
+          {
+            "stampId": "we-06"
+          },
+          {
+            "stampId": "we-07"
+          },
+          {
+            "stampId": "we-08"
+          },
+          {
+            "stampId": "we-09"
+          },
+          {
+            "stampId": "we-10"
+          },
+          {
+            "stampId": "we-11"
+          },
+          {
+            "stampId": "we-12"
+          },
+          {
+            "stampId": "we-13"
+          },
+          {
+            "stampId": "we-14"
+          },
+          {
+            "stampId": "we-01"
+          },
+          {
+            "stampId": "wus2-02"
+          },
+          {
+            "stampId": "wus2-03"
+          },
+          {
+            "stampId": "wus2-01"
+          },
+          {
+            "stampId": "wus3-01"
+          },
+          {
+            "stampId": "wus-02"
+          },
+          {
+            "stampId": "wus-03"
+          },
+          {
+            "stampId": "wus-01"
+          },
+          {
+            "stampId": "qac-01"
+          },
+          {
+            "stampId": "ilc-01"
+          },
+          {
+            "stampId": "nzn-01"
+          },
+          {
+            "stampId": "idc-01"
+          },
+          {
+            "stampId": "myw-01"
+          },
+          {
+            "stampId": "clc-01"
+          },
+          {
+            "stampId": "plc-01"
+          },
+          {
+            "stampId": "spc-01"
+          },
+          {
+            "stampId": "mxc-01"
+          },
+          {
+            "stampId": "mys-01"
+          },
+          {
+            "stampId": "use-01"
+          },
+          {
+            "stampId": "twn-01"
+          },
+          {
+            "stampId": "tnw-01"
+          },
+          {
+            "stampId": "itn-01"
+          },
+          {
+            "stampId": "aue-01"
+          },
+          {
+            "stampId": "use3-01"
+          },
+          {
+            "stampId": "iln-01"
+          },
+          {
+            "stampId": "usc2-01"
+          },
+          {
+            "stampId": "bec-01"
+          },
+          {
+            "stampId": "dke-01"
+          },
+          {
+            "stampId": "swus-01"
+          },
+          {
+            "stampId": "use5-01"
+          },
+          {
+            "stampId": "eus3-01"
+          },
+          {
+            "stampId": "isc-01"
+          },
+          {
+            "stampId": "ne5s-01"
+          }
+        ]
+      },
+      "Fairfax": {
+        "_scopeFrom": {
+          "at": "2026-06-04T09:20:03.6229007Z",
+          "source": "SDS"
+        },
+        "stampCount": 6,
+        "stamps": [
+          {
+            "stampId": "udc-01"
+          },
+          {
+            "stampId": "ude-01"
+          },
+          {
+            "stampId": "uga-01"
+          },
+          {
+            "stampId": "ugt-01"
+          },
+          {
+            "stampId": "ugv-02"
+          },
+          {
+            "stampId": "ugv-01"
+          }
+        ]
+      },
+      "Mooncake": {
+        "_scopeFrom": {
+          "at": "2026-06-04T09:20:03.6249825Z",
+          "source": "SDS"
+        },
+        "stampCount": 6,
+        "stamps": [
+          {
+            "stampId": "bjb2-01"
+          },
+          {
+            "stampId": "bjb3-01"
+          },
+          {
+            "stampId": "bjb-01"
+          },
+          {
+            "stampId": "sha2-01"
+          },
+          {
+            "stampId": "sha3-01"
+          },
+          {
+            "stampId": "sha-01"
+          }
+        ]
+      }
+    },
+    "driftToleranceCount": 0,
+    "canary": {
+      "regionPrefixHints": [
+        "ea",
+        "ecy",
+        "ccy"
+      ],
+      "stamps": [
+        {
+          "layout": "can02",
+          "cloud": "Canary",
+          "region": "ea",
+          "stampId": "ea-01",
+          "stampName": "ea-can02-prot1",
+          "clusterType": "sfmc",
+          "source": "SDS + YAML defaults"
+        },
+        {
+          "layout": "can02",
+          "cloud": "Canary",
+          "region": "ea",
+          "stampId": "ea-05",
+          "stampName": "ea-can02-prot5",
+          "clusterType": "sfrp",
+          "source": "SDS + YAML defaults"
+        },
+        {
+          "layout": "pod01",
+          "cloud": "Public",
+          "region": "ecy",
+          "stampId": "ecy-01",
+          "stampName": "ecy-pod01-prot1",
+          "clusterType": "sfmc",
+          "source": "SDS + YAML defaults"
+        },
+        {
+          "layout": "pod01",
+          "cloud": "Public",
+          "region": "ccy",
+          "stampId": "ccy-01",
+          "stampName": "ccy-pod01-prot1",
+          "clusterType": "sfmc",
+          "source": "SDS + YAML defaults"
+        }
+      ]
+    }
+  },
+  "agentFeedbackEmail": "gwazire@microsoft.com",
+  "sds": {
+    "PROT-PROD-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-PROD-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "PROT-CANARY-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-PROD-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-CANARY-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "PROT-CANARY-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "PROT-PROD-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-CANARY-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": "D:\\one\\bdp1",
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    }
+  },
+  "sdsFieldMapping": {},
+  "safefly": {
+    "monitoringLink": "https://portal.microsoftgeneva.com/manage/monitors?account=BDPMDM",
+    "additionalNotifiers": [
+      "panbha@microsoft.com",
+      "abhim@microsoft.com"
+    ],
+    "tags": [],
+    "titleTemplate": "[MAB][Prot] Protection Service monthly release for {month}-{yy}",
+    "serviceGroupName": "Backup (MAB)"
+  },
+  "regions": {
+    "ascRepo": "Mgmt-RecoverySvcs-DeploymentExtn",
+    "ascPath": "src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json",
+    "ascBranch": "develop",
+    "supplementaryRegions": [
+      { "DataCenterName": "APAC Southeast 2",    "RegionShortName": "apacsoutheast2" },
+      { "DataCenterName": "Brazil Northeast",     "RegionShortName": "brazilnortheast" },
+      { "DataCenterName": "East US Slv",          "RegionShortName": "eastusslv" },
+      { "DataCenterName": "East US Stg",          "RegionShortName": "eastusstg" },
+      { "DataCenterName": "Korea South 2",        "RegionShortName": "koreasouth2" },
+      { "DataCenterName": "South Central US Stg", "RegionShortName": "southcentralusstg" },
+      { "DataCenterName": "UK North",             "RegionShortName": "uknorth" },
+      { "DataCenterName": "UK South 2",           "RegionShortName": "uksouth2" },
+      { "DataCenterName": "US Gov Iowa",          "RegionShortName": "usgoviowa" },
+      { "DataCenterName": "US Gov Wyoming",       "RegionShortName": "usgovwyoming" },
+      { "DataCenterName": "US Southeast",         "RegionShortName": "ussoutheast" },
+      { "DataCenterName": "USSec Westcentral",    "RegionShortName": "ussecwestcentral" }
+    ]
+  },
+  "commitExcel": {
+    "sheetNameTemplate": "Prot{{YYMM}}Commits",
+    "sharePointFolder": "/Shared Documents/Monthly Releases/Prot"
+  },
+  "sharepoint": {
+    "sitePath": "/teams/AzureBackupDataPlane"
+  },
+  "operational": {
+    "watcherPollIntervalSeconds": 3600,
+    "bvtWaitHours": 24,
+    "watcherTaskPrefix": "ZED-ReleaseWatcher",
+    "canaryBakeTimeHours": 24,
+    "buildTimeoutMinutes": 360
+  },
+  "stepGates": {
+    "15-production-rollout": false,
+    "7-rollback": false,
+    "10-roll-forward": false,
+    "16-merge-back": false,
+    "9-post-rollback-signoff": true,
+    "14-crb-review": true,
+    "5-deploy-canary": false,
+    "1-send-reminder": false,
+    "6-bvt-check": true,
+    "4-collect-commits": false,
+    "12-post-rollforward-signoff": true,
+    "11-post-rollforward-bvt": false,
+    "13-create-r2d": false,
+    "8-post-rollback-bvt": false,
+    "2-cut-branch": false,
+    "3-wait-build": false
+  },
+  "stampPrefixToRegion": {
+    "isc": "indiasouthcentral",
+    "ne5s": "northeastus5",
+    "uae": "uaecentral",
+    "uan": "uaenorth",
+    "ilc": "israelcentral",
+    "iln": "israelnorthwest",
+    "qac": "qatarcentral"
+  }
+}

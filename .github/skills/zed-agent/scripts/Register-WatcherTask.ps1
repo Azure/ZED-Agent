@@ -9,11 +9,26 @@ function Register-ReleaseWatcherTask {
     # fresh instance. Without this the default IgnoreNew causes Task Scheduler
     # to log 0x800710E0 and silently drop the respawn while the zombie holds
     # watcher.lock — exactly the symptom we hit during the 2026-05 release.
+    # NOTE: the ScheduledTasks module's MultipleInstancesEnum lacks 'StopExisting'
+    # on some Windows/PowerShell versions (only Parallel/Queue/IgnoreNew), where
+    # `-MultipleInstances StopExisting` throws "Cannot convert value StopExisting
+    # to MultipleInstancesEnum". Try StopExisting; fall back to IgnoreNew (zombie
+    # watchers are then handled by Register-WatcherTask -Action cleanup + the
+    # watcher's own PID-liveness check on watcher.lock).
     # WakeToRun: ask Windows to wake from S3/S4 sleep to fire the trigger.
-    $settings = New-ScheduledTaskSettingsSet `
-        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-        -WakeToRun -MultipleInstances StopExisting `
-        -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    $settingsArgs = @{
+        AllowStartIfOnBatteries    = $true
+        DontStopIfGoingOnBatteries = $true
+        StartWhenAvailable         = $true
+        WakeToRun                  = $true
+        RestartCount               = 3
+        RestartInterval            = (New-TimeSpan -Minutes 1)
+    }
+    try {
+        $settings = New-ScheduledTaskSettingsSet @settingsArgs -MultipleInstances StopExisting
+    } catch {
+        $settings = New-ScheduledTaskSettingsSet @settingsArgs -MultipleInstances IgnoreNew
+    }
     Register-ScheduledTask -TaskName $TaskName -Action $a -Trigger @($tLogon, $tRecurring) -Settings $settings -Description $Description -Force | Out-Null
 }
 

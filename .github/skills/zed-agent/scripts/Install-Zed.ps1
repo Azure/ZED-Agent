@@ -75,10 +75,12 @@ if (-not (Test-Path $srcSkillDir))   { throw "Source zed-agent skill directory n
 
 # Auto-discover every sibling skill folder under .github\skills\ that has a
 # SKILL.md (excluding 'zed-agent' which has its own copy block with
-# empty-config-skeleton handling). Adding a new skill = a new folder with
-# SKILL.md = automatically copied by this installer. No code change required.
+# empty-config-skeleton handling, and 'zed-forge' which is a source-repo-only
+# development agent that must NOT be installed into deployment target repos).
+# Adding a new skill = a new folder with SKILL.md = automatically copied by this
+# installer. No code change required.
 $srcSiblingSkills = Get-ChildItem -Path $srcSkillsRoot -Directory |
-    Where-Object { $_.Name -ne 'zed-agent' -and (Test-Path (Join-Path $_.FullName 'SKILL.md')) } |
+    Where-Object { $_.Name -notin @('zed-agent', 'zed-forge') -and (Test-Path (Join-Path $_.FullName 'SKILL.md')) } |
     Sort-Object Name
 if ($srcSiblingSkills.Count -eq 0) {
     Write-Warning "No sibling skill folders with SKILL.md found under $srcSkillsRoot. Continuing — only zed-agent will be installed."

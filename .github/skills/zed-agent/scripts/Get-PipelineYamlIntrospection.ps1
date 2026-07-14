@@ -63,7 +63,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Path') {
 # Strip CRs for predictable regex behaviour.
 $yaml = $yaml -replace "`r",''
 
-# Known clouds in MAB-family pipelines (used for stage-hardcoded detection only).
+# Known Azure deployment clouds (used for stage-hardcoded detection only).
 $knownClouds = @('Public','Canary','Fairfax','Mooncake','USNat','USSec','Bleu','BVTD3','EXP')
 
 function Get-Param-Block {

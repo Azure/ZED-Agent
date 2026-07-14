@@ -4,6 +4,9 @@ node_modules/
 # ZED runtime artifacts (per-release state, never committed in target repos)
 .zed-agent/
 
+# ZedForge loop state (runtime, per-clone)
+.github/skills/zed-forge/state/forge-state.json
+
 # Editor / OS noise
 .vscode/
 .idea/

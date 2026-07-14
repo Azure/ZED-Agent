@@ -1,13 +1,12 @@
 <#
 .SYNOPSIS
     Loads the authoritative AzureServiceConfig.json (region/cloud/DR directory)
-    from Mgmt-RecoverySvcs-DeploymentExtn with a live -> cache -> snapshot
-    precedence.
+    from the service's configured region source (regions.ascRepo) with a
+    live -> cache -> snapshot precedence.
 
 .DESCRIPTION
-    Source-of-truth file:
-      https://msazure.visualstudio.com/One/_git/Mgmt-RecoverySvcs-DeploymentExtn
-        path: src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json
+    Source-of-truth file: the AzureServiceConfig.json named by service-config.json
+      (ado.organization / ado.project / regions.ascRepo / regions.ascPath).
 
     Resolution order (default — live-first):
       1. Live  : ADO REST Items API (requires `az login`). Written to cache.
@@ -36,7 +35,8 @@ param(
     [int]   $MaxAgeHours = 24,
     [switch]$NoCache,
     [switch]$OfflineOnly,
-    [switch]$PreferCache
+    [switch]$PreferCache,
+    [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\service-config.json')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,12 +48,18 @@ if (-not $SnapshotPath) { $SnapshotPath = Join-Path $repoRoot '.github\skills\ze
 $cacheDir  = Split-Path $CachePath -Parent
 $metaPath  = [System.IO.Path]::ChangeExtension($CachePath, '.meta.json')
 
-# ── ADO endpoint constants ─────────────────────────────────────────────
-$adoOrg       = 'msazure.visualstudio.com'
-$adoProject   = 'One'
-$adoRepo      = 'Mgmt-RecoverySvcs-DeploymentExtn'
-$adoItemPath  = '/src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json'
-$adoResource  = '499b84ac-1321-427f-aa17-267ca6975798'  # ADO
+# ── ADO endpoint (resolved from service config — no hard-coded service/region source) ──
+$adoResource  = '499b84ac-1321-427f-aa17-267ca6975798'  # ADO AAD resource id (platform-generic)
+$adoOrg = ''; $adoProject = ''; $adoRepo = ''; $adoItemPath = ''
+try {
+    $cfg = & (Join-Path $PSScriptRoot 'Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
+    if ($cfg.ado.organization) { $adoOrg      = "$($cfg.ado.organization).visualstudio.com" }
+    if ($cfg.ado.project)      { $adoProject  = [string]$cfg.ado.project }
+    if ($cfg.regions.ascRepo)  { $adoRepo     = [string]$cfg.regions.ascRepo }
+    if ($cfg.regions.ascPath)  { $adoItemPath = '/' + ([string]$cfg.regions.ascPath).TrimStart('/') }
+} catch {
+    Write-Verbose "Get-AzureServiceConfig: could not load service config ($ServiceConfigPath): $_"
+}
 
 function Read-LocalAsc {
     param([string]$Path, [string]$Source)
@@ -76,6 +82,10 @@ function Read-LocalAsc {
 
 function Try-FetchLiveAsc {
     try {
+        if (-not $adoOrg -or -not $adoProject -or -not $adoRepo -or -not $adoItemPath) {
+            Write-Verbose "Live ASC fetch skipped: region source not configured (ado.organization/project + regions.ascRepo/ascPath in service-config.json)."
+            return $null
+        }
         $token = az account get-access-token --resource $adoResource --query accessToken -o tsv 2>$null
         if (-not $token) { return $null }
         $uri = "https://$adoOrg/$adoProject/_apis/git/repositories/$adoRepo/items?path=$adoItemPath&api-version=7.1"

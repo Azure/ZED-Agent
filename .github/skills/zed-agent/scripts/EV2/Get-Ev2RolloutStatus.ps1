@@ -442,6 +442,9 @@ foreach ($stage in $stages) {
         stageStatus         = $stageStatus      # original EV2 StageStatus (always preserved)
         derivedStatus       = $null             # enriched from ResourceGroups actions (set below)
         error               = $null
+        errorDetail         = $null
+        errorCode           = $null
+        errorReason         = $null
         retryCount          = 0
         hasPreviousFailures = $false
         isStale             = $false
@@ -583,6 +586,9 @@ if ($stages.Count -eq 0) {
                 stageStatus         = $target.Status ?? "Unknown"
                 derivedStatus       = $null
                 error               = $target.ErrorDetails ?? $target.Error ?? $null
+                errorDetail         = $null
+                errorCode           = $null
+                errorReason         = $null
                 retryCount          = 0
                 hasPreviousFailures = $false
                 isStale             = $false

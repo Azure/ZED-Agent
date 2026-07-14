@@ -279,7 +279,7 @@ function Test-PreFlight {
     # snapshot are degraded fallbacks that surface a warning here.
     $ascSnapshot = Join-Path $skillDir 'fixtures\AzureServiceConfig.snapshot.json'
     if (-not (Test-Path $ascSnapshot)) {
-        $checks += @{ name = "ASC snapshot"; status = "fail"; detail = "Missing offline fallback at $ascSnapshot. Restore from Mgmt-RecoverySvcs-DeploymentExtn." }
+        $checks += @{ name = "ASC snapshot"; status = "fail"; detail = "Missing offline fallback at $ascSnapshot. Restore from the configured region source (regions.ascRepo)." }
     } else {
         $checks += @{ name = "ASC snapshot"; status = "pass"; detail = "Offline fallback present ($([math]::Round((Get-Item $ascSnapshot).Length/1KB,1)) KB)" }
     }
@@ -290,9 +290,9 @@ function Test-PreFlight {
         } else {
             $asc = & $ascScript -NoCache -ErrorAction Stop 3>$null 4>$null
             if ($asc -and $asc.source -eq 'live' -and @($asc.data.Clouds).Count -gt 0) {
-                $checks += @{ name = "ASC live reachability"; status = "pass"; detail = "Fetched $(@($asc.data.Clouds).Count) clouds live from Mgmt-RecoverySvcs-DeploymentExtn" }
+                $checks += @{ name = "ASC live reachability"; status = "pass"; detail = "Fetched $(@($asc.data.Clouds).Count) clouds live from the configured region source" }
             } else {
-                $checks += @{ name = "ASC live reachability"; status = "fail"; detail = "Live fetch returned no Clouds. Investigate ADO permissions on Mgmt-RecoverySvcs-DeploymentExtn." }
+                $checks += @{ name = "ASC live reachability"; status = "fail"; detail = "Live fetch returned no Clouds. Investigate ADO permissions on the configured region source (regions.ascRepo)." }
             }
         }
     } catch {

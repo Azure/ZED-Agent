@@ -3,9 +3,9 @@
     Fetches AzureServiceConfig.json from DeploymentExtn repo to extract region mappings.
 
 .DESCRIPTION
-    Reads the MAB-wide AzureServiceConfig.json (Phobos 2022 schema) from the
-    Mgmt-RecoverySvcs-DeploymentExtn repository via ADO Git Items API. This is the
-    single source of truth for ALL MAB microservice deployment regions.
+    Reads the service's AzureServiceConfig.json region source (Phobos 2022 schema) from
+    the ADO repository named in service-config.json (regions.ascRepo) via ADO Git Items
+    API. This is the single source of truth for the service's deployment regions.
 
     Each region entry includes:
     - DataCenterName    : SafeFly display name (e.g., "East Asia") — use for targetedRegions
@@ -18,8 +18,8 @@
     Only ACTIVE datacenters are returned by default (PASSIVE entries are excluded to
     avoid duplicate regions).
 
-    Source: Mgmt-RecoverySvcs-DeploymentExtn/src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json
-    Branch: develop (configurable via -AscBranch)
+    Source: the AzureServiceConfig.json named by service-config.json (regions.ascRepo / regions.ascPath).
+    Branch: regions.ascBranch (default 'develop'; override via -AscBranch)
     Cached locally for 24 hours to avoid repeated API calls.
 
 .PARAMETER CloudName
@@ -34,14 +34,18 @@
     Used to subtract CCOA-excluded regions and return only targeted regions.
 
 .PARAMETER AscRepo
-    ADO repository name for AzureServiceConfig.json. Default: Mgmt-RecoverySvcs-DeploymentExtn.
+    ADO repository name for AzureServiceConfig.json. Default: service-config.json -> regions.ascRepo.
 
 .PARAMETER AscPath
     Path within the repo to AzureServiceConfig.json.
-    Default: src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json.
+    Default: service-config.json -> regions.ascPath.
 
 .PARAMETER AscBranch
-    Branch to fetch from. Default: develop.
+    Branch to fetch from. Default: service-config.json -> regions.ascBranch (else 'develop').
+
+.PARAMETER ServiceConfigPath
+    Path to service-config.json (defaults to the co-located config one level up from scripts/).
+    The region source (regions.ascRepo/ascPath/ascBranch/supplementaryRegions) is read from here.
 
 .PARAMETER CachePath
     Local cache file path. Default: $env:TEMP\zed-asc-cache.json.
@@ -92,11 +96,14 @@ param(
 
     [string[]]$ExcludeRegions = @(),
 
-    [string]$AscRepo = "Mgmt-RecoverySvcs-DeploymentExtn",
+    # Region source-of-truth — resolved from service-config.json (regions.*) when not passed explicitly.
+    [string]$AscRepo = "",
 
-    [string]$AscPath = "src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json",
+    [string]$AscPath = "",
 
-    [string]$AscBranch = "develop",
+    [string]$AscBranch = "",
+
+    [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\service-config.json'),
 
     [string]$CachePath = (Join-Path $env:TEMP "zed-asc-cache.json"),
 
@@ -108,6 +115,22 @@ param(
     [switch]$IncludePlaceholders,
     [string]$RepoRoot
 )
+
+# --- Resolve region source from service config (params override; never hard-code a service's region source) ---
+$regionCfg = $null
+try {
+    $cfg = & (Join-Path $PSScriptRoot 'Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
+    $regionCfg = $cfg.regions
+} catch {
+    Write-Verbose "Could not load service config for region source ($ServiceConfigPath): $_"
+}
+if (-not $AscRepo   -and $regionCfg) { $AscRepo   = [string]$regionCfg.ascRepo }
+if (-not $AscPath   -and $regionCfg) { $AscPath   = [string]$regionCfg.ascPath }
+if (-not $AscBranch -and $regionCfg) { $AscBranch = [string]$regionCfg.ascBranch }
+if (-not $AscBranch) { $AscBranch = "develop" }
+if (-not $AscRepo -or -not $AscPath) {
+    throw "Region source is not configured. Set regions.ascRepo and regions.ascPath in service-config.json (or pass -AscRepo/-AscPath). ZED must not assume a service's region source."
+}
 
 if ($IncludePlaceholders) {
     Write-Warning "-IncludePlaceholders is deprecated and has no effect. ASC does not have placeholder entries."
@@ -217,22 +240,12 @@ foreach ($cloud in $clouds) {
 }
 
 # --- Supplementary SafeFly regions not yet in AzureServiceConfig.json ---
-# These are SafeFly-only regions without physical deployment stamps.
-# All MAB services use SafeFly, so these apply generically.
-$supplementaryRegions = @(
-    @{ DataCenterName = "APAC Southeast 2";     RegionShortName = "apacsoutheast2" }
-    @{ DataCenterName = "Brazil Northeast";      RegionShortName = "brazilnortheast" }
-    @{ DataCenterName = "East US Slv";           RegionShortName = "eastusslv" }
-    @{ DataCenterName = "East US Stg";           RegionShortName = "eastusstg" }
-    @{ DataCenterName = "Korea South 2";         RegionShortName = "koreasouth2" }
-    @{ DataCenterName = "South Central US Stg";  RegionShortName = "southcentralusstg" }
-    @{ DataCenterName = "UK North";              RegionShortName = "uknorth" }
-    @{ DataCenterName = "UK South 2";            RegionShortName = "uksouth2" }
-    @{ DataCenterName = "US Gov Iowa";           RegionShortName = "usgoviowa" }
-    @{ DataCenterName = "US Gov Wyoming";        RegionShortName = "usgovwyoming" }
-    @{ DataCenterName = "US Southeast";          RegionShortName = "ussoutheast" }
-    @{ DataCenterName = "USSec Westcentral";     RegionShortName = "ussecwestcentral" }
-)
+# SafeFly-only regions without physical deployment stamps, declared per-service in
+# service-config.json -> regions.supplementaryRegions (each: { DataCenterName, RegionShortName }).
+$supplementaryRegions = @()
+if ($regionCfg -and $regionCfg.supplementaryRegions) {
+    $supplementaryRegions = @($regionCfg.supplementaryRegions)
+}
 
 # Build a set of existing RegionShortNames for dedup
 $existingShortNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)

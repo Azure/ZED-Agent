@@ -67,7 +67,9 @@ When the release owner says `setup`:
 
 3. **Create environment directory**: Create `.zed-agent/` in the current directory
 
-4. **Update .gitignore**: Ensure `.zed-agent/` is in `.gitignore` (if in a git repo)
+4. **Update .gitignore**: Ensure `.zed-agent/` is in `.gitignore` (if in a git repo).
+   `.zed-release/` is intentionally NOT gitignored — it holds durable state that
+   must persist across stateless cloud sessions.
 
 5. **Prompt for secrets**: Ask the release owner for:
    - **Repo path** — e.g., `D:\{CONFIG[ado.repository]}`. MUST ask and wait. This is needed for `git log` commit collection.

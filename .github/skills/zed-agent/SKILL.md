@@ -375,11 +375,21 @@ Release owner flow: `setup` → `run` → (approve) → `teardown`
 
 ## Runtime Files
 
-Created by the framework at `.zed-agent/` (gitignored):
+**Durable state** at `.zed-release/` (committed to the release branch — survives across cloud sessions):
+- `releases/{id}/release.json` — Release configuration (owner, branches, dates)
+- `releases/{id}/state.json` — Current release state (steps, directives, atomicity fields)
+- `releases/{id}/audit.jsonl` — Append-only machine audit log
+- `releases/{id}/audit.md` — Human-readable audit log (auto-generated)
+
+**Scratch data** at `.zed-agent/` (gitignored — local only):
 - `environment.json` — Local environment paths
 - `secrets.json` — Teams chat IDs (deleted by `teardown`)
-- `releases/{id}/state.json` — Current release state
-- `releases/{id}/audit.jsonl` — Append-only audit log
+- `releases/{id}/state.json.lock` — Cross-process file lock
+- `readiness.json` — Preflight check results
+- `watcher.lock` — Watcher singleton lock
+
+Path resolution: `Resolve-StatePaths.ps1` checks `.zed-release/` first (cloud/durable),
+falls back to `.zed-agent/` (local). Use `-PreferDurable` to create the durable structure.
 
 ## Learning System
 

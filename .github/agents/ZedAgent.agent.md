@@ -52,12 +52,32 @@ Load configuration in this order on every invocation:
 1. `.github/skills/zed-agent/service-config.json` — service-specific configuration (all CONFIG[x.y] values)
 2. `.zed-agent/environment.json` — environment config (repo root, copilot binary path)
 3. `.zed-agent/secrets.json` — secrets (Teams conversation IDs for CDP messaging)
-4. `.zed-agent/releases/{id}/release.json` — release parameters (release owner, dates, branch)
-5. `.zed-agent/releases/{id}/state.json` — current state (steps, watcherDirective)
+4. Release state — resolved via `Resolve-StatePaths.ps1`:
+   - First checks `.zed-release/releases/{id}/` (durable, committed — cloud sessions)
+   - Falls back to `.zed-agent/releases/{id}/` (local DevBox)
+   - `release.json` — release parameters (release owner, dates, branch)
+   - `state.json` — current state (steps, watcherDirective, pipelineTriggerTimestamps, triggeredPipelines)
+   - `audit.jsonl` / `audit.md` — append-only audit logs
 
 The service config is loaded via `Load-ServiceConfig.ps1` and provides the composed config object (`$cfg`).
 Pipeline definitions are in `pipeline-catalog.json` (loaded automatically by the config loader).
 Use `CONFIG[section.key]` notation throughout this document to reference config values.
+
+## State Atomicity Contract
+
+The following fields MUST be written in specific order to prevent data loss across sessions:
+
+1. **pipelineTriggerTimestamps** — Written to `state.json` BEFORE triggering the pipeline.
+   BVT query windows (Steps 6, 8, 11) use these as their start bound. If the session crashes
+   after triggering but before writing, BVT uses the wrong time window. Readers MUST fail
+   loudly if the expected timestamp is missing.
+2. **triggeredPipelines** — Written to `state.json` at trigger time (Steps 5, 7, 10, 15).
+   Maps step number → array of pipeline run IDs. Step 7 rollback reads Step 5's triggered set
+   from `state.json` (primary) or falls back to `audit.jsonl` (secondary).
+3. **buildNumber** — Captured in Step 10 from ADO API. If missing on cold-resume,
+   re-derive from the build API using the stored `buildId`.
+4. **Step 2/4 inline idempotency** — On entry, check `step4InlineCompleted`. If true,
+   skip SharePoint upload and Teams post (already done in a prior session).
 
 # Domain Knowledge
 
@@ -1126,7 +1146,9 @@ for it once and persist it to `secrets.json` rather than attempting discovery.
    - `sourceBranch` = `refs/heads/{release.currentBranch}` — the release branch being built (NOT develop)
    - `templateParameters`: Use all key-value pairs from `CONFIG[pipelines.officialBuild.templateParameters]` (loaded from pipeline-catalog.json)
 4. Store `buildId` in `release.json` and step metadata
-5. **Run Step 4's inline (synchronous) work in parallel with the about-to-be-armed build watcher.** Per the Step Dependency Matrix parallelism note (Step 3 ∥ Step 4), execute Step 4 Actions sub-steps 1–9 **right here, before arming any watcher** — git fetch, `git log --cherry-pick`, classify every commit, build `commits.xlsx`, upload to SharePoint, post the commit-request Teams message. On completion:
+5. **Run Step 4's inline (synchronous) work in parallel with the about-to-be-armed build watcher.** Per the Step Dependency Matrix parallelism note (Step 3 ∥ Step 4), execute Step 4 Actions sub-steps 1–9 **right here, before arming any watcher** — git fetch, `git log --cherry-pick`, classify every commit, build `commits.xlsx`, upload to SharePoint, post the commit-request Teams message.
+   **IDEMPOTENCY**: On entry, check `state.step4InlineCompleted`. If already `true`, skip all inline work (SharePoint upload, Teams post already done in a prior session) and proceed directly to arming the watcher side-channel.
+   On completion:
    - Set `state.step4InlineCompleted = true`
    - Set `state.step4InlineCompletedAt = <UTC ISO 8601 now>` (used by the watcher's 24 h nudge timer)
    - Set `state.step4ExcelUrl = <SharePoint sharing URL>` (same value stored in `release.json.commitExcelUrl`)
@@ -1285,7 +1307,8 @@ for it once and persist it to `secrets.json` rather than attempting discovery.
       This audit row is the single source of truth for what was triggered and is reused by Step 7 (Rollback).
 
 2. Trigger all resolved pipelines in **parallel** with their `templateParameters` (passed verbatim from `pipeline-catalog.json`).
-3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
+   **ATOMICITY**: Before triggering, write `pipelineTriggerTimestamps.step5` and `triggeredPipelines.5` to `state.json` via `Update-ReleaseState -StateProperties @{ ... }`. After trigger, update `triggeredPipelines.5` with actual run IDs.
+3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState` (already done in Action 2's pre-trigger write)
 4. Email notification via `SendEmailWithAttachments` MCP tool: "Canary deployment started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-5-completed'` (this is part of the Step 5 → Step 6 transition email per Behavior Rule 11; do not emit a separate "canary started" broadcast).
 4a. **Per-pipeline stamp summary** (Layer 3 — narrative addition): for each triggered pipeline key, call `Get-StampsForPipeline -PipelineKey $key -Scope canary` (Step 5/7) or `-Scope production` (Step 10/15) to expand the pipeline → stamp list, and render it into the Teams summary message under a "Deploying to" column. Format: `<pipelineName>: stamp1, stamp2, …` (or `(all routed stamps)` if the call returns the full set). This makes it visually obvious which DCs each pipeline will actually hit — caught a misrouted pipeline twice in dry-runs.
 5. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):

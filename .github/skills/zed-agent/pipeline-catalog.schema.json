@@ -150,6 +150,27 @@
           "description": "Free-form pass-through to ADO. Reserved {{placeholders}}: {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}}.",
           "additionalProperties": true
         },
+        "stampNameStyle": {
+          "type": "string",
+          "enum": ["short", "full"],
+          "default": "short",
+          "description": "Controls which stamp field Resolve-TemplateParams.ps1 uses for {{*Stamps}} tokens. 'short' (default) → stampId (e.g. 'ea-01'); 'full' → stampName (e.g. 'ea-can02-prot1'). Different pipeline YAMLs expect different formats — SFMC's ParseStampId expects short IDs."
+        },
+        "sdpType": {
+          "type": "string",
+          "description": "EV2 SDP (Safe Deployment Practice) type for this pipeline. Overrides the resolver default when present. Common values: 'Express', 'Standard', 'Conservative'. When absent, defaults to 'Express' for backward compatibility with existing catalog entries.",
+          "minLength": 1
+        },
+        "requiresExclusions": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, Resolve-TemplateParams.ps1 throws if {{excludeStamps}} would be empty for production scope. Prevents accidental global deploy when CCOA exclusions are expected but missing."
+        },
+        "maxRegions": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of regions this pipeline should target. Resolve-TemplateParams.ps1 throws UNSAFE_REGION_SCOPE if the resolved region count exceeds this value for production scope. Set to the expected region count from a known-good reference run."
+        },
         "_learnedFrom": {
           "type": "object",
           "description": "Provenance recorded by Group 11 wizard (setup-service). Skipped by the schema-driven empty-skeleton generator but accepted by the validator. Helps future re-runs detect drift (e.g., YAML sha changed).",

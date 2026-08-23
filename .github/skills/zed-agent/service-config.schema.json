@@ -659,6 +659,11 @@
                     "description": "Cluster type token consumed by pipeline-catalog.json → canaryRouting.clusterTypeMap (e.g. 'sfrp', 'sfmc', 'eap', 'aks'). May be null at setup time — Get-StampInventory.ps1 fills it lazily by running kusto.canary when canaryRouting.mode == 'cluster-type'. setup-service Group 4c never prompts for this value.",
                     "minLength": 1
                   },
+                  "stampId": {
+                    "type": "string",
+                    "description": "Short stamp identifier expected by pipelines that use ParseStampId (e.g. 'ea-01', 'ecy-01'). When present, Resolve-TemplateParams.ps1 uses this for {{canaryStamps}} / {{*Stamps}} tokens by default (stampNameStyle='short'). When absent, falls back to stampName.",
+                    "pattern": "^[a-z0-9]+-[a-z0-9]+$"
+                  },
                   "notes": {
                     "type": "string",
                     "description": "Free-text annotation (owner, decommission date, etc.)."
@@ -666,6 +671,25 @@
                 }
               },
               "minItems": 1
+            }
+          }
+        },
+        "ccoaExclusions": {
+          "type": "object",
+          "description": "CCOA (Change Control / Operational Awareness) exclusions for the current release cycle. Stamps listed here are subtracted from all emitted {{*Stamps}} tokens and populate {{excludeStamps}}. Regions listed here are subtracted from all emitted {{*Regions}} tokens. Populated by setup-service or manually by the release owner before Step 15.",
+          "additionalProperties": false,
+          "properties": {
+            "stamps": {
+              "type": "array",
+              "description": "Stamp IDs excluded from production deployment (e.g. ['isc-01', 'ne5s-01']). These populate {{excludeStamps}} and are subtracted from all {{*Stamps}} tokens.",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            },
+            "regions": {
+              "type": "array",
+              "description": "Region names excluded from production deployment (e.g. ['indiasouthcentral', 'northeastus5']). These are subtracted from all {{*Regions}} tokens. A region should be listed here when ALL its stamps are excluded.",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
             }
           }
         }

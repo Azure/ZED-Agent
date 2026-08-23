@@ -138,6 +138,68 @@ if ($triggered) {
     } catch { }
 }
 
+# ── L-21: EV2 rollout cancellation after ADO cancel ──
+# Production-scoped runs (Step 10/15) may have submitted an EV2 rollout.
+# Cancelling the ADO build does NOT cancel the EV2 rollout — it continues deploying.
+# Wire in Stop-Ev2Rollout.ps1 to catch active rollouts after ADO cancellation.
+$ev2CancelResult = $null
+$ev2CancelError  = $null
+if ($triggered -and $cancelledAt -and $Step -in @(10, 15)) {
+    $stopEv2Script = Join-Path $PSScriptRoot 'EV2\Stop-Ev2Rollout.ps1'
+    if (Test-Path $stopEv2Script) {
+        # Try to determine if this run had an EV2 rollout via Get-Ev2RolloutStatus.ps1
+        $getStatusScript = Join-Path $PSScriptRoot 'EV2\Get-Ev2RolloutStatus.ps1'
+        # Look up the EV2 service group from pipeline-catalog.json
+        $ev2ServiceGroup = $null
+        $ev2RolloutId    = $null
+        try {
+            $catalogDir = Join-Path (Get-Location) '.github/skills/zed-agent'
+            $catFile    = Join-Path $catalogDir 'pipeline-catalog.json'
+            if (Test-Path $catFile) {
+                $catData = Get-Content $catFile -Raw | ConvertFrom-Json
+                if ($catData.ev2ServiceGroups -and $catData.ev2ServiceGroups.PSObject.Properties[$PipelineKey]) {
+                    $ev2ServiceGroup = $catData.ev2ServiceGroups.$PipelineKey
+                }
+            }
+        } catch { }
+
+        if ($ev2ServiceGroup) {
+            # Attempt to read EV2 rollout status for this build
+            try {
+                if (Test-Path $getStatusScript) {
+                    $statusResult = & $getStatusScript -BuildId $runId -ServiceGroup $ev2ServiceGroup -ErrorAction Stop
+                    if ($statusResult -and $statusResult.RolloutId) {
+                        $ev2RolloutId = $statusResult.RolloutId
+                    }
+                }
+            } catch {
+                # No rollout found for this build — this is expected for test runs
+                # that cancel before EV2 submission. Not an error.
+            }
+
+            if ($ev2RolloutId) {
+                # [UNVERIFIED — endpoint needs confirmation] inherited from Stop-Ev2Rollout.ps1
+                # The EV2 cancel endpoint is unverified. Stop-Ev2Rollout.ps1 preserves the
+                # EV2_CANCEL_UNVERIFIED failure mode — do NOT silently ignore failures.
+                try {
+                    $ev2CancelResult = & $stopEv2Script `
+                        -RolloutId $ev2RolloutId `
+                        -ServiceGroup $ev2ServiceGroup `
+                        -BuildId "$runId" `
+                        -VerifyTimeoutSeconds 60 `
+                        -ErrorAction Stop
+                } catch {
+                    $ev2CancelError = $_.Exception.Message
+                    # L-21: Fail LOUDLY — an uncancelled EV2 rollout is a production safety issue.
+                    # Do NOT swallow this error. Surface it in the capture record and re-throw.
+                    Write-Error "L-21 EV2 CANCELLATION FAILURE for build $runId, rollout $ev2RolloutId : $ev2CancelError"
+                    throw "EV2_CANCEL_WIRING_FAILED: ADO build $runId was cancelled but the EV2 rollout $ev2RolloutId could not be cancelled/verified. Pipeline: $PipelineKey. Error: $ev2CancelError. IMMEDIATE ACTION: check the EV2 portal for rollout $ev2RolloutId status and cancel manually if still active."
+                }
+            }
+        }
+    }
+}
+
 # ── Build capture record ──
 $record = [ordered]@{
     ts                 = (Get-Date).ToUniversalTime().ToString('o')
@@ -152,6 +214,9 @@ $record = [ordered]@{
     queuedAt           = $queuedAt
     cancelledAt        = $cancelledAt
     finalState         = $finalState
+    ev2RolloutId       = $ev2RolloutId
+    ev2CancelResult    = if ($ev2CancelResult) { $ev2CancelResult.cancelVerified } else { $null }
+    ev2CancelError     = $ev2CancelError
     error              = if ($queueError) { $queueError } elseif ($cancelError) { "cancel: $cancelError" } else { $null }
 }
 

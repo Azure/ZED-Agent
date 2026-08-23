@@ -203,6 +203,23 @@ if ($Scope -eq 'canary' -or $canaryStamps.Count -gt 0) {
     $tokens['{{canaryRegions}}'] = ''
 }
 
+# L-06: canaryProdStamps / canaryProdRegions — Public-cloud canary-scope stamps
+# These are stamps in inventory.canary.stamps with cloud=Public (e.g., ecy-01, ccy-01).
+# They deploy to Public-cloud canary regions in a single pipeline run alongside Canary-cloud stamps.
+# Reuses the existing -Cloud filter from Get-FilteredStamps (WP-A).
+# Save/restore droppedAcc to avoid polluting the primary canaryStamps drop list —
+# canaryProd drops are informational only and should not inflate the main drop count.
+$canaryProdStamps = @()
+if ($cfg.inventory -and $cfg.inventory.canary -and $cfg.inventory.canary.stamps) {
+    $savedDropCount = $script:droppedAcc.Count
+    $canaryProdStamps = @(Get-FilteredStamps -Stamps $cfg.inventory.canary.stamps -Mode $mode -PipelineCt $pipelineCt -Cloud 'Public')
+    while ($script:droppedAcc.Count -gt $savedDropCount) { $script:droppedAcc.RemoveAt($script:droppedAcc.Count - 1) }
+}
+$canaryProdStampLabels = @($canaryProdStamps | ForEach-Object { Get-StampLabel -Stamp $_ -Style $stampStyle })
+$canaryProdRegions     = @($canaryProdStamps | ForEach-Object { $_.region } | Where-Object { $_ } | Sort-Object -Unique)
+$tokens['{{canaryProdStamps}}']  = ($canaryProdStampLabels -join $joinSep)
+$tokens['{{canaryProdRegions}}'] = ($canaryProdRegions -join $joinSep)
+
 # Production cloud tokens (always populate; production scope filters by clusterType; canary scope leaves them empty)
 foreach ($prefix in $cloudMap.Keys) {
     $cloudKey   = $cloudMap[$prefix]
@@ -278,17 +295,209 @@ foreach ($prefix in $cloudMap.Keys) {
 
 # --- Substitute into templateParameters ---
 $resolved = @{}
+
+# L-06: Read paramFormat from discoveryNotes (ps-array, regions-wrapper, or bare/default)
+$paramFormat = $null
+if ($entry.PSObject.Properties['discoveryNotes'] -and $entry.discoveryNotes -and
+    $entry.discoveryNotes.PSObject.Properties['paramFormat']) {
+    $paramFormat = [string]$entry.discoveryNotes.paramFormat
+}
+
+# L-06: Short-region-name to full-region-name mapping for regions-wrapper format
+# Uses the stamp inventory's region field which already contains full Azure region names
+# (e.g., 'eastasia', 'eastus2'). No additional mapping needed if inventory regions are full names.
+
+function Format-ParamValue {
+    param([string]$Value, [string]$Format)
+    if (-not $Format -or $Format -eq 'bare' -or -not $Value) { return $Value }
+    switch ($Format) {
+        'ps-array' {
+            # Convert comma-separated values to PowerShell array notation: @("v1","v2")
+            $items = $Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+            if ($items.Count -eq 0) { return '@()' }
+            $quoted = $items | ForEach-Object { "`"$_`"" }
+            return '@(' + ($quoted -join ',') + ')'
+        }
+        'regions-wrapper' {
+            # Wrap comma-separated region names in regions(...) format
+            $items = $Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+            if ($items.Count -eq 0) { return '' }
+            return 'regions(' + ($items -join ',') + ')'
+        }
+        default { return $Value }
+    }
+}
+
 if ($entry.templateParameters) {
     foreach ($p in $entry.templateParameters.PSObject.Properties) {
         $v = $p.Value
         if ($v -is [string] -and $tokens.ContainsKey($v)) {
-            $resolved[$p.Name] = $tokens[$v]
+            $resolvedVal = $tokens[$v]
+            # L-06: apply paramFormat to token-resolved values
+            if ($paramFormat -and $resolvedVal) {
+                $resolvedVal = Format-ParamValue -Value $resolvedVal -Format $paramFormat
+            }
+            $resolved[$p.Name] = $resolvedVal
         } elseif ($v -is [string] -and $v -match '\{\{[^}]+\}\}') {
             # Token-shaped literal we don't know about — leave as-is and flag.
             $resolved[$p.Name] = $v
             $agentGaps.Add("unknown-reserved-token: param=$($p.Name) value=$v")
         } else {
             $resolved[$p.Name] = $v
+        }
+    }
+}
+
+# --- L-11: Per-pipeline script flags (sovereign/script) ---
+# Script flags (MCScript, FFScript, BleuScript, etc.) are per-pipeline values.
+# They are stored directly in templateParameters as static values (not tokens).
+# Absence is distinct from false — a parameter not present in templateParameters
+# means the pipeline has no such parameter at all (different from passing false).
+# This is already handled by the catalog design: only declared parameters are emitted.
+# No additional code needed — the catalog stores per-pipeline statics and the
+# substitution loop above passes them through unchanged. The validation below
+# ensures ev2CloudCoverage agrees with the resolved flags.
+
+# --- L-15: ev2CloudCoverage cross-check against resolved script flags ---
+if ($Scope -eq 'production' -and $catalog.PSObject.Properties['ev2CloudCoverage'] -and $catalog.ev2CloudCoverage) {
+    $declaredCoverage = $null
+    if ($catalog.ev2CloudCoverage.PSObject.Properties[$PipelineKey]) {
+        $declaredCoverage = @($catalog.ev2CloudCoverage.$PipelineKey)
+    }
+    if ($declaredCoverage -and $declaredCoverage.Count -gt 0) {
+        # Derive expected coverage from the resolved script flags in $resolved
+        $scriptFlagMap = @{
+            'MCScript'    = 'Mooncake'
+            'FFScript'    = 'Fairfax'
+            'BleuScript'  = 'Bleu'
+            'UsNatScript' = 'USNat'
+            'UsSecScript' = 'USSec'
+        }
+        $contradictions = @()
+        foreach ($flagName in $scriptFlagMap.Keys) {
+            $cloud = $scriptFlagMap[$flagName]
+            if ($resolved.ContainsKey($flagName)) {
+                $flagVal = [string]$resolved[$flagName]
+                $flagBool = $flagVal -match '^(true|True|TRUE)$'
+                $cloudDeclared = $cloud -in $declaredCoverage
+                if ($flagBool -and -not $cloudDeclared) {
+                    $contradictions += "$flagName=$flagVal but '$cloud' is NOT in ev2CloudCoverage [$($declaredCoverage -join ', ')]. Add '$cloud' to ev2CloudCoverage.$PipelineKey."
+                }
+                if (-not $flagBool -and $cloudDeclared) {
+                    $contradictions += "$flagName=$flagVal but '$cloud' IS in ev2CloudCoverage [$($declaredCoverage -join ', ')]. Remove '$cloud' from ev2CloudCoverage.$PipelineKey or set $flagName=true."
+                }
+            }
+            # L-11: absent flag means the pipeline has no such parameter — do not treat as false.
+            # Only flag a contradiction if the cloud IS declared but the flag is absent AND
+            # other flags exist (indicating this pipeline uses script flags).
+        }
+        if ($contradictions.Count -gt 0) {
+            throw "EV2_CLOUD_COVERAGE_MISMATCH: pipeline '$PipelineKey' ev2CloudCoverage contradicts resolved script flags:`n$($contradictions -join "`n")`nOperator action: update pipeline-catalog.json → ev2CloudCoverage.$PipelineKey to match the pipeline's actual script flags from its reference run."
+        }
+    }
+}
+
+# --- L-10: EV2 dual-gate alignment (PubRegions vs PublicExcludestamps) ---
+# Two independent EV2 gates must agree:
+#   1. PubRegions — controls which regions get deployment actions generated
+#   2. PublicExcludestamps — controls which stamps inside those regions are skipped
+# A stamp expected to deploy whose region is absent from PubRegions → silent no-deploy.
+# A region in PubRegions where every stamp is excluded → silent no-op region.
+if ($Scope -eq 'production') {
+    $pubRegionsParam   = $null
+    $excludeStampsParam = $null
+    # Find the PubRegions and PublicExcludestamps values in the resolved parameters
+    foreach ($pName in $resolved.Keys) {
+        if ($pName -match '^Pub.*Regions$' -or $pName -eq 'PubRegions') {
+            $pubRegionsParam = @{ name = $pName; value = $resolved[$pName] }
+        }
+        if ($pName -match 'Exclude.*[Ss]tamps' -or $pName -eq 'PublicExcludestamps') {
+            $excludeStampsParam = @{ name = $pName; value = $resolved[$pName] }
+        }
+    }
+
+    if ($pubRegionsParam -and $pubRegionsParam.value -and $excludeStampsParam) {
+        # Parse PubRegions — handle both regions(...) wrapper and bare CSV
+        $pubRegionsVal = $pubRegionsParam.value
+        $pubRegionsList = @()
+        if ($pubRegionsVal -match '^regions\((.+)\)$') {
+            $pubRegionsList = @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } elseif ($pubRegionsVal -match '^\@\(') {
+            # PS array format: @("r1","r2")
+            $inner = $pubRegionsVal -replace '^\@\(', '' -replace '\)$', ''
+            $pubRegionsList = @($inner -split ',' | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_ })
+        } else {
+            $pubRegionsList = @($pubRegionsVal -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        }
+
+        # Parse PublicExcludestamps
+        $excludeStampsVal = $excludeStampsParam.value
+        $excludeStampsList = @()
+        if ($excludeStampsVal) {
+            if ($excludeStampsVal -match '^\@\(') {
+                $inner = $excludeStampsVal -replace '^\@\(', '' -replace '\)$', ''
+                $excludeStampsList = @($inner -split ',' | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_ })
+            } else {
+                $excludeStampsList = @($excludeStampsVal -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            }
+        }
+        $excludeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($es in $excludeStampsList) { [void]$excludeSet.Add($es) }
+
+        # Build stamp→region map from inventory for this pipeline's cloud scope
+        $stampToRegion = @{}
+        if ($cfg.inventory -and $cfg.inventory.production) {
+            foreach ($cloudProp in $cfg.inventory.production.PSObject.Properties) {
+                $cloudInv = $cloudProp.Value
+                if ($cloudInv -and $cloudInv.PSObject.Properties['stamps']) {
+                    foreach ($s in $cloudInv.stamps) {
+                        $label = Get-StampLabel -Stamp $s -Style $stampStyle
+                        if ($s.PSObject.Properties['region'] -and $s.region) {
+                            $stampToRegion[$label] = [string]$s.region
+                        }
+                    }
+                }
+            }
+        }
+
+        $gateErrors = @()
+
+        # Check 1: stamp not in exclude list → its region must be in PubRegions
+        $pubRegionsSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($r in $pubRegionsList) { [void]$pubRegionsSet.Add($r) }
+
+        foreach ($stampLabel in $stampToRegion.Keys) {
+            if (-not $excludeSet.Contains($stampLabel)) {
+                $stampRegion = $stampToRegion[$stampLabel]
+                if ($stampRegion -and -not $pubRegionsSet.Contains($stampRegion)) {
+                    $gateErrors += "Stamp '$stampLabel' (region='$stampRegion') is NOT excluded but its region is absent from $($pubRegionsParam.name). EV2 will generate NO deployment action for this stamp. Add '$stampRegion' to $($pubRegionsParam.name) or add '$stampLabel' to $($excludeStampsParam.name)."
+                }
+            }
+        }
+
+        # Check 2: region in PubRegions where ALL stamps in that region are excluded → silent no-op
+        $regionToStamps = @{}
+        foreach ($stampLabel in $stampToRegion.Keys) {
+            $r = $stampToRegion[$stampLabel]
+            if (-not $regionToStamps.ContainsKey($r)) { $regionToStamps[$r] = @() }
+            $regionToStamps[$r] += $stampLabel
+        }
+
+        foreach ($region in $pubRegionsList) {
+            if ($regionToStamps.ContainsKey($region)) {
+                $stampsInRegion = $regionToStamps[$region]
+                $allExcluded = $true
+                foreach ($sl in $stampsInRegion) {
+                    if (-not $excludeSet.Contains($sl)) { $allExcluded = $false; break }
+                }
+                if ($allExcluded -and $stampsInRegion.Count -gt 0) {
+                    $gateErrors += "Region '$region' is in $($pubRegionsParam.name) but ALL its stamps ($($stampsInRegion -join ', ')) are in $($excludeStampsParam.name). This is a silent no-op region — EV2 generates the region action but skips every stamp. Remove '$region' from $($pubRegionsParam.name) or remove at least one stamp from $($excludeStampsParam.name)."
+                }
+            }
+        }
+
+        if ($gateErrors.Count -gt 0) {
+            throw "EV2_DUAL_GATE_MISALIGNMENT: pipeline '$PipelineKey' has misaligned PubRegions and ExcludeStamps gates:`n$($gateErrors -join "`n")`nOperator action: align the two gates per the 4-step reclassification rule in the deployment guide."
         }
     }
 }

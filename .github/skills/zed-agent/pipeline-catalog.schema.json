@@ -24,10 +24,10 @@
 
     "ev2CloudCoverage": {
       "type": "object",
-      "description": "Map of pipeline key (or infra-type variant) → array of clouds that pipeline deploys to. Drives Step 15 dashboard rows.",
+      "description": "Map of pipeline key → array of clouds that pipeline deploys to. MUST be derived per-pipeline from the pipeline's own reference run and script flags — never by copying a sibling. Cross-checked at trigger time against resolved script flags (L-15). Drives Step 15 dashboard rows.",
       "additionalProperties": {
         "type": "array",
-        "items": { "type": "string", "enum": ["Prod", "Fairfax", "Mooncake", "USNat", "USSec"] }
+        "items": { "type": "string", "enum": ["Prod", "Public", "Fairfax", "Mooncake", "Bleu", "USNat", "USSec"] }
       }
     },
 
@@ -147,7 +147,7 @@
         },
         "templateParameters": {
           "type": "object",
-          "description": "Free-form pass-through to ADO. Reserved {{placeholders}}: {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}}.",
+          "description": "Free-form pass-through to ADO. Reserved {{placeholders}}: {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}}, {{canaryStamps}}, {{canaryRegions}}, {{canaryProdStamps}}, {{canaryProdRegions}}.",
           "additionalProperties": true
         },
         "stampNameStyle": {
@@ -190,6 +190,12 @@
           "properties": {
             "exclusionFormat": { "type": "string", "description": "e.g., 'comma', 'semicolon', 'json-array', 'newline'." },
             "stampNameStyle":  { "type": "string", "description": "e.g., 'lowercase', 'mixed', 'prefix-ea-can'." },
+            "paramFormat": {
+              "type": "string",
+              "enum": ["bare", "ps-array", "regions-wrapper"],
+              "default": "bare",
+              "description": "Controls value formatting applied after token substitution. 'bare' (default): values emitted as-is (e.g., 'ea-01'). 'ps-array': wraps in PowerShell array notation (e.g., '@(\"ea-01\")'). 'regions-wrapper': wraps in regions() with full Azure region names (e.g., 'regions(eastasia)')."
+            },
             "extraParams":     { "type": "array",  "items": { "type": "string" }, "description": "Parameters present in prior runs but NOT declared in the YAML. Surface to maintainers — likely stale." },
             "freeText":        { "type": "string" }
           },

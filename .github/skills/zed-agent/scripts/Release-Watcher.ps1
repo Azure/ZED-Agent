@@ -115,75 +115,32 @@ while ($true) {
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 3 ∥ Step 4 side-channel poll
-    # Implements the Step Dependency Matrix parallelism contract (Step 3 ∥ Step 4)
-    # without requiring a multi-directive watcher. If Step 4's inline (Phase A)
-    # work has completed and the Excel Impact column is still being filled,
-    # opportunistically poll the OneDrive file on every tick — regardless of
-    # which step owns the primary directive (typically poll-ado-build during
-    # Step 3, poll-ado-pipelines during Step 5, etc.). Failures here are
-    # non-fatal — the primary directive polling continues unaffected.
+    # Delegates to shared Invoke-Step4SideChannel.ps1 so both the watcher and
+    # cloud cold-resume sessions use identical logic. Non-fatal.
     # ─────────────────────────────────────────────────────────────────────────
     try {
         $step4 = $state.steps | Where-Object { $_.number -eq 4 }
         if ($state.step4InlineCompleted -eq $true `
             -and $step4 -and $step4.status -eq 'in-progress' `
             -and $state.step4ExcelUrl) {
-            $tokenS4 = Get-AzToken "https://graph.microsoft.com"
-            if ($tokenS4) {
-                $hdrS4 = @{ Authorization = "Bearer $tokenS4" }
-                $tmpS4 = Join-Path $env:TEMP "watcher_step4_excel_$ReleaseId.xlsx"
-                Invoke-RestMethod -Uri $state.step4ExcelUrl -Headers $hdrS4 -OutFile $tmpS4 -TimeoutSec 60 -ErrorAction Stop
-                if (-not (Get-Module -ListAvailable ImportExcel)) { Install-Module ImportExcel -Scope CurrentUser -Force }
-                $rowsS4 = Import-Excel $tmpS4 -ErrorAction Stop
-                $totalS4 = $rowsS4.Count
-                $filledS4 = ($rowsS4 | Where-Object { $_.'Impact' -and $_.'Impact'.ToString().Trim() -ne '' }).Count
-                $pctS4 = if ($totalS4 -gt 0) { [math]::Round(($filledS4 / $totalS4) * 100) } else { 0 }
-                Remove-Item $tmpS4 -Force -ErrorAction SilentlyContinue
-
+            $sideChannelScript = Join-Path $PSScriptRoot 'Invoke-Step4SideChannel.ps1'
+            if (Test-Path $sideChannelScript) {
                 $auditFileS4 = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
-                @{ ts = (Get-Date -Format 'o'); event = 'step4-side-channel-poll'; filled = $filledS4; total = $totalS4; pct = $pctS4 } | ConvertTo-Json -Compress | Add-Content $auditFileS4 -Encoding UTF8
-
-                Invoke-WithStateLock -LockFile $stateLock -Action {
-                    $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                    $latest.step4ExcelImpactPct = $pctS4
-                    if ($pctS4 -ge 100) {
-                        $s4 = $latest.steps | Where-Object { $_.number -eq 4 }
-                        if ($s4 -and $s4.status -eq 'in-progress') {
-                            $s4.status = 'completed'
-                            $s4.completedAt = (Get-Date).ToUniversalTime().ToString('o')
-                            @{ ts = (Get-Date -Format 'o'); event = 'step4-completed-by-side-channel'; pct = $pctS4 } | ConvertTo-Json -Compress | Add-Content $auditFileS4 -Encoding UTF8
-                        }
-                    }
-                    $latest.lastUpdated = (Get-Date).ToUniversalTime().ToString('o')
-                    $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+                $tokenS4 = Get-AzToken "https://graph.microsoft.com"
+                $s4Params = @{
+                    ReleaseId   = $ReleaseId
+                    StateFile   = $stateFile
+                    StateLock   = $stateLock
+                    AuditFile   = $auditFileS4
                 }
-
-                # 24h nudge if no progress
-                if ($pctS4 -lt 100 -and $state.step4InlineCompletedAt -and -not $state.step4NudgeSentAt) {
-                    $inlineCompletedAt = [datetime]$state.step4InlineCompletedAt
-                    if ((Get-Date) -gt $inlineCompletedAt.AddHours(24)) {
-                        try {
-                            $sendTeamsScript = Join-Path (Get-Location) ".github/skills/zed-agent/scripts/Send-TeamsMessage.ps1"
-                            $nudgeTemplate = Join-Path (Get-Location) ".github/skills/zed-agent/templates/commit-nudge-message.html"
-                            & $sendTeamsScript -TemplatePath $nudgeTemplate -TemplateVariables @{ releaseId = $ReleaseId; fillPct = $pctS4; excelUrl = $state.step4ExcelUrl }
-                            Invoke-WithStateLock -LockFile $stateLock -Action {
-                                $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                                $latest.step4NudgeSentAt = (Get-Date).ToUniversalTime().ToString('o')
-                                $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
-                            }
-                        } catch {
-                            @{ ts = (Get-Date -Format 'o'); event = 'step4-nudge-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileS4 -Encoding UTF8
-                        }
-                    }
-                }
+                if ($tokenS4) { $s4Params.AccessToken = $tokenS4 }
+                & $sideChannelScript @s4Params | Out-Null
             }
         }
     } catch {
-        # Side-channel failure is non-fatal — primary directive polling continues
         $auditFileS4Err = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
         @{ ts = (Get-Date -Format 'o'); event = 'step4-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileS4Err -Encoding UTF8
     }
-
     if (-not $dir -or $dir.action -eq 'none') { Start-Sleep -Seconds 30; continue }
 
     $conditionMet = $false

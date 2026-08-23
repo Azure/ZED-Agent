@@ -50,6 +50,27 @@
     "safeFlyUrl":        { "type": "string", "format": "uri" },
     "safeFlyStatus":     { "type": "string" },
     "mergeBackPrId":     { "type": ["integer", "string"] },
-    "testMode":          { "type": "boolean" }
+    "testMode":          { "type": "boolean" },
+    "triggeredPipelines": {
+      "type": "object",
+      "description": "Map of step number → array of pipeline run IDs triggered by that step. Written at trigger time for rollback/recovery (e.g., Step 7 reads Step 5's triggered set). Keys are string step numbers.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": ["integer", "string"] }
+      }
+    },
+    "pipelineTriggerTimestamps": {
+      "type": "object",
+      "description": "Map of step number → ISO-8601 timestamp recorded BEFORE the pipeline is triggered. BVT query windows (Steps 6, 8, 11) use these as their start bound. Must be written atomically before trigger.",
+      "additionalProperties": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "step4InlineCompleted": { "type": "boolean", "description": "True after Step 4 Phase A (inline) work is done." },
+    "step4InlineCompletedAt": { "type": "string", "format": "date-time" },
+    "step4ExcelUrl": { "type": "string", "format": "uri", "description": "OneDrive/SharePoint URL of the commit Excel file." },
+    "step4ExcelImpactPct": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage of Excel rows with Impact column filled." },
+    "step4NudgeSentAt": { "type": "string", "format": "date-time", "description": "Timestamp of the 24h nudge message, used for dedup." }
   }
 }

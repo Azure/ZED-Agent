@@ -10,12 +10,28 @@ function Update-ReleaseState {
         # Used by Layer 3 drift-halt to attach 'driftPayload' alongside the
         # status flip (single lock, single write). Accepts hashtable or
         # PSCustomObject; existing keys on the step are overwritten.
-        $StepPayload
+        $StepPayload,
+        # Optional: extra top-level properties to merge into state.json on write.
+        # Used for atomicity fixes (e.g., pipelineTriggerTimestamps, triggeredPipelines).
+        # Accepts hashtable or PSCustomObject.
+        $StateProperties
     )
-    $baseDir = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId"
-    $stateFile = Join-Path $baseDir "state.json"
-    $auditFile = Join-Path $baseDir "audit.jsonl"
-    $stateLock = Join-Path $baseDir "state.json.lock"
+    # Resolve paths: supports both .zed-release/ (durable/cloud) and .zed-agent/ (local)
+    $resolveScript = Join-Path $PSScriptRoot 'Resolve-StatePaths.ps1'
+    if (Test-Path $resolveScript) {
+        $paths = & $resolveScript -ReleaseId $ReleaseId
+        $baseDir   = Split-Path $paths.StateFile -Parent
+        $stateFile = $paths.StateFile
+        $auditFile = $paths.AuditFile
+        # Lock always lives in scratch (never committed)
+        $stateLock = $paths.LockFile
+    } else {
+        # Fallback for backward compatibility
+        $baseDir = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId"
+        $stateFile = Join-Path $baseDir "state.json"
+        $auditFile = Join-Path $baseDir "audit.jsonl"
+        $stateLock = Join-Path $baseDir "state.json.lock"
+    }
 
     . (Join-Path $PSScriptRoot 'Invoke-WithStateLock.ps1')
 
@@ -47,6 +63,15 @@ function Update-ReleaseState {
                     else { Add-Member -InputObject $step -MemberType NoteProperty -Name $p.Name -Value $p.Value -Force }
                 }
             }
+            # Merge top-level StateProperties (atomicity: pipelineTriggerTimestamps, triggeredPipelines, etc.)
+            if ($null -ne $StateProperties) {
+                $stateProps = if ($StateProperties -is [hashtable]) { $StateProperties.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
+                              else { $StateProperties.PSObject.Properties | ForEach-Object { @{ Name = $_.Name; Value = $_.Value } } }
+                foreach ($sp in $stateProps) {
+                    if ($state.PSObject.Properties[$sp.Name]) { $state.($sp.Name) = $sp.Value }
+                    else { Add-Member -InputObject $state -MemberType NoteProperty -Name $sp.Name -Value $sp.Value -Force }
+                }
+            }
             $state.lastUpdated = $now
             $state | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
         }
@@ -61,6 +86,21 @@ function Update-ReleaseState {
     # Append audit entry if provided
     if ($AuditEntry) {
         $AuditEntry | Add-Content $auditFile -Encoding UTF8
+        # Also render a human-readable line to audit.md
+        $auditMdFile = [System.IO.Path]::ChangeExtension($auditFile, '.md')
+        try {
+            $parsed = $AuditEntry | ConvertFrom-Json -ErrorAction SilentlyContinue
+            if ($parsed) {
+                $ts = if ($parsed.ts) { $parsed.ts } elseif ($parsed.timestamp) { $parsed.timestamp } else { (Get-Date -Format 'o') }
+                $ev = if ($parsed.event) { $parsed.event } elseif ($parsed.action) { $parsed.action } else { 'unknown' }
+                $extra = ($parsed.PSObject.Properties | Where-Object { $_.Name -notin @('ts','timestamp','event','action') } | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', '
+                $mdLine = "| $ts | $ev | $extra |"
+                if (-not (Test-Path $auditMdFile)) {
+                    "# Audit Log`n`n| Timestamp | Event | Details |`n|-----------|-------|---------|" | Set-Content $auditMdFile -Encoding UTF8
+                }
+                $mdLine | Add-Content $auditMdFile -Encoding UTF8
+            }
+        } catch { <# audit.md rendering is best-effort #> }
     }
     return @{ success = $true; path = $stateFile }
 }

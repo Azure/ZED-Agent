@@ -224,10 +224,15 @@ while ($true) {
                                 $release = Get-Content $releaseFile -Raw -Encoding UTF8 | ConvertFrom-Json
                                 $templatePath = Join-Path (Get-Location) ".github/skills/zed-agent/templates/canary-approval-request.html"
                                 . "$scriptRoot/Expand-Template.ps1"
+                                . "$scriptRoot/Get-ScopeTemplateVars.ps1"
                                 $vars = @{
                                     releaseId = $ReleaseId; buildVersion = $release.buildVersion; branch = $release.branch
                                     approvalRows = ($newRows -join "`n"); ev2Links = ($newEv2Links -join "`n")
                                     releaseOwner = if ($release.releaseOwner) { $release.releaseOwner } else { 'Release Owner' }
+                                }
+                                # L-18: comms must state the route/geography scope of the rollout.
+                                foreach ($kv in (Get-ScopeTemplateVars -ReleaseId $ReleaseId).GetEnumerator()) {
+                                    $vars[$kv.Key] = $kv.Value
                                 }
                                 Send-TeamsMessage -ConversationId $convId -TemplatePath $templatePath -Variables $vars
                                 $dir.postedApprovalUrls += $newApprovalUrls

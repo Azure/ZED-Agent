@@ -5,12 +5,31 @@
 
 ## Endpoints
 
+> **V1 is deprecated.** As of mid-2026, V1 write endpoints return HTTP 410 (ReadOnlyMode).
+> V2 is the supported write path. The script tries endpoints in order:
+> 1. V2-live: `https://safeflyv2.live.azure.com/api/v1.0/requests`
+> 2. V2-classic: `https://www.safefly.azure.com/api/RequestCreation/v2/requests`
+> 3. V1-classic (fallback): `https://www.safefly.azure.com/api/RequestCreation/v1/requests`
+>
+> ⚠️ **[UNVERIFIED — none of these currently accept a write.]** Measured 2026-08-23 during a
+> ZedForge validation run: V2-live returned **HTTP 405** on POST, V2-classic returned **HTTP 500**
+> on every payload shape tried, V1-classic returns **HTTP 410 ReadOnlyMode**. The published
+> migration guide (`aka.ms/safeflyv2/api-migration`) does not resolve. The V2 URLs above are
+> therefore **best-guess shapes, not confirmed contracts** — do not treat them as working.
+> **Step 13 R2D filing is externally blocked until SafeFly publishes a functional V2 write API.**
+> V1 **read** endpoints (approval state, leases, request details) still work.
+>
+> When SafeFly V2 becomes available, confirm the real endpoint + payload shape and replace this
+> cascade with the single verified endpoint. Do **not** resolve this by weakening
+> `success-criteria.json → step.13.safeFlyFiled` — a release that cannot file an R2D must fail
+> loudly, not be recorded as green.
+
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/RequestCreation/v1/requests` | Create a new R2D request |
-| `GET` | `/api/SafeFlyRequest/approvalstate?orgName={org}&requestId={id}` | Check approval status |
-| `GET` | `/api/SafeFlyLease/v1/lease/{serviceId}` | Get leases for a service |
-| `GET` | `/api/SafeFlyRequest/v1/request/{orgName}/{requestId}` | Get request details |
+| `POST` | (see above — tried in order) | Create a new R2D request |
+| `GET` | `/api/SafeFlyRequest/approvalstate?orgName={org}&requestId={id}` | Check approval status (V1 reads still work) |
+| `GET` | `/api/SafeFlyLease/v1/lease/{serviceId}` | Get leases for a service (V1 reads still work) |
+| `GET` | `/api/SafeFlyRequest/v1/request/{orgName}/{requestId}` | Get request details (V1 reads still work) |
 
 ## Authentication
 

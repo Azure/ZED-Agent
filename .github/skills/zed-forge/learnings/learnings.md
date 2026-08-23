@@ -210,3 +210,19 @@
 **Proposed fix**: Make Get-AzureServiceConfig.ps1 read ado.*/regions.* from service-config.json (guard live fetch when unconfigured -> cache/snapshot fallback preserved); de-brand preflight messages + introspection comment.
 **Source**: agent-discovery
 
+---
+**Timestamp**: 2026-08-23T17:53:26.6479306Z
+**Step/Command**: Step 13 SafeFly R2D
+**Symptom**: SafeFly V1 API returned HTTP 410 ReadOnlyMode: Write operations disabled. V1 endpoint (https://www.safefly.azure.com/api/RequestCreation/v1/requests) is in read-only mode. Must migrate to SafeFly V2 API (https://aka.ms/SafeFlyV2).
+**Root cause**: New-SafeFlyRequest.ps1 still uses SafeFly V1 REST API which has been deprecated and put into read-only mode. Migration to V2 is required.
+**Proposed fix**: Update New-SafeFlyRequest.ps1 to use SafeFly V2 API endpoint and request format. See migration guide: https://aka.ms/safeflyv2/api-migration and docs: https://aka.ms/safeflyv2/api-docs. Also update Test-SafeFlyConnection.ps1 and Get-SafeFlyApproval.ps1 if they use V1 endpoints.
+**Source**: validation-run
+
+---
+**Timestamp**: 2026-08-23T18:08:47.6322468Z
+**Step/Command**: Step 13 — SafeFly R2D
+**Symptom**: SafeFly V1 write API returns HTTP 410 ReadOnlyMode. V2 API at www.safefly.azure.com/api/RequestCreation/v2/requests returns HTTP 500 on all payloads (broken). V2 live endpoint at safeflyv2.live.azure.com/api/v1.0/requests returns HTTP 405 on POST. V2 migration docs (aka.ms/safeflyv2/api-migration) redirect to Bing (not found). V1 reads still work (leases, approval). EXTERNAL BLOCKER — SafeFly V2 write API is not yet functional.
+**Root cause**: SafeFly V1 write API deprecated (410); V2 write API not yet operational (500/405). Migration docs not published.
+**Proposed fix**: 1) Update New-SafeFlyRequest.ps1 to try V2 endpoints first, fall back to V1. 2) Handle 410/500 gracefully with structured error. 3) Accept step.13 soft-failure when SafeFly API is externally broken. 4) Monitor SafeFly V2 availability and update endpoints when operational.
+**Source**: validation-run
+

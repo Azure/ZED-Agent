@@ -73,7 +73,16 @@ $ErrorActionPreference = "Stop"
 $cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
 
 # --- Constants ---
-$SafeFlyEndpoint   = "https://www.safefly.azure.com"
+# SafeFly V1 writes deprecated (HTTP 410). V2 endpoints tried in order of preference.
+# ⚠️ [UNVERIFIED] As measured 2026-08-23 none of these accept a write: V2-live → 405,
+# V2-classic → 500, V1-classic → 410 ReadOnlyMode, and the migration guide does not resolve.
+# These are best-guess shapes kept so the cascade works the moment SafeFly V2 goes live.
+# Until then Step 13 fails loudly by design — never downgrade that to a soft pass.
+$SafeFlyEndpoints = @(
+    @{ Label = "V2-live"; Base = "https://safeflyv2.live.azure.com"; Path = "/api/v1.0/requests" }
+    @{ Label = "V2-classic"; Base = "https://www.safefly.azure.com"; Path = "/api/RequestCreation/v2/requests" }
+    @{ Label = "V1-classic"; Base = "https://www.safefly.azure.com"; Path = "/api/RequestCreation/v1/requests" }
+)
 $SafeFlyResourceId = "api://6bca76ac-6a99-4b70-bb47-23ae8bc1f0f6"
 $OrgName           = "r2d"
 $ServiceTreeId     = $cfg.serviceTreeIds.safefly
@@ -234,17 +243,41 @@ $headers = @{
     "Content-Type" = "application/json"
 }
 
-try {
-    $response = Invoke-RestMethod `
-        -Uri "$SafeFlyEndpoint/api/RequestCreation/v1/requests" `
-        -Method POST `
-        -Headers $headers `
-        -Body $jsonBody
+# --- POST — try V2 endpoints first, then V1 ---
+Write-Host "Submitting SafeFly R2D request..." -ForegroundColor Gray
+$response = $null
+$lastError = $null
+foreach ($ep in $SafeFlyEndpoints) {
+    $uri = "$($ep.Base)$($ep.Path)"
+    Write-Host "  Trying $($ep.Label): $uri" -ForegroundColor Gray
+    try {
+        $response = Invoke-RestMethod `
+            -Uri $uri `
+            -Method POST `
+            -Headers $headers `
+            -Body $jsonBody
+        Write-Host "  ✅ $($ep.Label) succeeded" -ForegroundColor Green
+        break
+    }
+    catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        $detail     = $_.ErrorDetails.Message
+        $lastError  = "SafeFly $($ep.Label) returned HTTP $statusCode — $detail"
+        if ($statusCode -eq 410) {
+            Write-Host "  ⚠️  $($ep.Label) HTTP 410 (read-only mode) — trying next endpoint" -ForegroundColor Yellow
+        } elseif ($statusCode -eq 405) {
+            Write-Host "  ⚠️  $($ep.Label) HTTP 405 (method not allowed) — trying next endpoint" -ForegroundColor Yellow
+        } elseif ($statusCode -eq 500) {
+            Write-Host "  ⚠️  $($ep.Label) HTTP 500 (server error) — trying next endpoint" -ForegroundColor Yellow
+        } else {
+            # Non-transient error (400, 401, 403, 422) — stop trying
+            throw $lastError
+        }
+    }
 }
-catch {
-    $statusCode = $_.Exception.Response.StatusCode.value__
-    $detail     = $_.ErrorDetails.Message
-    throw "SafeFly API returned HTTP $statusCode — $detail"
+
+if (-not $response) {
+    throw "All SafeFly endpoints failed. Last error: $lastError"
 }
 
 # --- Parse response ---

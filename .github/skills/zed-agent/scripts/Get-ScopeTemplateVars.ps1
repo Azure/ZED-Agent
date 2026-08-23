@@ -34,7 +34,12 @@ function Get-ScopeTemplateVars {
     param(
         [string] $ReleaseId,
         [PSCustomObject] $Coverage,
-        [string] $StateRoot
+        [string] $StateRoot,
+        # Optional inputs for the exclusion note. When supplied, {{exclusionNoteHtml}}
+        # classifies deliberate exclusions vs unintended omissions.
+        [PSCustomObject] $ServiceConfig,
+        [object[]] $InventoryDrift,
+        [string[]] $ApprovedRegions
     )
 
     if (-not $Coverage -and $ReleaseId) {
@@ -54,9 +59,10 @@ function Get-ScopeTemplateVars {
 
     if (-not $Coverage) {
         return @{
-            routeCount      = 'not yet computed'
-            geographyCount  = 'not yet computed'
-            regionListHtml  = '<i>Geography coverage has not been computed for this release yet.</i>'
+            routeCount        = 'not yet computed'
+            geographyCount    = 'not yet computed'
+            regionListHtml    = '<i>Geography coverage has not been computed for this release yet.</i>'
+            exclusionNoteHtml = '<i>Exclusion breakdown unavailable — geography coverage has not been computed yet.</i>'
         }
     }
 
@@ -100,9 +106,17 @@ function Get-ScopeTemplateVars {
         $regionListHtml += "<br><b>⚠️ $missingCount geograph(ies) NOT covered:</b> $missingList"
     }
 
+    # L-18 / scope note: one shared renderer for BOTH the Step 15 email and the Teams
+    # path, so the two channels can never state different scopes.
+    . (Join-Path $PSScriptRoot 'Get-RolloutScopeReport.ps1')
+    $scopeReport = Get-RolloutScopeReport -Coverage $Coverage -ServiceConfig $ServiceConfig `
+        -InventoryDrift $InventoryDrift -ApprovedRegions $ApprovedRegions
+    $exclusionNoteHtml = Format-RolloutScopeNote -Report $scopeReport
+
     return @{
-        routeCount     = [string]$routeCount
-        geographyCount = [string]$geographies.Count
-        regionListHtml = $regionListHtml
+        routeCount        = [string]$routeCount
+        geographyCount    = [string]$geographies.Count
+        regionListHtml    = $regionListHtml
+        exclusionNoteHtml = $exclusionNoteHtml
     }
 }

@@ -1715,6 +1715,7 @@ This step polls SafeFly approval via the skill and waits for the release owner's
    - Invoke `.github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope production`. In `productionRouting.mode == "static"` the resolver returns every `production.*` key; in `mode == "cluster-type"` the resolver runs `kusto.production.queryFile` and returns only the keys whose declared cluster type is currently live. Use `$res.resolved | ForEach-Object pipelineKey` as the Step 15 trigger set. Each resolved pipeline pushes to whichever clouds are listed under `CONFIG[pipelines.ev2CloudCoverage.<key>]` — cloud fan-out happens via EV2 inside the pipeline, NOT by triggering the same pipeline multiple times. Write one `cluster-type-routing` audit row plus a `production-trigger-set` row summarizing the resolved keys and their `ev2CloudCoverage`.
    - Pipeline IDs from `CONFIG[pipelines.production.*]` (loaded from pipeline-catalog.json) for each resolved key.
    - Parameters from `pipeline-catalog.json`: `ArtifactsBranch` = current release branch, `PubRegions` = regions from SafeFly R2D scope, `PublicExcludestamps` = CCOA-excluded stamps, `SdpType` = derived SDP type (Standard/Conservative), `ValidateOnlyRollOut` = `"false"`
+   - **⛔ Geography coverage gate (L-16) — run AFTER params are resolved and BEFORE any pipeline is triggered.** Invoke `.github/skills/zed-agent/scripts/Assert-GeographyCoverage.ps1 -PipelineParams $resolvedParams -ReleaseId $ReleaseId`. It computes the **union** of every pipeline's covered geographies and **throws when any expected geography is uncovered**. This is the prot2608 failure class: that rollout was declared complete at **66 of 73** geographies because coverage was only ever checked per pipeline, never across them. Let the throw halt the step as `failed` — do **not** catch it, and do not proceed on a warning. The report it persists to `state.geographyCoverage` is also what feeds the scope note in action 4, so this gate must run before the email is composed or the note renders "not yet computed".
 2. **Record pipeline trigger timestamps**: Save `pipelineTriggerTimestamps.step15.<pipelineKey> = <current UTC ISO 8601>` to `state.json`
 3. **Write watcher directive**: `wait-timer` with `waitUntil` = 1 hour from now (UTC ISO 8601). EV2 rollouts start immediately when the pipeline triggers them, so we wait 1 hour before first poll to let initial SDP stages progress:
    - `onSuccess`: `"start ev2 monitoring for release {id}"`
@@ -1722,6 +1723,18 @@ This step polls SafeFly approval via the skill and waits for the release owner's
    - ADO pipeline completion is irrelevant — the EV2 rollout runs independently
    - ADO builds may even show `Failed` (e.g., monitoring step timeout) while the EV2 rollout continues normally
 4. Send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-15-completed'`: *"Production rollout triggered — {N} pipelines running. EV2 manages staged rollout via SDP nodes. First EV2 status check in 1 hour."* Include EV2 portal link: `https://ev2portal.azure.net/#/?servicegroups=CONFIG[pipelines.ev2ServiceGroups]*&daterange=1&rolloutinfra=Prod`. No Teams unless owner has configured `step-15-completed` routing.
+   - **Scope note (mandatory).** The email MUST state what is *not* in the rollout, not just how many pipelines are running. Build the tokens with:
+     ```powershell
+     . .\.github\skills\zed-agent\scripts\Get-ScopeTemplateVars.ps1
+     $vars = Get-ScopeTemplateVars -ReleaseId $ReleaseId `
+         -ServiceConfig $cfg `
+         -InventoryDrift $readiness.inventory.drift `
+         -ApprovedRegions $safeFlyApprovedRegions
+     # → routeCount, geographyCount, regionListHtml, exclusionNoteHtml
+     ```
+     Append `{{exclusionNoteHtml}}` to the body under a **"Regions/stamps NOT in this rollout"** heading. It renders two clearly separated blocks: **🔴 unintended** (missing geographies from the L-16 gate, and stamps the inventory could not validate — these mean the rollout may be wrong) and **ℹ️ deliberate** (CCOA exclusions, regions outside the SafeFly R2D scope, other-cloud stamps).
+   - ⚠️ **The note REPORTS, it never authorises.** Action 0b below still blocks the rollout on missing geographies. Never treat "it was mentioned in the email" as approval — every P0 in `lessons-learned.md` reached production because a warning was skimmed past under release pressure.
+   - This is the same renderer the Teams path uses, so the two channels cannot state different scopes.
 
 **Actions — Phase 2: EV2 Rollout Monitoring** (triggered by the 1-hour wait-timer completing):
 5. **Write watcher directive**: `poll-ev2-rollout` with `pollIntervalSeconds = 3600` (1 hour) and targets from `pipeline-catalog.json → ev2ServiceGroups` — includes **all clouds** from `CONFIG[pipelines.ev2CloudCoverage]`. Each pipeline produces rollouts for multiple clouds. **The Release-Watcher polls the EV2 REST API for rollout progress — it does NOT check ADO pipeline status:**

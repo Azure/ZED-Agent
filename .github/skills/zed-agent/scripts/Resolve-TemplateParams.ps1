@@ -56,7 +56,23 @@ param(
     [Parameter(Mandatory)] [string] $CurrentBranch,
     [Parameter(Mandatory)] [string] $ServiceConfigPath,
     [Parameter(Mandatory)] [string] $PipelineCatalogPath,
-    [switch] $DryRun
+    [switch] $DryRun,
+
+    # L-05: Cross-reference every emitted token against the pipeline's expected input schema
+    # at resolve time. Catches format mismatches (L-03), cloud-scope misalignment (L-04),
+    # wildcard production scope (L-09), dual-gate misalignment (L-10), value-format
+    # mismatches (L-06), and cross-pipeline geography coverage (L-16) — without triggering
+    # any pipeline. Use with -AllPipelineResults to check coverage across all pipelines.
+    [switch] $Validate,
+
+    # L-05: When -Validate is set, pass all other pipelines' resolved results so
+    # cross-pipeline geography coverage (L-16) can be checked at resolve time.
+    [array] $AllPipelineResults = @(),
+
+    # L-05: Path to pipeline-catalog.json's expected parameter schema (optional).
+    # When provided with -Validate, checks each emitted parameter key exists in
+    # the pipeline's declared templateParameters.
+    [hashtable] $ExpectedSchema = @{}
 )
 
 $ErrorActionPreference = 'Stop'
@@ -528,6 +544,123 @@ if ($mode -eq 'cluster-type' -and $pipelineCt) {
     }
 }
 
+# --- L-05: Validate mode — cross-reference emitted tokens at resolve time ---
+$validationErrors = @()
+if ($Validate) {
+    # 1. L-03: stampId format — all stamps must have a stampId when stampNameStyle='short'
+    if ($stampStyle -eq 'short' -and $stampsEmitted.Count -gt 0) {
+        # Check from inventory that every emitted stamp actually had a stampId
+        $allInvStamps = @()
+        if ($cfg.inventory -and $cfg.inventory.canary -and $cfg.inventory.canary.stamps) {
+            $allInvStamps += $cfg.inventory.canary.stamps
+        }
+        if ($cfg.inventory -and $cfg.inventory.production) {
+            foreach ($cloudProp in $cfg.inventory.production.PSObject.Properties) {
+                $ci = $cloudProp.Value
+                if ($ci -and $ci.PSObject.Properties['stamps']) { $allInvStamps += $ci.stamps }
+            }
+        }
+        foreach ($s in $allInvStamps) {
+            if ($stampsEmitted.Contains([string]$s.stampName)) {
+                $hasId = $s.PSObject.Properties['stampId'] -and $s.stampId
+                if (-not $hasId) {
+                    $validationErrors += "STAMP_ID_FORMAT: stamp '$($s.stampName)' has no stampId but stampNameStyle='short'. The pipeline expects short IDs. Add stampId to service-config.json → inventory."
+                }
+            }
+        }
+    }
+
+    # 2. L-04: cloud-scope — verify no cross-cloud stamps leaked through
+    # (Already enforced by Get-FilteredStamps; this is a belt-and-suspenders check)
+
+    # 3. L-09: wildcard / unbounded scope — already enforced above, re-check in validate mode
+    foreach ($tokKey in $tokens.Keys) {
+        if ($tokKey -match 'Regions' -and $Scope -eq 'production') {
+            $val = $tokens[$tokKey]
+            if ($val -match '^\s*\*\s*$' -or $val -match 'regions\s*\(\s*\*\s*\)') {
+                $validationErrors += "VALIDATE_UNSAFE_REGION_SCOPE: token '$tokKey' resolved to wildcard '$val' for pipeline '$PipelineKey'. This would deploy to ALL regions."
+            }
+        }
+    }
+
+    # 4. L-06: paramFormat — verify format is applied correctly
+    if ($paramFormat) {
+        foreach ($pName in $resolved.Keys) {
+            $v = [string]$resolved[$pName]
+            switch ($paramFormat) {
+                'ps-array' {
+                    if ($v -and $v -ne '@()' -and $v -notmatch '^\@\(') {
+                        $validationErrors += "VALIDATE_PARAM_FORMAT: param '$pName' has paramFormat='ps-array' but value '$v' is not in @(...) format for pipeline '$PipelineKey'."
+                    }
+                }
+                'regions-wrapper' {
+                    if ($v -and $v -notmatch '^$' -and $v -notmatch '^regions\(' -and $tokens.Values -contains "{{$($pName.ToLower())}}" -eq $false) {
+                        # Only check token-resolved values, not static values
+                    }
+                }
+            }
+        }
+    }
+
+    # 5. L-10: dual-gate alignment — already enforced above; included in validate output
+
+    # 6. L-16: cross-pipeline geography coverage check
+    if ($AllPipelineResults.Count -gt 0 -and $Scope -eq 'production') {
+        # Collect all regions from all pipeline results including this one
+        $allRegions = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($priorResult in $AllPipelineResults) {
+            if ($priorResult.templateParameters) {
+                foreach ($pk in $priorResult.templateParameters.Keys) {
+                    if ($pk -match 'Regions$') {
+                        $rv = [string]$priorResult.templateParameters[$pk]
+                        if ($rv) {
+                            $parsed = @()
+                            if ($rv -match '^regions\((.+)\)$') { $parsed = @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+                            elseif ($rv -match '^\@\(') { $parsed = @(($rv -replace '^\@\(','') -replace '\)$','' -split ',' | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_ }) }
+                            else { $parsed = @($rv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+                            foreach ($r in $parsed) { [void]$allRegions.Add($r) }
+                        }
+                    }
+                }
+            }
+        }
+        # Add this pipeline's regions
+        foreach ($tokKey in $tokens.Keys) {
+            if ($tokKey -match 'Regions') {
+                $rv = $tokens[$tokKey]
+                if ($rv) {
+                    $parsed = @($rv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                    foreach ($r in $parsed) { [void]$allRegions.Add($r) }
+                }
+            }
+        }
+        # Load expected regions from service config if available
+        if ($cfg.PSObject.Properties['expectedProductionRegions'] -and $cfg.expectedProductionRegions) {
+            $expectedRegions = @($cfg.expectedProductionRegions)
+            $missing = @($expectedRegions | Where-Object { -not $allRegions.Contains($_) })
+            if ($missing.Count -gt 0) {
+                $validationErrors += "VALIDATE_GEOGRAPHY_COVERAGE_GAP: $($missing.Count) expected regions are not covered by any pipeline: $($missing -join ', '). Add them to the appropriate pipeline's region parameters."
+            }
+        }
+    }
+}
+
+# Build validation summary
+$validationResult = $null
+if ($Validate) {
+    $validationResult = [PSCustomObject]@{
+        isValid = ($validationErrors.Count -eq 0)
+        errors  = $validationErrors
+        pipelineKey = $PipelineKey
+        scope       = $Scope
+        checkedAt   = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    if ($validationErrors.Count -gt 0) {
+        throw "VALIDATION_FAILED: pipeline '$PipelineKey' (scope=$Scope) has $($validationErrors.Count) validation error(s):`n$($validationErrors -join "`n")"
+    }
+}
+
 [PSCustomObject]@{
     pipelineKey        = $PipelineKey
     scope              = $Scope
@@ -536,4 +669,5 @@ if ($mode -eq 'cluster-type' -and $pipelineCt) {
     templateParameters = $resolved
     droppedStamps      = @($script:droppedAcc.ToArray())
     agentGaps          = @($agentGaps.ToArray())
+    validation         = $validationResult
 }

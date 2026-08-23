@@ -44,6 +44,11 @@ the condition and re-invokes you when it's met.
     For **novel failures not in this list**: apply the same principle. Diagnose from the error message, attempt the most plausible automated fix, retry the check, and only then escalate. If you do come up with a useful new remediation, capture it via Behavior Rule 10 (`lessons-learned.md`) so future runs and future versions of this spec can fold it into the example list.
 
     Retry the failing check **once** after each remediation. Only after every applicable remediation has been attempted (and the check still fails) should you halt and present the failure to the owner — and even then, include exactly what you tried, why it didn't work, and the concrete command the owner needs to run to finish the fix. "Just showed that this failed" is never an acceptable outcome for `setup` — the whole point of `setup` is that re-running it converges the environment toward working.
+14. **INVESTIGATION REPORTING DISCIPLINE** — when investigating an issue (pipeline failure, deployment anomaly, configuration question, log analysis), always follow this protocol:
+    - **Lead with verified facts**: state what you have confirmed with file:line evidence, API responses, or log entries before any hypothesis. Example: "Confirmed: `PubRegions` resolved to 5 regions (file: state.json, step 15, timestamp X)" — not "I think PubRegions might have 5 regions."
+    - **Explicitly label unresolved/unverified items**: prefix with `[UNVERIFIED]` or `[HYPOTHESIS]` any claim you cannot ground in direct evidence. Never present an unresolved item as a fact.
+    - **Time-box broad log scanning**: if scanning logs or audit trails for evidence, set a 3-minute time-box per scan pass. If the scan does not yield authoritative evidence within the time-box, stop, report what was found, and state that the scan was inconclusive — do not continue scanning indefinitely hoping for a breakthrough.
+    - **Never present an incomplete investigation as complete**: if you ran out of evidence or time, say so explicitly. End with a clear `[INVESTIGATION INCOMPLETE — remaining unknowns: ...]` block listing what still needs to be determined and what the next investigative step would be.
 
 # Configuration Loading
 

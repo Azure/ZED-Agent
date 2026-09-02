@@ -9,18 +9,18 @@
     Reads YAML from disk (or stdin via -Content) and extracts everything
     setup-service needs to populate pipeline-catalog.json → yamlIntrospection:
 
-      * Pipeline `parameters:` (reuses the same line-walker as Read-PipelineYaml).
+      * Pipeline `parameters:` (shared line-walker — see lib/YamlParamModel.ps1).
       * Cloud convention — two known patterns:
           stageHardcoded     : stage-scope `value: <CloudName>` under a `cloud`
-                               variable (DataMover-style: one pipeline = one cloud).
-          perCloudScriptFlags: per-cloud `<Prefix>Script` boolean parameters
-                               gated by `${{ if eq(parameters.<Prefix>Script, true) }}`
-                               (Prot-style: one pipeline → many clouds).
-      * Stamp/region defaults:
-          flat               : parameters named `stamps`, `Excludestamps`, `Regions`,
-                               `ExcludeRegions` (DataMover).
-          perCloud           : parameters named `<Prefix>stamps`, `<Prefix>ExcludeStamps`,
-                               `<Prefix>Regions`, `<Prefix>ExcludeRegions` (Prot).
+                               variable (one pipeline = one cloud).
+          perCloudScriptFlags: per-partition `<Prefix>Script` parameters gated by
+                               `${{ if eq(parameters.<Prefix>Script, true) }}`
+                               (one pipeline → many clouds).
+      * Stamp/region defaults, derived from the GENERIC quad regex
+        `^(?<partition>.*?)(Script|stamps|Excludestamps|Regions|ExcludeRegions)$`:
+          flat               : empty partition (`stamps`, `Regions`, …).
+          perCloud           : non-empty partition (`<Prefix>stamps`, …).
+        Partition names are DISCOVERED, never hard-coded.
       * EV2 task input block (vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@N).
       * SDS filename + likely source-repo path, extracted from any inline
         PowerShell `-SdsFiles <file>` argument plus the closest preceding
@@ -38,16 +38,40 @@
 .PARAMETER Content
     Raw YAML text. Overrides -YamlPath when both are given.
 
+.PARAMETER SourceLabel
+    Provenance string recorded in the `source` field when analysing -Content.
+    Callers that fetch YAML over the network MUST pass the real origin (e.g.
+    the ADO preview endpoint URI) so the catalog never carries a path from a
+    machine that is not this one.
+
+.PARAMETER AllowEmptyParameters
+    Escape hatch for pipelines that genuinely declare no `parameters:` block.
+    Without it, an empty extraction is a hard error — a silent no-op that
+    writes `null` into the catalog is the exact failure mode this guards.
+
+.PARAMETER CloudNames
+    Vocabulary used by the stage-hardcoded detector ONLY: a `- name: cloud` /
+    `value: X` pair counts as a cloud declaration when X is in this list. It is
+    a disambiguator for one narrow heuristic, not the source of ZED's partition
+    discovery — that is derived generically from the parameter names themselves
+    (Get-ParameterPartitionModel). Services whose YAML names its environments
+    differently override it from service-config.json → `cloudNames`.
+
 .OUTPUTS
     PSCustomObject — see DESCRIPTION above for fields.
 #>
 [CmdletBinding(DefaultParameterSetName='Path')]
 param(
     [Parameter(Mandatory=$true, ParameterSetName='Path')][string]$YamlPath,
-    [Parameter(Mandatory=$true, ParameterSetName='Content')][string]$Content
+    [Parameter(Mandatory=$true, ParameterSetName='Content')][string]$Content,
+    [Parameter(ParameterSetName='Content')][string]$SourceLabel,
+    [switch]$AllowEmptyParameters,
+    [string[]]$CloudNames
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'lib\YamlParamModel.ps1')
 
 if ($PSCmdlet.ParameterSetName -eq 'Path') {
     if (-not (Test-Path -LiteralPath $YamlPath)) {
@@ -57,57 +81,27 @@ if ($PSCmdlet.ParameterSetName -eq 'Path') {
     $source = (Resolve-Path -LiteralPath $YamlPath).Path
 } else {
     $yaml = $Content
-    $source = '<inline>'
+    $source = if ($SourceLabel) { $SourceLabel } else { '<inline>' }
 }
 
 # Strip CRs for predictable regex behaviour.
 $yaml = $yaml -replace "`r",''
 
-# Known Azure deployment clouds (used for stage-hardcoded detection only).
-$knownClouds = @('Public','Canary','Fairfax','Mooncake','USNat','USSec','Bleu','BVTD3','EXP')
+# Vocabulary for the stage-hardcoded detector only (see -CloudNames). Every
+# other cloud/partition fact ZED uses is derived from the YAML itself; this list
+# just decides whether a literal `- name: cloud / value: X` pair is naming a
+# deployment cloud or something else. Overridable per service.
+$knownClouds = if ($PSBoundParameters.ContainsKey('CloudNames') -and @($CloudNames).Count -gt 0) {
+    @($CloudNames)
+} else {
+    @('Public','Canary','Fairfax','Mooncake','USNat','USSec','Bleu','BVTD3','EXP')
+}
 
 function Get-Param-Block {
+    # Delegates to the shared, indentation-tolerant walker so that this script
+    # and Read-PipelineYaml.ps1 can never diverge.
     param([string]$Text)
-    $lines = $Text -split "`n"
-    $inBlock = $false
-    $blockIndent = -1
-    $cur = $null
-    $out = New-Object System.Collections.Generic.List[object]
-    foreach ($line in $lines) {
-        if ($line -match '^\s*#') { continue }
-        if (-not $inBlock) {
-            if ($line -match '^parameters\s*:\s*$') { $inBlock = $true }
-            continue
-        }
-        if ($line.Trim().Length -eq 0) { continue }
-        $indent = [regex]::Match($line,'^(\s*)').Groups[1].Length
-        if ($blockIndent -lt 0 -and $line.Trim() -match '^-\s') { $blockIndent = $indent }
-        if ($line -match '^\S' -and -not ($line.StartsWith(' '))) {
-            if ($cur) { $out.Add([pscustomobject]$cur) | Out-Null; $cur = $null }
-            $inBlock = $false
-            continue
-        }
-        if ($line.Trim() -match '^-\s*name\s*:\s*(.+)$') {
-            if ($cur) { $out.Add([pscustomobject]$cur) | Out-Null }
-            $cur = [ordered]@{
-                name        = $Matches[1].Trim().Trim("'`"")
-                type        = $null
-                default     = $null
-                displayName = $null
-                values      = @()
-            }
-        } elseif ($cur -and $line.Trim() -match '^(type|default|displayName)\s*:\s*(.*)$') {
-            $val = $Matches[2].Trim()
-            # Preserve raw string default (may itself contain quotes / @(...) syntax).
-            if ($Matches[1] -eq 'default') { $cur.default = $val } else {
-                $cur[$Matches[1]] = $val.Trim("'`"")
-            }
-        } elseif ($cur -and $line.Trim() -match '^-\s+(.+)$') {
-            $cur.values += $Matches[1].Trim().Trim("'`"")
-        }
-    }
-    if ($cur) { $out.Add([pscustomobject]$cur) | Out-Null }
-    return $out.ToArray()
+    return @(Get-YamlParameterBlock -Yaml $Text)
 }
 
 function Get-Stage-Hardcoded-Cloud {
@@ -133,46 +127,25 @@ function Get-PerCloud-ScriptFlags {
     return @($prefixes)
 }
 
-function Get-PerCloud-Stamp-Params {
-    param([object[]]$Params, [string[]]$Prefixes)
-    $out = [ordered]@{}
-    foreach ($pre in $Prefixes) {
-        $entry = [ordered]@{
-            stamps         = $null
-            excludeStamps  = $null
-            regions        = $null
-            excludeRegions = $null
-        }
-        foreach ($p in $Params) {
-            $n = $p.name
-            if     ($n -ieq "${pre}stamps")         { $entry.stamps = $p.default }
-            elseif ($n -ieq "${pre}ExcludeStamps")  { $entry.excludeStamps = $p.default }
-            elseif ($n -ieq "${pre}Excludestamps")  { $entry.excludeStamps = $p.default }
-            elseif ($n -ieq "${pre}Regions")        { $entry.regions = $p.default }
-            elseif ($n -ieq "${pre}ExcludeRegions") { $entry.excludeRegions = $p.default }
-        }
-        $out[$pre] = [pscustomobject]$entry
-    }
-    return [pscustomobject]$out
-}
-
-function Get-Flat-Stamp-Params {
-    param([object[]]$Params)
+function Resolve-FacetDefaults {
+    # Turn a facet -> parameterName map into a facet -> declared-default map.
+    param([object]$Facets, [hashtable]$DefaultsByName)
     $entry = [ordered]@{
         stamps         = $null
         excludeStamps  = $null
         regions        = $null
         excludeRegions = $null
+        script         = $null
     }
-    foreach ($p in $Params) {
-        switch -Regex ($p.name) {
-            '^stamps$'         { $entry.stamps = $p.default }
-            '^Excludestamps$'  { $entry.excludeStamps = $p.default }
-            '^ExcludeStamps$'  { $entry.excludeStamps = $p.default }
-            '^Regions$'        { $entry.regions = $p.default }
-            '^ExcludeRegions$' { $entry.excludeRegions = $p.default }
+    $paramNames = [ordered]@{}
+    if ($Facets) {
+        foreach ($f in $Facets.PSObject.Properties) {
+            $paramNames[$f.Name] = $f.Value
+            if ($entry.Contains($f.Name)) { $entry[$f.Name] = $DefaultsByName[$f.Value] }
+            else { $entry[$f.Name] = $DefaultsByName[$f.Value] }
         }
     }
+    $entry['_parameterNames'] = [pscustomobject]$paramNames
     return [pscustomobject]$entry
 }
 
@@ -236,7 +209,7 @@ function Get-Self-Repo {
     $blockMatch = [regex]::Match($Text, $rxBlock)
     if (-not $blockMatch.Success) { return $null }
     $block = $blockMatch.Groups[1].Value
-    $entries = New-Object System.Collections.Generic.List[object]
+    $entries = [System.Collections.Generic.List[object]]::new()
     $cur = $null
     foreach ($line in ($block -split "`n")) {
         if ($line -match '^\s*-\s*repository\s*:\s*(.+)$') {
@@ -280,9 +253,29 @@ function Get-Pipeline-Header {
 
 # ── Extract ────────────────────────────────────────────────────────────
 $header  = Get-Pipeline-Header -Text $yaml
-$params  = Get-Param-Block     -Text $yaml
-$hard    = Get-Stage-Hardcoded-Cloud -Text $yaml
-$flags   = Get-PerCloud-ScriptFlags -Params $params
+$params  = @(Get-Param-Block   -Text $yaml)
+
+# A silent empty extraction is the failure mode that poisoned the catalog with
+# `parameters: null` and forced a fallback to hand-seeded guesses. Fail loudly.
+if ($params.Count -eq 0 -and -not $AllowEmptyParameters) {
+    $hasBlock = $yaml -match '(?m)^parameters\s*:\s*$'
+    $why = if ($hasBlock) {
+        "a top-level 'parameters:' block IS present but no '- name:' entries could be read from it (unexpected indentation or formatting)"
+    } else {
+        "no top-level 'parameters:' block was found"
+    }
+    throw ("YAML parameter extraction yielded 0 parameters from '$source': $why. " +
+           "Refusing to write a null parameter surface — the catalog would silently fall back to hand-seeded values. " +
+           "Verify the YAML is the fully-resolved pipeline definition (the ADO /pipelines/{id}/preview endpoint returns one), " +
+           "or pass -AllowEmptyParameters if this pipeline genuinely declares no parameters.")
+}
+
+$defaultsByName = @{}
+foreach ($p in $params) { $defaultsByName[[string]$p.name] = $p.default }
+
+$hard      = Get-Stage-Hardcoded-Cloud -Text $yaml
+$flags     = Get-PerCloud-ScriptFlags  -Params $params
+$partModel = Get-ParameterPartitionModel -ParameterNames @($params | ForEach-Object { [string]$_.name })
 
 $cloudConvention = 'unknown'
 $cloudsDetected  = @()
@@ -290,20 +283,29 @@ $stampParamShape = 'flat'
 $perCloud        = $null
 $flatDefaults    = $null
 
-if ($flags.Count -gt 0) {
-    $cloudConvention = 'perCloudScriptFlags'
-    $cloudsDetected  = @($flags)
+if ($partModel.partitions.Count -gt 0) {
+    # Partitions discovered from the declared parameter names — the authoritative
+    # signal. `<P>Script` flags corroborate it but are not required.
+    $cloudConvention = if ($flags.Count -gt 0) { 'perCloudScriptFlags' } else { 'perCloudParameters' }
+    $cloudsDetected  = @($partModel.partitions | ForEach-Object { $_.name })
     $stampParamShape = 'perCloud'
-    $perCloud        = Get-PerCloud-Stamp-Params -Params $params -Prefixes $flags
+    $pc = [ordered]@{}
+    foreach ($part in $partModel.partitions) {
+        $pc[$part.name] = Resolve-FacetDefaults -Facets $part.facets -DefaultsByName $defaultsByName
+    }
+    $perCloud = [pscustomobject]$pc
+    if (@($partModel.flat.PSObject.Properties).Count -gt 0) {
+        $flatDefaults = Resolve-FacetDefaults -Facets $partModel.flat -DefaultsByName $defaultsByName
+    }
 } elseif ($hard.Count -gt 0) {
     $cloudConvention = 'stageHardcoded'
     $cloudsDetected  = @($hard)
     $stampParamShape = 'flat'
-    $flatDefaults    = Get-Flat-Stamp-Params -Params $params
+    $flatDefaults    = Resolve-FacetDefaults -Facets $partModel.flat -DefaultsByName $defaultsByName
 } else {
-    # No detectable convention — still try flat extraction so the owner has data
-    # to confirm.
-    $flatDefaults = Get-Flat-Stamp-Params -Params $params
+    # No detectable convention — still surface the flat extraction so the owner
+    # has data to confirm.
+    $flatDefaults = Resolve-FacetDefaults -Facets $partModel.flat -DefaultsByName $defaultsByName
 }
 
 # Datacenter type (ACTIVE / PASSIVE / both) — surfaced from a stage/job variable.
@@ -318,18 +320,20 @@ $sdsHint = Get-Sds-Hint   -Text $yaml
 $selfRepo= Get-Self-Repo  -Text $yaml
 
 return [pscustomobject]@{
-    source           = $source
-    name             = $header.name
-    trigger          = $header.trigger
-    parameters       = $params
-    cloudConvention  = $cloudConvention
-    cloudsDetected   = $cloudsDetected
-    stampParamShape  = $stampParamShape
-    perCloudDefaults = $perCloud
-    flatDefaults     = $flatDefaults
-    datacenterType   = $datacenterType
-    ev2              = $ev2
-    sdsHint          = $sdsHint
-    selfRepo         = $selfRepo
-    analyzedAt       = (Get-Date).ToUniversalTime().ToString('o')
+    source             = $source
+    name               = $header.name
+    trigger            = $header.trigger
+    parameters         = $params
+    cloudConvention    = $cloudConvention
+    cloudsDetected     = $cloudsDetected
+    partitions         = $partModel.partitions
+    stageHardcodedClouds = @($hard)
+    stampParamShape    = $stampParamShape
+    perCloudDefaults   = $perCloud
+    flatDefaults       = $flatDefaults
+    datacenterType     = $datacenterType
+    ev2                = $ev2
+    sdsHint            = $sdsHint
+    selfRepo           = $selfRepo
+    analyzedAt         = (Get-Date).ToUniversalTime().ToString('o')
 }

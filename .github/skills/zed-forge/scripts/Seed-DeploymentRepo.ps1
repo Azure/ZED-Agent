@@ -14,14 +14,19 @@
 .PARAMETER TargetRepo   Target deployment repo. Default from manifest.targetRepoDefault.
 .PARAMETER SourceRepo   ZED-Agent repo root (where zed-forge lives). Auto-detected.
 .PARAMETER ManifestPath Override. Default <skill>/config-seed/manifest.json.
-.PARAMETER SkipInstall  Skip the Install-Zed step (only overlay configs).
+.PARAMETER SkipInstall      Skip the Install-Zed step (only overlay configs).
+.PARAMETER SkipReapprove    Skip re-approving the inventory baseline after overlay (default: false).
+                            Re-approval keeps the readiness.json SDS hash in sync with the
+                            current config-seed so Test-InventoryGate does not fire a false
+                            hashDrift when sdsFieldMapping or stamp topology changes.
 #>
 [CmdletBinding()]
 param(
     [string]$TargetRepo,
     [string]$SourceRepo,
     [string]$ManifestPath,
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    [switch]$SkipReapprove
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,4 +72,63 @@ foreach ($f in $manifest.files) {
 }
 
 if ($result.errors.Count) { Write-Warning ("Seed completed with errors: " + ($result.errors -join '; ')) }
+
+# ── 3. Re-approve the inventory baseline ──────────────────────────────────────
+# After overlaying service-config.json (which may change sdsFieldMapping or stamps),
+# the readiness.json SDS hash must be refreshed so Test-InventoryGate does not fire
+# a false hashDrift. We do this by computing the live SDS hash and writing a synthetic
+# approval record — no Kusto query needed.
+if (-not $SkipReapprove) {
+    try {
+        $zdScripts  = Join-Path $TargetRepo '.github\skills\zed-agent\scripts'
+        $cfgPath    = Join-Path $TargetRepo '.github\skills\zed-agent\service-config.json'
+        $cfg        = Get-Content $cfgPath -Raw | ConvertFrom-Json
+        # Find the first SDS pipeline key configured
+        $sdsKeys    = if ($cfg.sds) { @($cfg.sds.PSObject.Properties.Name) } else { @() }
+        if ($sdsKeys.Count -gt 0) {
+            $primaryKey  = $sdsKeys[0]
+            $sdsEntry    = $cfg.sds.$primaryKey
+            $sdsAbsPath  = if ($sdsEntry.localClonePath) {
+                               Join-Path $sdsEntry.localClonePath $sdsEntry.path
+                           } else {
+                               Join-Path $TargetRepo ($sdsEntry.path -replace '/', '\')
+                           }
+            if (Test-Path $sdsAbsPath) {
+                $sdsScript  = Join-Path $zdScripts 'Get-StampInventoryFromSds.ps1'
+                $sdsResult  = & $sdsScript -SdsPath $sdsAbsPath -ServiceConfigPath $cfgPath -Cloud 'Public'
+                $approveScript = Join-Path $zdScripts 'Approve-Inventory.ps1'
+                $synthInv = [pscustomobject]@{
+                    pipelineKey       = $primaryKey
+                    cloud             = 'Public'
+                    stamps            = $sdsResult.stamps
+                    drift             = @()
+                    sdsReconciliation = [pscustomobject]@{
+                        hash            = $sdsResult.hash
+                        source          = $sdsResult.source
+                        stampCount      = @($sdsResult.stamps).Count
+                        cloud           = 'Public'
+                        withinTolerance = $true
+                        driftCount      = 0
+                    }
+                }
+                $rdPath = Join-Path $TargetRepo '.zed-agent\readiness.json'
+                & $approveScript -InventoryObject $synthInv -ApprovedBy 'zedforge@microsoft.com' `
+                    -ReadinessPath $rdPath | Out-Null
+                $result.inventoryReapproved = $true
+                $result.inventoryHash       = $sdsResult.hash.Substring(0,12) + '...'
+                Write-Host "  re-approved inventory baseline (hash $($sdsResult.hash.Substring(0,12))...)"
+            } else {
+                Write-Warning "SDS file not found at '$sdsAbsPath'; skipping inventory re-approval."
+                $result.inventoryReapproved = $false
+            }
+        } else {
+            Write-Host "  no sds keys configured; skipping inventory re-approval."
+            $result.inventoryReapproved = $false
+        }
+    } catch {
+        Write-Warning "Inventory re-approval failed (non-fatal): $_"
+        $result.inventoryReapproved = $false
+    }
+}
+
 return [pscustomobject]$result

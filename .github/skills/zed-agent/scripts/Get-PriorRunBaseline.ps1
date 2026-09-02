@@ -36,6 +36,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
+. (Join-Path $scriptDir 'lib\YamlParamModel.ps1')
 $readPriorRun = Join-Path $scriptDir 'Read-PriorRun.ps1'
 
 $baseline = @()
@@ -62,18 +63,26 @@ foreach ($key in $PipelineIds.Keys) {
         Write-Verbose "L-17: Excluded $($cancelledOrFailed.Count) cancelled/failed runs for pipeline $key (IDs: $($cancelledOrFailed.runId -join ', '))"
     }
 
-    # Build union of PubRegions from all valid runs
+    # Build union of the regions facet from all valid runs. Service-agnostic:
+    # a service may split regions across any number of sovereign partitions under
+    # any naming, or declare a single flat `Regions`.
     $unionRegions = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase)
     $contributingRunIds = @()
 
     foreach ($run in $validRuns) {
-        $pubRegions = $run.templateParameters['PubRegions']
-        if ($pubRegions) {
-            $v = $pubRegions.Trim()
-            if ($v -match '^regions\((.+)\)$') { $v = $Matches[1] }
-            $regions = @($v -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-            foreach ($r in $regions) { [void]$unionRegions.Add($r) }
+        $tp = $run.templateParameters
+        if ($tp) {
+            $tpNames = if ($tp -is [System.Collections.IDictionary]) { @($tp.Keys) }
+                       else { @($tp.PSObject.Properties.Name) }
+            foreach ($rn in @(Get-FacetParameterNames -ParameterNames $tpNames -Facet 'Regions')) {
+                $raw = $tp.$rn
+                if (-not $raw) { continue }
+                $v = ([string]$raw).Trim()
+                if ($v -match '^regions\((.+)\)$') { $v = $Matches[1] }
+                $regions = @($v -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                foreach ($r in $regions) { [void]$unionRegions.Add($r) }
+            }
         }
         $contributingRunIds += $run.runId
     }

@@ -221,54 +221,79 @@ If both modes are `static`, skip the per-pipeline `clusterType` ask entirely.
 
 ---
 
-#### Phase 4.3 — Prior-run analysis (per pipeline)
+#### Phase 4.3 — Prior-run analysis (owner supplies ONE release, ZED does the rest)
 
-For each pipeline collected in Phase 4.1 (official build + canary + production), read prior successful production runs. The agent uses these runs as **evidence** for two things: (a) Phase 4.4's YAML branch resolution, and (b) Phase 4.10's `templateParameters` merge.
+The agent learns the real-world parameter surface from runs a **human** actually authored for a real release. That evidence feeds (a) Phase 4.4's YAML branch resolution and (b) Phase 4.10's `templateParameters` merge.
 
-For each pipeline the agent does **two sequential** things — always auto-fetch the last 3 successful runs first, then optionally let the owner pin a known-good reference run on top.
+Do **not** walk the pipelines one at a time asking "which run belongs to this pipeline". The owner does not think in pipeline ids — they think in releases. Ask once, for a release, and let ZED map runs to pipelines itself.
 
-**Step A — auto-fetch last 3 successful runs (always runs).**
+**Step A — ask for one real release, as URLs.**
 
-```powershell
-$runs = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
-    -Organization $cfg.ado.organization `
-    -Project $cfg.ado.project `
-    -PipelineId $entry.id `
-    -ResultFilter "succeeded" `
-    -Top 3
-```
+> *"Paste the ADO run URLs from your last real production release — all of them, in any order, one per line or comma-separated. I'll work out which pipeline each one belongs to. (Cancelled runs are fine; releases are often cancelled once the rollout is verified.)"*
 
-The script returns normalized objects: `{ runId, runUrl, finishedAt, sourceBranch, templateParameters }`. If fewer than 3 runs exist (new pipeline), return whatever's available; if zero, tell the owner *"No prior successful runs found for `{key}` — I'll rely on YAML only in Phase 4.4 / 4.10 and lean more heavily on your review."*
-
-**Branch capture (auto-3 only)** — immediately after Step A returns, inspect `$runs[*].sourceBranch`. This step uses **only the auto-fetched runs** (not any pinned reference run added in Step B) because a pinned run can be months stale and on a long-lived release branch, which would mislead Phase 4.4's YAML fetch:
-
-- **If all observed branches agree** AND the runs target the wizard's `selfRepo` (the repo whose YAML the pipeline reads), persist that branch as `yamlRepos.<selfRepo>.baseBranch` so Phase 4.4's YAML fetch reads the correct branch. Recap: *"Captured `sourceBranch = <branch>` from `<N>` recent runs of `<key>` — Phase 4.4 will read YAML from this branch."*
-- **If branches disagree** across the 3 runs (e.g., some on `develop`, some on a release branch), surface the disagreement and ask the owner to pick one:
-  > *"The last 3 runs of `{key}` queued from different source branches: `{branch_a}` (×2), `{branch_b}` (×1). Which branch do you want me to introspect the YAML from for parameter discovery?"*
-
-  Persist the owner's choice to `yamlRepos.<selfRepo>.baseBranch`.
-- **If runs target a different repo** (cross-repo pipeline), record `_learnedFrom.crossRepo = true` against this pipeline key and leave `yamlRepos` alone — Phase 4.4 will handle the cross-repo branch confirmation per-repo.
-
-**Step B — optional pinned reference run.** After Branch capture completes, ask via `ask_user`:
-
-> *"For `{key}` (`{name}`), do you want to pin a specific known-good production run as an additional reference (e.g., the last clean release)? Paste run IDs / URLs, or skip."*
-> Choices: `Pin a run`, `Skip`
-
-**On `Pin a run`** — collect a comma-separated list of run IDs or full ADO run URLs via `ask_user`. Parse each entry (extract the integer `runId` from URLs of the form `…/_build/results?buildId=<id>`), then resolve through `Read-PriorRun.ps1` in single-run mode:
+**Step B — self-map and learn.** One call handles resolution, mapping, model-building, and persistence:
 
 ```powershell
-$pinned = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
+$learned = & .github/skills/zed-agent/scripts/New-ParameterModel.ps1 `
     -Organization $cfg.ado.organization `
     -Project $cfg.ado.project `
-    -PipelineId $entry.id `
-    -RunIds @(<ids parsed from owner input>)
+    -CatalogPath  $catalogPath `
+    -RunUrls      @(<URLs the owner pasted>) `
+    -ReleaseGroup "<owner's name for this release>" `
+    -RepoRoot     $repoRoot
 ```
 
-For each ID, verify it (a) belongs to this `PipelineId`, (b) has `result = succeeded`. If any fail those checks, surface the exact reason (*"Run 28471 belongs to pipeline 3528, not 3527"* / *"Run 28471 finished with `result = failed`"*) and re-prompt — correct the list or skip pinning.
+The script resolves each run's owning pipeline through the Build API (`definition.id`), matches it against the catalog, and persists the result under `<scope>.<key>._learnedFrom`. It never asks the owner to do that mapping.
 
-Tag pinned entries with `pinnedByOwner = true` and **prepend** them to the run set (pinned first, then auto-3). Phase 4.10's tiebreaker for conflicting parameter values prefers pinned runs over auto runs. Pinned runs do **not** influence `yamlRepos.<selfRepo>.baseBranch` — Branch capture above already locked that in from the auto-3 evidence.
+Report back exactly what it returns:
 
-Persist the normalized run objects under `<scope>.<key>._learnedFrom.runs` so Phase 4.10 can read them without re-fetching.
+- `mapped[]` — *"Mapped run `{runId}` → `{scope}.{key}`."*
+- `unmapped[]` — a run whose pipeline is **not in the catalog**. Surface it; it usually means Phase 4.1 missed a pipeline: *"Run `{runId}` belongs to pipeline definition `{definitionId}`, which isn't in the catalog. Should I add it?"* Never silently drop it.
+- `uncovered[]` — catalog pipelines with no run yet. Carry these into Step D.
+
+**Step C — ask for a second, older release (this is the confidence bar).**
+
+A single release cannot distinguish "this value is always X" from "this value happened to be X that week". Every parameter learned from one release is marked `lowConfidence = true` and stays that way until a second **independent** release agrees.
+
+> *"To tell constants apart from per-release values, I need a second, older release. Paste those run URLs too — or say `skip` and I'll mark everything I learned as low-confidence and ask you to confirm each value in Phase 4.10."*
+
+On answer, re-run the same script with `-Merge` and a different `-ReleaseGroup`:
+
+```powershell
+$learned2 = & .github/skills/zed-agent/scripts/New-ParameterModel.ps1 `
+    -Organization $cfg.ado.organization -Project $cfg.ado.project `
+    -CatalogPath  $catalogPath -RepoRoot $repoRoot `
+    -RunUrls @(<second release's URLs>) -ReleaseGroup "<older release name>" -Merge
+```
+
+Two runs of the *same* release count as **one** observation — independence is counted per `releaseGroup`, not per run. `-Merge` is what raises `independentReleaseCount` to 2 and clears `lowConfidence` on values that agree.
+
+**Step D — coverage check, then a proposal list for what's left.**
+
+Only for pipelines still in `uncovered[]`, offer candidates. Never auto-pick one:
+
+```powershell
+$candidates = & .github/skills/zed-agent/scripts/Read-PriorRun.ps1 `
+    -Organization $cfg.ado.organization -Project $cfg.ado.project `
+    -PipelineId $entry.id -Top 10 -ResultFilter 'any' -RepoRoot $repoRoot
+```
+
+`-ResultFilter 'any'` is deliberate: filtering to `succeeded` hides exactly the runs worth learning from, because release runs are routinely cancelled once the rollout is verified. Present them as a table — run id, finished date, source branch, result — ranked most-recent-first, and ask:
+
+> *"I have no release run for `{key}` yet. Here are its last 10 runs. Which one (if any) came from a real release?"*
+
+If the owner recognises none, leave the pipeline uncovered and say so plainly: *"`{key}` has no learned parameter model — Phase 4.10 will fall back to YAML-declared defaults and I'll ask you to confirm every value."*
+
+**Runs ZED authored itself are never offered and never learned from.** `Read-PriorRun.ps1` excludes them using the ledger from `Get-SelfAuthoredRuns.ps1`. This cannot be done by identity: ZED queues runs with the release owner's delegated token, so `requestedFor` and `reason` are identical for a human-queued run and a ZED-queued run. Only the run ids ZED recorded at trigger time can tell them apart. Learning from ZED's own trigger-and-cancel runs would make ZED's mistakes permanent.
+
+**Branch capture.** After Step B, inspect `sourceBranch` across the mapped runs:
+
+- **All agree** and the runs target the wizard's `selfRepo` → persist as `yamlRepos.<selfRepo>.baseBranch`. Recap: *"Captured `sourceBranch = <branch>` from `<N>` release runs — Phase 4.4 will read YAML from this branch."*
+- **They disagree** → surface the split and ask the owner to pick one; persist the choice.
+  > *"Your release runs queued from different source branches: `{branch_a}` (×2), `{branch_b}` (×1). Which branch should I introspect the YAML from?"*
+- **Cross-repo** → record `_learnedFrom.crossRepo = true` and leave `yamlRepos` alone; Phase 4.4 confirms per-repo.
+
+A release branch is often a short-lived feature/release branch. If the captured branch differs from `cfg.ado.baseBranch`, say so — a parameter that exists only on that branch will not be declared on the base branch, and posting it would be rejected by ADO.
 
 ---
 
@@ -721,7 +746,12 @@ Every ADO REST call in Phase 4.10 / 4.11 / 4.12 uses the same `az login` identit
 For each pipeline key, fan out in parallel using `ForEach-Object -Parallel` and:
 
 1. **Baseline**: union of all parameters declared in `pipelines.<key>.yamlIntrospection.parameters` (Phase 4.4).
-2. **Concrete values**: prior-run values from `<scope>.<key>._learnedFrom.runs[].templateParameters` (Phase 4.3), mode-of-values across the runs (most common wins). If the runs disagree, flag the parameter as `mode-disagreement` in `agentGaps`.
+2. **Concrete values**: the learned parameter model at `<scope>.<key>._learnedFrom.model` (Phase 4.3). For each parameter use `model.<param>.lastValue`, and treat the entry's confidence as the gate:
+   - `stability = "constant"` and `lowConfidence = false` → propose the value silently.
+   - `lowConfidence = true` (fewer than two independent releases observed, or `observedIn` < `independentReleaseCount`) → propose the value but mark it `needs-confirmation` in the proposal so the owner must look at it. Never treat a one-release observation as settled.
+   - `stability = "volatile"` → the value changes per release. Do **not** propose a literal; flag the parameter as `mode-disagreement` in `agentGaps` and list the `observedValues` so the owner can pick or supply a token.
+   - `stability = "unobserved"` → fall through to the YAML `default`.
+   Use `model.<param>.shape` / `.container` (e.g. `wildcard`, `regionsList`, `empty`) to check that any owner-supplied or token-substituted value keeps the same **form** the pipeline has historically accepted.
 3. **Reserved-token preservation**: if a prior-run value matches one of the reserved `{{...}}` tokens **or** the YAML's `default` is a reserved token, keep it as the token (do not substitute the literal from history).
 4. **Canary stamp / region detection (token replaces literal)**: prior-run values are excellent for *teaching the agent the parameter shape* (CSV vs JSON array, naming style, count) but they are **not** trusted as the actual values to send — Phase 4.6's `inventory.canary.stamps` is the truth. For each parameter whose prior-run value looks like a canary stamp list or canary region list (values are a subset of `inventory.canary.stamps[].stampName` / distinct `inventory.canary.stamps[].region`, or look like `<region>-<layout>-<stampTag><index>` triples), **replace the literal with the matching reserved token** (`{{canaryStamps}}` or `{{canaryRegions}}`) in the proposal. Record the detected delivery shape (CSV / semicolon-list / JSON array) under `canary.<key>.discoveryNotes.stampNameStyle` so the runtime substitution knows how to join the inventory values. If detection is ambiguous (prior-run value contains stamps NOT in `inventory.canary.stamps`), flag `agentGaps: stamp-list-drift: [<stamps not in inventory>]` and surface in the proposal review.
    - **Wildcard sentinel rule**: if the parameter name contains `Stamps` or `Regions` (case-insensitive) AND the prior-run value is `*`, `all`, `ALL`, empty string, or null, treat it as a token candidate even when no stamp-list match is possible. Use the parameter name's cloud prefix to pick the token: a name containing `canary` (case-insensitive) → `{{canaryStamps}}` / `{{canaryRegions}}`; names containing `pub`/`public`/`prod` (and no sovereign prefix) → `{{pubStamps}}` / `{{pubRegions}}`; `ff`/`fairfax` → `{{ffStamps}}` / `{{ffRegions}}`; `mc`/`mooncake` → `{{mcStamps}}` / `{{mcRegions}}`; `usnat` → `{{usnatStamps}}` / `{{usnatRegions}}`; `ussec` → `{{ussecStamps}}` / `{{ussecRegions}}`. Flag `agentGaps: wildcard-collapsed-to-token: <param>=<original>` so the owner sees the collapse during proposal review and can override.
@@ -766,7 +796,7 @@ Loop on the choice until owner picks `Accept` or `Reject`. On `Edit a value` ask
 #### Persist
 
 - `<scope>.<key>.templateParameters` = accepted map (with reserved tokens preserved as strings).
-- `<scope>.<key>._learnedFrom` = `{ runIds: [...], yamlPath, yamlRepo, yamlBranch, yamlSha, learnedAt: <UTC ISO> }`
+- `<scope>.<key>._learnedFrom` = `{ updatedAt, organization, project, independentReleaseCount, runs: [ { runId, runUrl, definitionId, finishedAt, sourceBranch, result, releaseGroup, templateParameters } ], model: { <param>: { declaredDefault, shape, container, stability, lastValue, observedIn, lowConfidence, observedValues } } }`, plus `yamlPath, yamlRepo, yamlBranch, yamlSha` from Phase 4.4. Written by `New-ParameterModel.ps1`; merge additional releases with `-Merge` rather than overwriting.
 - `<scope>.<key>.discoveryNotes` = `{ exclusionFormat: <auto-detected>, stampNameStyle: <auto-detected>, freeText: "" }`
 - `<scope>.<key>.agentGaps` = list of unresolved-gap descriptions (empty array on full success).
 - If routing mode is `cluster-type` and a `clusterType` was inferred (or owner overrode Phase 4.2's declared value), persist `<scope>.<key>.clusterType` and update `<scope>Routing.clusterTypeMap[<clusterType>]`.

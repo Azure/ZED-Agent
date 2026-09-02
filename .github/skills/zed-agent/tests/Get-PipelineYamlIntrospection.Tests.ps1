@@ -128,9 +128,9 @@ Describe 'Get-PipelineYamlIntrospection' {
             $script:dmResult.cloudsDetected  | Should -Be @('Public')
             $script:dmResult.stampParamShape | Should -Be 'flat'
         }
-        It 'extracts flat stamp + region defaults' {
-            $script:dmResult.flatDefaults.stamps  | Should -Be "'eus-01,we-01,wus2-01'"
-            $script:dmResult.flatDefaults.regions | Should -Be "'eastus,westeurope,westus2'"
+        It 'extracts flat stamp + region defaults with YAML quoting removed' {
+            $script:dmResult.flatDefaults.stamps  | Should -Be 'eus-01,we-01,wus2-01'
+            $script:dmResult.flatDefaults.regions | Should -Be 'eastus,westeurope,westus2'
         }
         It 'extracts the DatacenterType variable' {
             $script:dmResult.datacenterType | Should -Be 'ACTIVE'
@@ -166,11 +166,11 @@ Describe 'Get-PipelineYamlIntrospection' {
             $script:protResult.cloudsDetected  | Should -Contain 'Fairfax'
             $script:protResult.cloudsDetected  | Should -Contain 'Mooncake'
         }
-        It 'extracts per-cloud stamp defaults' {
-            $script:protResult.perCloudDefaults.Public.stamps   | Should -Be "'eus-01,we-01'"
-            $script:protResult.perCloudDefaults.Public.regions  | Should -Be "'eastus,westeurope'"
-            $script:protResult.perCloudDefaults.Fairfax.stamps  | Should -Be "'usgv-01'"
-            $script:protResult.perCloudDefaults.Fairfax.regions | Should -Be "'usgovvirginia'"
+        It 'extracts per-cloud stamp defaults with YAML quoting removed' {
+            $script:protResult.perCloudDefaults.Public.stamps   | Should -Be 'eus-01,we-01'
+            $script:protResult.perCloudDefaults.Public.regions  | Should -Be 'eastus,westeurope'
+            $script:protResult.perCloudDefaults.Fairfax.stamps  | Should -Be 'usgv-01'
+            $script:protResult.perCloudDefaults.Fairfax.regions | Should -Be 'usgovvirginia'
         }
         It 'extracts the Prot SDS filename' {
             $script:protResult.sdsHint.fileName | Should -Be 'ServiceDatacenterSettingsConfigActPass.json'

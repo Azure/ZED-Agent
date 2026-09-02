@@ -26,6 +26,21 @@
     Fallback base branch if a repo has no entry under yamlRepos.<repo>.
     Defaults to service-config.json → ado.baseBranch when available, else 'main'.
 
+.PARAMETER UsePreviewApi
+    Skip the extends: walk and ask ADO to resolve the pipeline for us via
+    POST /_apis/pipelines/{id}/preview, which returns `finalYaml` — the fully
+    expanded definition including every extended template. Used automatically
+    as a fallback when the extends: walk yields no parameters.
+
+.PARAMETER PreviewRef
+    Fully-qualified ref for the preview call (e.g. refs/heads/develop).
+    Defaults to refs/heads/<resolved base branch>.
+
+.PARAMETER AllowEmptyParameters
+    Escape hatch for pipelines that genuinely declare no parameters. Without
+    it, an empty parameter surface is a hard error — writing `null` and
+    continuing is the silent no-op this guards against.
+
 .OUTPUTS
     PSCustomObject with:
       pipelineId       : int
@@ -33,6 +48,9 @@
       yamlBranch       : string
       yamlPath         : string
       yamlSha          : string
+      yamlContent      : string (the text actually analysed)
+      source           : string (real provenance on THIS machine / this endpoint)
+      resolvedVia      : 'gitItems' | 'previewApi'
       parameters       : ordered list of { name, type, default, values, _resolvedFrom: { repo, branch, path } }
       followedExtends  : list of every extends: chain edge resolved
       promptForRepos   : list of repo names the caller needs to collect a baseBranch for
@@ -45,10 +63,15 @@ param(
     [Parameter(Mandatory = $true)][string]$Project,
     [Parameter(Mandatory = $true)][int]$PipelineId,
     [string]$CatalogPath,
-    [string]$DefaultBaseBranch
+    [string]$DefaultBaseBranch,
+    [switch]$UsePreviewApi,
+    [string]$PreviewRef,
+    [switch]$AllowEmptyParameters
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'lib\YamlParamModel.ps1')
 
 # ── Resolve catalog path for yamlRepos lookup ──
 if (-not $CatalogPath) {
@@ -115,53 +138,23 @@ function ConvertFrom-YamlText {
 }
 
 function Extract-Parameters {
+    # Delegates to the shared, indentation-tolerant walker (lib/YamlParamModel.ps1).
+    # Azure Pipelines allows the `parameters:` sequence at column 0, which an
+    # indentation-only walker silently reads as zero parameters.
     param([string]$Yaml)
-    # Match a top-level 'parameters:' block of list-form param definitions.
-    $out = New-Object System.Collections.Generic.List[object]
-    $lines = $Yaml -split "`r?`n"
-    $inBlock = $false
-    $blockIndent = -1
-    $current = $null
-    foreach ($line in $lines) {
-        if ($line -match '^\s*#') { continue }
-        if (-not $inBlock) {
-            if ($line -match '^(parameters|templateParameters)\s*:\s*$') {
-                $inBlock = $true
-            }
-            continue
-        }
-        # Determine line indent
-        $indentMatch = [regex]::Match($line, '^(\s*)')
-        $indent = $indentMatch.Groups[1].Length
-        if ($line.Trim().Length -eq 0) { continue }
-        if ($blockIndent -lt 0 -and $line.Trim() -match '^-\s') { $blockIndent = $indent }
-        if ($indent -lt $blockIndent -or ($line -match '^\S' -and $indent -eq 0)) {
-            # Out of the parameters block
-            if ($current) { $out.Add($current) | Out-Null }
-            $current = $null
-            $inBlock = $false
-            continue
-        }
-        if ($line.Trim() -match '^-\s*name\s*:\s*(.+)$') {
-            if ($current) { $out.Add($current) | Out-Null }
-            $current = [ordered]@{
-                name    = $Matches[1].Trim().Trim("'`"")
-                type    = $null
-                default = $null
-                values  = @()
-            }
-        } elseif ($current -and $line.Trim() -match '^(type|default|displayName)\s*:\s*(.*)$') {
-            $key = $Matches[1]
-            $val = $Matches[2].Trim().Trim("'`"")
-            if ($key -eq 'type')    { $current.type    = $val }
-            if ($key -eq 'default') { $current.default = $val }
-        } elseif ($current -and $line.Trim() -match '^-\s+(.+)$') {
-            # enum value
-            $current.values += $Matches[1].Trim().Trim("'`"")
-        }
-    }
-    if ($current) { $out.Add($current) | Out-Null }
-    return $out
+    return @(Get-YamlParameterBlock -Yaml $Yaml)
+}
+
+function Get-PreviewYaml {
+    # Ask ADO to fully resolve the pipeline (all `extends:` templates expanded)
+    # and hand back `finalYaml`.
+    param([int]$Id, [string]$Ref)
+    $uri  = "https://dev.azure.com/$Organization/$Project/_apis/pipelines/$Id/preview?api-version=7.1-preview.1"
+    $body = @{ previewRun = $true } 
+    if ($Ref) { $body.resources = @{ repositories = @{ self = @{ refName = $Ref } } } }
+    $json = $body | ConvertTo-Json -Depth 6
+    $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers ($headers + @{ 'Content-Type' = 'application/json' }) -Body $json -ErrorAction Stop
+    return [PSCustomObject]@{ content = $resp.finalYaml; source = $uri + " (ref=$Ref)" }
 }
 
 function Extract-Extends {
@@ -222,6 +215,9 @@ $rootPath = $pipeline.configuration.path
 $promptFor = @()
 $followed  = @()
 $allParams = New-Object System.Collections.Generic.List[object]
+$resolvedVia = 'gitItems'
+$yamlContent = $null
+$sourceLabel = $null
 
 # ── 2. Walk the YAML chain ──
 $queue = New-Object System.Collections.Generic.Queue[object]
@@ -234,15 +230,20 @@ if (-not $rootBranch) {
         yamlBranch      = $null
         yamlPath        = $rootPath
         yamlSha         = $null
+        yamlContent     = $null
+        source          = $null
+        resolvedVia     = $null
         parameters      = @()
         followedExtends = @()
         promptForRepos  = $promptFor
     }
 }
+if (-not $PreviewRef) { $PreviewRef = "refs/heads/$rootBranch" }
 $queue.Enqueue([PSCustomObject]@{ repoName = $rootRepoName; branch = $rootBranch; path = $rootPath })
 
 $visited = @{}
 $rootSha = $null
+if (-not $UsePreviewApi) {
 while ($queue.Count -gt 0) {
     $node = $queue.Dequeue()
     $key = "$($node.repoName)|$($node.branch)|$($node.path)"
@@ -255,10 +256,15 @@ while ($queue.Count -gt 0) {
         continue
     }
     if (-not $rootSha) { $rootSha = $item.sha }
+    if (-not $yamlContent) {
+        $yamlContent = $item.content
+        $sourceLabel = "$($node.repoName)@$($node.branch):$($node.path)"
+    }
     $params = Extract-Parameters -Yaml $item.content
     foreach ($p in $params) {
-        $p._resolvedFrom = [PSCustomObject]@{ repo = $node.repoName; branch = $node.branch; path = $node.path }
-        $allParams.Add([PSCustomObject]$p) | Out-Null
+        $p | Add-Member -NotePropertyName '_resolvedFrom' -NotePropertyValue ([PSCustomObject]@{
+            repo = $node.repoName; branch = $node.branch; path = $node.path }) -Force
+        $allParams.Add($p) | Out-Null
     }
     $ext = Extract-Extends -Yaml $item.content
     if ($ext) {
@@ -280,11 +286,48 @@ while ($queue.Count -gt 0) {
         $queue.Enqueue([PSCustomObject]@{ repoName = $nextRepo; branch = $nextBranch; path = $ext.path })
     }
 }
+}
 
-# ── 3. Dedupe parameters by name (last write wins — extended templates can override defaults) ──
+# ── 3. Fallback: ask ADO to fully resolve the pipeline for us ──
+# The extends: walk cannot follow templates behind repo resources we have no
+# baseBranch for, and cannot resolve template expressions. When it comes back
+# empty (or the caller asked for it up front), use the preview endpoint, which
+# returns the same YAML the service itself would compile.
+if ($UsePreviewApi -or $allParams.Count -eq 0) {
+    try {
+        $preview = Get-PreviewYaml -Id $PipelineId -Ref $PreviewRef
+        if ($preview.content) {
+            $previewParams = @(Extract-Parameters -Yaml $preview.content)
+            if ($previewParams.Count -gt 0 -or $UsePreviewApi) {
+                $allParams.Clear()
+                foreach ($p in $previewParams) {
+                    $p | Add-Member -NotePropertyName '_resolvedFrom' -NotePropertyValue ([PSCustomObject]@{
+                        repo = $rootRepoName; branch = $rootBranch; path = $rootPath }) -Force
+                    $allParams.Add($p) | Out-Null
+                }
+                $yamlContent = $preview.content
+                $sourceLabel = $preview.source
+                $resolvedVia = 'previewApi'
+                $promptFor   = @()
+            }
+        }
+    } catch {
+        Write-Warning "Preview API resolution failed for pipeline ${PipelineId}: $($_.Exception.Message)"
+    }
+}
+
+# ── 4. Dedupe parameters by name (last write wins — extended templates can override defaults) ──
 $byName = [ordered]@{}
 foreach ($p in $allParams) { $byName[$p.name] = $p }
 $mergedParams = @($byName.Values)
+
+if ($mergedParams.Count -eq 0 -and -not $AllowEmptyParameters -and $promptFor.Count -eq 0) {
+    throw ("Read-PipelineYaml: pipeline $PipelineId ($Organization/$Project) resolved to ZERO parameters. " +
+           "Writing an empty parameter surface into the catalog is a silent no-op that later produces " +
+           "wrong templateParameters. Verify the pipeline really declares no 'parameters:' block " +
+           "(re-run with -AllowEmptyParameters to accept that), or investigate the preview endpoint " +
+           "POST /_apis/pipelines/$PipelineId/preview?api-version=7.1-preview.1 with ref '$PreviewRef'.")
+}
 
 return [PSCustomObject]@{
     pipelineId      = $PipelineId
@@ -292,6 +335,9 @@ return [PSCustomObject]@{
     yamlBranch      = $rootBranch
     yamlPath        = $rootPath
     yamlSha         = $rootSha
+    yamlContent     = $yamlContent
+    source          = $sourceLabel
+    resolvedVia     = $resolvedVia
     parameters      = $mergedParams
     followedExtends = $followed
     promptForRepos  = $promptFor

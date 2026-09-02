@@ -132,7 +132,14 @@ if (-not $SkipHashCheck -and $inv.sds -and $inv.sds.hash -and $PipelineKey) {
         return (New-Verdict 'hashDrift' "SDS file not available at '$sdsPath' for re-hash" $inv $PipelineKey $null $inv.sds.hash)
     }
     $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
-    $live = & $sdsScript -SdsPath $sdsPath -ServiceConfigPath $ServiceConfigPath
+    # The SDS hash is CLOUD-SCOPED: Get-StampInventoryFromSds returns a different
+    # hash for -Cloud Public than for no -Cloud. The writer (Get-StampInventory)
+    # records the hash for the inventory's cloud, so the gate MUST rehash under the
+    # same cloud or every Public inventory reports a permanent, unfixable hashDrift.
+    $sdsArgs = @{ SdsPath = $sdsPath; ServiceConfigPath = $ServiceConfigPath }
+    $hashCloud = if ($inv.sds.cloud) { $inv.sds.cloud } elseif ($inv.cloud) { $inv.cloud } else { $null }
+    if ($hashCloud) { $sdsArgs['Cloud'] = $hashCloud }
+    $live = & $sdsScript @sdsArgs
     if ($live.hash -ne $inv.sds.hash) {
         return (New-Verdict 'hashDrift' "SDS hash changed since approval (was $($inv.sds.hash.Substring(0,12))..., now $($live.hash.Substring(0,12))...)" $inv $PipelineKey $live.hash $inv.sds.hash)
     }

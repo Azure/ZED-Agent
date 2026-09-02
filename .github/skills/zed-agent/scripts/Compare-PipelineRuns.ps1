@@ -25,7 +25,7 @@
     PSCustomObject representing the candidate (clone/follow-up) run. Same schema.
 
 .PARAMETER AllowedDifferences
-    Array of field names that ARE permitted to differ (e.g. @('PubRegions')).
+    Array of field names that ARE permitted to differ (e.g. a regions-facet field).
     Everything else must be identical.
 
 .PARAMETER TemplateRepoFields

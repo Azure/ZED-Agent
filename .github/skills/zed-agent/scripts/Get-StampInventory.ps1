@@ -110,8 +110,40 @@ if (-not $stampTag) { throw "service-config.json → service.stampTag is require
 # ── SDS configuration resolution ──────────────────────────────────────────
 # Sovereign clouds cannot be reached from setup-service's PME tenant Kusto.
 # Get-StampInventoryFromSds.ps1 is the sole source for those clouds.
-$sovereignClouds = @('Fairfax','Mooncake','USNat','USSec','Bleu','BVTD3','EXP')
+# This is Azure platform vocabulary, not service vocabulary, so it ships as a
+# default — but a service whose cloud set differs can override it via
+# service-config.json → inventory.sovereignClouds.
+$sovereignClouds = if ($config.inventory -and $config.inventory.PSObject.Properties['sovereignClouds'] -and $config.inventory.sovereignClouds) {
+    @($config.inventory.sovereignClouds)
+} else {
+    @('Fairfax','Mooncake','USNat','USSec','Bleu','BVTD3','EXP')
+}
 $isSovereignCloud = ($Cloud -and ($sovereignClouds -contains $Cloud))
+
+# Default commercial (non-sovereign) cloud name, used when no -Cloud was supplied
+# and SDS still needs a cloud to reconcile against. Azure platform vocabulary;
+# overridable via service-config.json -> inventory.defaultCommercialCloud.
+$defaultCommercialCloud = if ($config.inventory -and $config.inventory.PSObject.Properties['defaultCommercialCloud'] -and $config.inventory.defaultCommercialCloud) {
+    [string]$config.inventory.defaultCommercialCloud
+} else {
+    'Public'
+}
+
+# Fallback cluster-type substring table, used only when a pipeline-catalog entry
+# declares mode='deployment-unit-substring' WITHOUT its own .substrings array.
+# Overridable service-wide via service-config.json → inventory.clusterTypeSubstrings.
+# ORDERED: longer matches must precede the shorter ones they contain.
+$defaultClusterTypeSubstrings = if ($config.inventory -and $config.inventory.PSObject.Properties['clusterTypeSubstrings'] -and $config.inventory.clusterTypeSubstrings) {
+    @($config.inventory.clusterTypeSubstrings)
+} else {
+    @(
+        [PSCustomObject]@{ match = '-sfmc'; clusterType = 'sfmc' }
+        [PSCustomObject]@{ match = '-sfrp'; clusterType = 'sfrp' }
+        [PSCustomObject]@{ match = '-sf';   clusterType = 'sfrp' }
+        [PSCustomObject]@{ match = '-eap';  clusterType = 'eap'  }
+        [PSCustomObject]@{ match = '-aks';  clusterType = 'aks'  }
+    )
+}
 
 $sdsEntry = $null
 if ($Scope -eq 'production' -and $config.sds) {
@@ -156,7 +188,7 @@ $ascData = $asc.data
 # regionIndex: "$cloudName::$shortName" → DC entry
 $layoutIndex = @{}
 $regionIndex = @{}
-$allRegions  = New-Object System.Collections.Generic.List[object]
+$allRegions  = [System.Collections.Generic.List[object]]::new()
 foreach ($cl in $ascData.Clouds) {
     $layout = "$($cl.Layout)".ToLowerInvariant()
     if (-not $layoutIndex.ContainsKey($layout)) { $layoutIndex[$layout] = @() }
@@ -188,6 +220,80 @@ function Resolve-StampParts {
     }
 }
 
+function Resolve-RowClusterType {
+    <#
+    .SYNOPSIS
+        Derive a stamp's clusterType from one Kusto row, driven entirely by
+        kusto.<set>.clusterTypeExtraction so no service's vocabulary is baked in.
+
+    .DESCRIPTION
+        Modes:
+          deployment-unit-substring — scan the row's DeploymentUnit value(s) and
+              return the clusterType of the FIRST matching entry in
+              $Extraction.substrings, an ORDERED array of { match, clusterType }.
+              Order matters: put longer/more specific matches first, because a
+              shorter match would otherwise swallow them.
+              When .substrings is absent the caller's -DefaultSubstrings are used.
+          column — read the clusterType verbatim from $Extraction.column.
+          custom — not implemented; throws with the owner's notes.
+
+    .PARAMETER Strict
+        Throw on an unknown mode instead of returning $null. The production path
+        wants the throw; the supplementary-cloud path tolerates it.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Row,
+        [Parameter(Mandatory)]$Extraction,
+        [array]$DefaultSubstrings,
+        [switch]$Strict
+    )
+
+    switch ($Extraction.mode) {
+        'deployment-unit-substring' {
+            $rules = if ($Extraction.PSObject.Properties['substrings'] -and $Extraction.substrings) {
+                @($Extraction.substrings)
+            } else {
+                @($DefaultSubstrings)
+            }
+            if (-not $rules -or @($rules).Count -eq 0) {
+                throw "clusterTypeExtraction.mode='deployment-unit-substring' has no .substrings and no default was supplied. Add an ordered substrings array of { match, clusterType } to the pipeline catalog."
+            }
+
+            # DeploymentUnit may arrive as a single value or as a set/array column.
+            $units = @()
+            if ($Row.PSObject.Properties['DeploymentUnit'])     { $units += @($Row.DeploymentUnit) }
+            if ($Row.PSObject.Properties['set_DeploymentUnit']) { $units += @($Row.set_DeploymentUnit) }
+
+            foreach ($u in $units) {
+                $s = "$u".ToLowerInvariant()
+                foreach ($rule in $rules) {
+                    $m = "$($rule.match)".ToLowerInvariant()
+                    if (-not $m) { continue }
+                    if ($s -match [regex]::Escape($m)) { return "$($rule.clusterType)".ToLowerInvariant() }
+                }
+            }
+            return $null
+        }
+        'column' {
+            if (-not $Extraction.column) {
+                if ($Strict) { throw "clusterTypeExtraction.mode='column' requires .column." }
+                return $null
+            }
+            $v = $Row.($Extraction.column)
+            if ($null -ne $v -and "$v".Length -gt 0) { return "$v".ToLowerInvariant() }
+            return $null
+        }
+        'custom' {
+            throw "clusterTypeExtraction.mode='custom' not implemented. Owner notes: $($Extraction.notes)"
+        }
+        default {
+            if ($Strict) { throw "Unknown clusterTypeExtraction.mode '$($Extraction.mode)'." }
+            return $null
+        }
+    }
+}
+
 function Resolve-CloudForStamp {
     param($Parts)
     # 1) Layout uniquely identifies a candidate cloud in nearly all cases.
@@ -203,7 +309,7 @@ function Resolve-CloudForStamp {
 }
 
 # ── Collect raw stamps (with optional clusterType) ────────────────────
-$rawStamps = New-Object System.Collections.Generic.List[object]
+$rawStamps = [System.Collections.Generic.List[object]]::new()
 $kustoMeta = $null
 
 if ($Scope -eq 'canary') {
@@ -234,8 +340,12 @@ elseif ($isSovereignCloud) {
     # the parsed SDS, scoped to this cloud. Kusto is not consulted.
     $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
     if (-not (Test-Path $sdsScript)) { throw "Get-StampInventoryFromSds.ps1 sibling script missing at $sdsScript." }
-    $sdsPath = if ($sdsEntry.localClonePath) { Join-Path $sdsEntry.localClonePath $sdsEntry.path } else { $sdsEntry.path }
-    if (-not (Test-Path $sdsPath)) { throw "SDS file not found at '$sdsPath'. Set sds.$PipelineKey.localClonePath or sync the local clone." }
+    $sdsPath = if ($sdsEntry.localClonePath -and (Test-Path (Join-Path $sdsEntry.localClonePath $sdsEntry.path))) {
+        Join-Path $sdsEntry.localClonePath $sdsEntry.path
+    } else {
+        Join-Path $repoRoot $sdsEntry.path
+    }
+    if (-not (Test-Path $sdsPath)) { throw "SDS file not found at '$sdsPath'. Set sds.$PipelineKey.localClonePath or ensure the repo clone is at '$repoRoot'." }
     $sdsInv = & $sdsScript -SdsPath $sdsPath -Cloud $Cloud -ServiceConfigPath $ServiceConfigPath
     if (-not $sdsInv.stamps -or @($sdsInv.stamps).Count -eq 0) {
         throw "SDS at '$sdsPath' returned 0 stamps for cloud '$Cloud'. Verify sds.$PipelineKey is correct."
@@ -262,8 +372,12 @@ else {
 
     $serviceFilter = if ($k.serviceFilter) { $k.serviceFilter } else { '1 == 1' }
     $stampPrefixFilter = '1 == 1'
-    if ($k.stampPrefixFilter -and @($k.stampPrefixFilter).Count -gt 0) {
-        $stampPrefixFilter = ($k.stampPrefixFilter | ForEach-Object { "StampName startswith '$_'" }) -join ' or '
+    if ($k.stampPrefixFilter) {
+        if ($k.stampPrefixFilter -is [string]) {
+            $stampPrefixFilter = $k.stampPrefixFilter
+        } elseif (@($k.stampPrefixFilter).Count -gt 0) {
+            $stampPrefixFilter = ($k.stampPrefixFilter | ForEach-Object { "StampName startswith '$_'" }) -join ' or '
+        }
     }
     $queryText = $queryText.Replace('{{SERVICE_FILTER}}', $serviceFilter)
     $queryText = $queryText.Replace('{{STAMP_PREFIX_FILTER}}', $stampPrefixFilter)
@@ -305,32 +419,7 @@ else {
     foreach ($row in $rows) {
         $stampName = "$($row.StampName)".ToLowerInvariant()
         if (-not $stampName) { continue }
-        $ct = $null
-        switch ($extraction.mode) {
-            'deployment-unit-substring' {
-                # Row's DeploymentUnit may be a single value or set/array.
-                $units = @()
-                if ($row.PSObject.Properties['DeploymentUnit'])     { $units += @($row.DeploymentUnit) }
-                if ($row.PSObject.Properties['set_DeploymentUnit']) { $units += @($row.set_DeploymentUnit) }
-                foreach ($u in $units) {
-                    $s = "$u".ToLowerInvariant()
-                    if     ($s -match '-sfmc') { $ct = 'sfmc'; break }
-                    elseif ($s -match '-sfrp') { $ct = 'sfrp'; break }
-                    elseif ($s -match '-sf')   { $ct = 'sfrp'; break }
-                    elseif ($s -match '-eap')  { $ct = 'eap';  break }
-                    elseif ($s -match '-aks')  { $ct = 'aks';  break }
-                }
-            }
-            'column' {
-                if (-not $extraction.column) { throw "clusterTypeExtraction.mode='column' requires .column." }
-                $v = $row.($extraction.column)
-                if ($null -ne $v -and "$v".Length -gt 0) { $ct = "$v".ToLowerInvariant() }
-            }
-            'custom' {
-                throw "clusterTypeExtraction.mode='custom' not implemented. Owner notes: $($extraction.notes)"
-            }
-            default { throw "Unknown clusterTypeExtraction.mode '$($extraction.mode)'." }
-        }
+        $ct = Resolve-RowClusterType -Row $row -Extraction $extraction -DefaultSubstrings $defaultClusterTypeSubstrings -Strict
         $rawStamps.Add([PSCustomObject]@{
             stampName   = $stampName
             clusterType = $ct
@@ -342,9 +431,9 @@ else {
 }
 
 # ── Enrich + drift detection ──────────────────────────────────────────
-$stamps = New-Object System.Collections.Generic.List[object]
-$drift  = New-Object System.Collections.Generic.List[object]
-$seen   = New-Object System.Collections.Generic.HashSet[string]
+$stamps = [System.Collections.Generic.List[object]]::new()
+$drift  = [System.Collections.Generic.List[object]]::new()
+$seen   = [System.Collections.Generic.HashSet[string]]::new()
 
 foreach ($rs in $rawStamps) {
     if (-not $seen.Add($rs.stampName)) { continue }
@@ -462,29 +551,8 @@ if ($Scope -eq 'canary' -and $stamps.Count -gt 0) {
                         foreach ($row in $kRows) {
                             $rowStamp = "$($row.StampName)".ToLowerInvariant()
                             if (-not $rowStamp) { continue }
-                            $rowCt = $null
-                            switch ($extraction.mode) {
-                                'deployment-unit-substring' {
-                                    $units = @()
-                                    if ($row.PSObject.Properties['DeploymentUnit'])     { $units += @($row.DeploymentUnit) }
-                                    if ($row.PSObject.Properties['set_DeploymentUnit']) { $units += @($row.set_DeploymentUnit) }
-                                    foreach ($u in $units) {
-                                        $s = "$u".ToLowerInvariant()
-                                        if     ($s -match '-sfmc') { $rowCt = 'sfmc'; break }
-                                        elseif ($s -match '-sfrp') { $rowCt = 'sfrp'; break }
-                                        elseif ($s -match '-sf')   { $rowCt = 'sfrp'; break }
-                                        elseif ($s -match '-eap')  { $rowCt = 'eap';  break }
-                                        elseif ($s -match '-aks')  { $rowCt = 'aks';  break }
-                                    }
-                                }
-                                'column' {
-                                    if ($extraction.column) {
-                                        $v = $row.($extraction.column)
-                                        if ($null -ne $v -and "$v".Length -gt 0) { $rowCt = "$v".ToLowerInvariant() }
-                                    }
-                                }
-                                default { }
-                            }
+                            $rowCt = Resolve-RowClusterType -Row $row -Extraction $extraction -DefaultSubstrings $defaultClusterTypeSubstrings
+                            if ($rowCt) { $stampMap[$rowStamp] = $rowCt }
                             if ($rowCt) { $stampMap[$rowStamp] = $rowCt }
                         }
                         foreach ($st in $stamps) {
@@ -562,12 +630,16 @@ $result | Add-Member -NotePropertyName kusto        -NotePropertyValue $kustoMet
 if ($sdsReconcileEnabled) {
     $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
     if (-not (Test-Path $sdsScript)) { throw "Get-StampInventoryFromSds.ps1 sibling script missing at $sdsScript." }
-    $sdsPath = if ($sdsEntry.localClonePath) { Join-Path $sdsEntry.localClonePath $sdsEntry.path } else { $sdsEntry.path }
+    $sdsPath = if ($sdsEntry.localClonePath -and (Test-Path (Join-Path $sdsEntry.localClonePath $sdsEntry.path))) {
+        Join-Path $sdsEntry.localClonePath $sdsEntry.path
+    } else {
+        Join-Path $repoRoot $sdsEntry.path
+    }
     if (-not (Test-Path $sdsPath)) {
-        Write-Warning "SDS reconciliation skipped — file not found at '$sdsPath'. Set sds.$PipelineKey.localClonePath or sync the local clone."
+        Write-Warning "SDS reconciliation skipped — file not found at '$sdsPath'. Ensure the repo clone is at '$repoRoot' or set sds.$PipelineKey.localClonePath."
     } else {
         $sdsArgs = @{ SdsPath = $sdsPath; ServiceConfigPath = $ServiceConfigPath }
-        $sdsCloudForReconcile = if ($Cloud) { $Cloud } elseif ($isSovereignCloud) { $Cloud } else { 'Public' }
+        $sdsCloudForReconcile = if ($Cloud) { $Cloud } elseif ($isSovereignCloud) { $Cloud } else { $defaultCommercialCloud }
         if ($sdsCloudForReconcile) { $sdsArgs.Cloud = $sdsCloudForReconcile }
         $sdsInv = & $sdsScript @sdsArgs
         $sdsNames   = @($sdsInv.stamps | ForEach-Object { "$($_.stampName)".ToLowerInvariant() }) | Sort-Object -Unique
@@ -598,7 +670,11 @@ if ($sdsReconcileEnabled) {
     # Sovereign cloud path already used SDS as the source; surface the hash so
     # the inventory approval gate has something to compare against.
     $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
-    $sdsPath = if ($sdsEntry.localClonePath) { Join-Path $sdsEntry.localClonePath $sdsEntry.path } else { $sdsEntry.path }
+    $sdsPath = if ($sdsEntry.localClonePath -and (Test-Path (Join-Path $sdsEntry.localClonePath $sdsEntry.path))) {
+        Join-Path $sdsEntry.localClonePath $sdsEntry.path
+    } else {
+        Join-Path $repoRoot $sdsEntry.path
+    }
     $sdsInv = & $sdsScript -SdsPath $sdsPath -Cloud $Cloud -ServiceConfigPath $ServiceConfigPath
     $result | Add-Member -NotePropertyName sdsReconciliation -NotePropertyValue ([PSCustomObject]@{
         hash            = $sdsInv.hash

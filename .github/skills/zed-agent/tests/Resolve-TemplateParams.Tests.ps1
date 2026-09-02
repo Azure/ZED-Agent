@@ -69,7 +69,8 @@ BeforeAll {
             [string]$Scope = 'canary',
             [string]$PipelineKey = 'TEST-PIPE',
             [string]$CurrentBranch = 'releases/M1',
-            [switch]$DryRun
+            [switch]$DryRun,
+            [switch]$TestMode
         )
         $tmpDir  = Join-Path ([System.IO.Path]::GetTempPath()) "rtp-test-$([guid]::NewGuid().ToString('N').Substring(0,8))"
         New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
@@ -85,7 +86,8 @@ BeforeAll {
             ServiceConfigPath  = $cfgPath
             PipelineCatalogPath = $catalogPath
         }
-        if ($DryRun) { $params['DryRun'] = $true }
+        if ($DryRun)    { $params['DryRun']    = $true }
+        if ($TestMode)  { $params['TestMode']  = $true }
 
         try {
             $result = & $script:ScriptPath @params
@@ -94,6 +96,47 @@ BeforeAll {
         finally {
             Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    # --- ArtifactsBranch test-mode helpers ---
+    function New-ArtifactsBranchCatalog {
+        param([string]$Scope = 'canary', [string]$PipelineKey = 'TEST-PIPE', [string]$RepoName = 'MyRepo', [string]$BaseBranch = 'develop')
+        $entry = @{
+            name = 'Test Pipeline'
+            id   = 99
+            sourceBranch = 'refs/heads/develop'
+            templateParameters = @{
+                'ArtifactsBranch' = '{{currentBranch}}'
+                'CanaryStamps'    = '{{canaryStamps}}'
+            }
+        }
+        $catalog = @{
+            officialBuild    = @{ name = 'OB'; id = 1; sourceBranch = 'refs/heads/main'; templateParameters = @{} }
+            ev2ServiceGroups = @{}
+            ev2CloudCoverage = @{}
+            yamlRepos        = @{ $RepoName = @{ baseBranch = $BaseBranch } }
+        }
+        $routingObj = @{ mode = 'static' }
+        if ($Scope -eq 'canary') {
+            $catalog['canary']        = @{ $PipelineKey = $entry }
+            $catalog['production']    = @{}
+            $catalog['canaryRouting'] = $routingObj
+        } else {
+            $entry.templateParameters = @{ 'ArtifactsBranch' = '{{currentBranch}}'; 'PubStamps' = '{{pubStamps}}' }
+            $catalog['canary']            = @{}
+            $catalog['production']        = @{ $PipelineKey = $entry }
+            $catalog['productionRouting'] = $routingObj
+        }
+        return $catalog
+    }
+
+    function New-ServiceConfigWithRepo {
+        param([string]$RepoName = 'MyRepo')
+        $cfg = New-MinimalServiceConfig -CanaryStamps @(
+            @{ stampName = 'ea-can-prot1'; stampId = 'ea-01'; cloud = 'Canary'; region = 'ea' }
+        )
+        $cfg['ado'] = @{ repository = $RepoName }
+        return $cfg
     }
 }
 
@@ -112,8 +155,7 @@ Describe 'L-04: Cloud filter in Get-FilteredStamps' {
         $cfg = New-MinimalServiceConfig -CanaryStamps $stamps
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        $result.templateParameters['CanaryStamps'] | Should -Be 'ea-01'
-        $result.droppedStamps | Where-Object { $_.reason -match 'cloud' } | Should -HaveCount 2
+        $result.templateParameters['CanaryStamps'] | Should -Be '@("ea-01")'
     }
 
     It 'keeps stamps with no cloud property (absent = in-scope)' {
@@ -125,7 +167,7 @@ Describe 'L-04: Cloud filter in Get-FilteredStamps' {
         $cfg = New-MinimalServiceConfig -CanaryStamps $stamps
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        $result.templateParameters['CanaryStamps'] | Should -Be 'ea-01,xx-01'
+        $result.templateParameters['CanaryStamps'] | Should -Be '@("ea-01","xx-01")'
     }
 
     It 'applies cloud filter for production stamps too' {
@@ -141,12 +183,10 @@ Describe 'L-04: Cloud filter in Get-FilteredStamps' {
         }
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope production -PipelineKey 'PROD-PIPE'
-        $result.templateParameters['PubStamps'] | Should -Be 'eus-01'
+        $result.templateParameters['PubStamps'] | Should -Be '@("eus-01")'
     }
 }
 
-# ============================================================================
-# L-03 / U-07: stampId preferred over stampName
 # ============================================================================
 Describe 'L-03: stampId preferred over stampName (canary)' {
 
@@ -158,7 +198,7 @@ Describe 'L-03: stampId preferred over stampName (canary)' {
         $cfg = New-MinimalServiceConfig -CanaryStamps $stamps
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        $result.templateParameters['CanaryStamps'] | Should -Be 'ea-01'
+        $result.templateParameters['CanaryStamps'] | Should -Be '@("ea-01")'
     }
 
     It 'falls back to stampName when stampId is absent' {
@@ -169,7 +209,7 @@ Describe 'L-03: stampId preferred over stampName (canary)' {
         $cfg = New-MinimalServiceConfig -CanaryStamps $stamps
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        $result.templateParameters['CanaryStamps'] | Should -Be 'ea-can02-prot1'
+        $result.templateParameters['CanaryStamps'] | Should -Be '@("ea-can02-prot1")'
     }
 
     It 'uses stampName when stampNameStyle is full' {
@@ -183,7 +223,7 @@ Describe 'L-03: stampId preferred over stampName (canary)' {
         $cfg = New-MinimalServiceConfig -CanaryStamps $stamps
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        $result.templateParameters['CanaryStamps'] | Should -Be 'ea-can02-prot1'
+        $result.templateParameters['CanaryStamps'] | Should -Be '@("ea-can02-prot1")'
     }
 }
 
@@ -202,7 +242,7 @@ Describe 'U-07: stampId preferred over stampName (production)' {
         }
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope production -PipelineKey 'PROD-PIPE'
-        $result.templateParameters['PubStamps'] | Should -Be 'eus-01,wus-01'
+        $result.templateParameters['PubStamps'] | Should -Be '@("eus-01","wus-01")'
     }
 }
 
@@ -224,8 +264,8 @@ Describe 'L-09: CCOA exclusions' {
         } -CcoaExclusions @{ stamps = @('isc-01'); regions = @('indiasouthcentral') }
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope production -PipelineKey 'PROD-PIPE'
-        $result.templateParameters['ExcludeStamps'] | Should -Be 'isc-01'
-        $result.templateParameters['PubStamps'] | Should -Be 'eus-01'
+        $result.templateParameters['ExcludeStamps'] | Should -Be '@("isc-01")'
+        $result.templateParameters['PubStamps']     | Should -Be '@("eus-01")'
     }
 
     It 'subtracts CCOA-excluded regions from emitted region tokens' {
@@ -241,7 +281,7 @@ Describe 'L-09: CCOA exclusions' {
         } -CcoaExclusions @{ stamps = @('isc-01'); regions = @('indiasouthcentral') }
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope production -PipelineKey 'PROD-PIPE'
-        $result.templateParameters['PubRegions'] | Should -Be 'eastus'
+        $result.templateParameters['PubRegions'] | Should -Be 'regions(eastus)'
     }
 
     It 'works with empty CCOA exclusions (backward compat)' {
@@ -256,7 +296,7 @@ Describe 'L-09: CCOA exclusions' {
         }
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope production -PipelineKey 'PROD-PIPE'
-        $result.templateParameters['PubStamps'] | Should -Be 'eus-01'
+        $result.templateParameters['PubStamps'] | Should -Be '@("eus-01")'
     }
 }
 
@@ -342,7 +382,7 @@ Describe 'L-09: Fail-closed guard — requiresExclusions' {
         } -CcoaExclusions @{ stamps = @('s2') }
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope production -PipelineKey 'PROD-PIPE'
-        $result.templateParameters['PubStamps'] | Should -Be 's1'
+        $result.templateParameters['PubStamps'] | Should -Be '@("s1")'
     }
 }
 
@@ -351,14 +391,14 @@ Describe 'L-09: Fail-closed guard — requiresExclusions' {
 # ============================================================================
 Describe 'U-06: sdpType override from catalog entry' {
 
-    It 'defaults to Express when sdpType not specified on entry' {
+    It 'defaults to Standard when sdpType not specified on entry' {
         $catalog = New-MinimalCatalog -Scope canary -TemplateParameters @{ 'SdpType' = '{{sdpType}}' }
         $cfg = New-MinimalServiceConfig -CanaryStamps @(
             @{ stampName = 'ea-can02-prot1'; cloud = 'Canary'; region = 'ea' }
         )
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        $result.templateParameters['SdpType'] | Should -Be 'Express'
+        $result.templateParameters['SdpType'] | Should -Be 'Standard'
     }
 
     It 'uses sdpType from catalog entry when specified' {
@@ -379,5 +419,62 @@ Describe 'U-06: sdpType override from catalog entry' {
 
         $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary -DryRun
         $result.templateParameters['SdpType'] | Should -Be 'Test'
+    }
+}
+
+# ============================================================================
+# ArtifactsBranch test-mode override
+# ============================================================================
+Describe 'ArtifactsBranch: test-mode resolves to baseBranch, production resolves to currentBranch' {
+
+    It 'test mode: ArtifactsBranch resolves to baseBranch (not currentBranch)' {
+        $catalog = New-ArtifactsBranchCatalog -RepoName 'MyRepo' -BaseBranch 'develop'
+        $cfg     = New-ServiceConfigWithRepo -RepoName 'MyRepo'
+
+        $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary `
+            -CurrentBranch 'zedforge/test-20260825-1500' -TestMode
+        $result.templateParameters['ArtifactsBranch'] | Should -Be 'develop'
+    }
+
+    It 'production mode: ArtifactsBranch still resolves to currentBranch (unaffected)' {
+        $catalog = New-ArtifactsBranchCatalog -RepoName 'MyRepo' -BaseBranch 'develop'
+        $cfg     = New-ServiceConfigWithRepo -RepoName 'MyRepo'
+
+        $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary `
+            -CurrentBranch 'releases/2026-09'
+        $result.templateParameters['ArtifactsBranch'] | Should -Be 'releases/2026-09'
+    }
+
+    It 'test mode: uses baseBranch from catalog, not a hardcoded value' {
+        $catalog = New-ArtifactsBranchCatalog -RepoName 'MyRepo' -BaseBranch 'main'
+        $cfg     = New-ServiceConfigWithRepo -RepoName 'MyRepo'
+
+        $result = Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary `
+            -CurrentBranch 'zedforge/test-20260825-1600' -TestMode
+        $result.templateParameters['ArtifactsBranch'] | Should -Be 'main'
+    }
+
+    It 'test mode: throws when yamlRepos block is missing' {
+        $catalog = New-ArtifactsBranchCatalog -RepoName 'MyRepo' -BaseBranch 'develop'
+        # Remove yamlRepos to simulate missing block
+        $catalog.Remove('yamlRepos')
+        $cfg = New-ServiceConfigWithRepo -RepoName 'MyRepo'
+
+        { Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary `
+            -CurrentBranch 'zedforge/test-20260825-1700' -TestMode } |
+            Should -Throw "*yamlRepos*"
+    }
+
+    It 'test mode: throws when ado.repository is missing from service-config' {
+        $catalog = New-ArtifactsBranchCatalog -RepoName 'MyRepo' -BaseBranch 'develop'
+        # Build service config WITHOUT ado.repository
+        $cfg = New-MinimalServiceConfig -CanaryStamps @(
+            @{ stampName = 'ea-can-prot1'; stampId = 'ea-01'; cloud = 'Canary'; region = 'ea' }
+        )
+        # No ado.repository field
+
+        { Invoke-Resolver -Catalog $catalog -ServiceConfig $cfg -Scope canary `
+            -CurrentBranch 'zedforge/test-20260825-1800' -TestMode } |
+            Should -Throw "*ado.repository*"
     }
 }

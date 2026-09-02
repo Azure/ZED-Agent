@@ -26,6 +26,7 @@ param($ServiceConfigPath, $ExcludeRegions = @())
 )
 '@ | Set-Content (Join-Path $tempDir2 'Get-RegionMapping.ps1') -Encoding UTF8
         Get-Content $assertScript -Raw | Set-Content (Join-Path $tempDir2 'Assert-GeographyCoverage.ps1') -Encoding UTF8
+        Copy-Item (Join-Path (Split-Path $assertScript -Parent) 'lib') (Join-Path $tempDir2 'lib') -Recurse -Force
     }
 
     It 'passes when all geographies are covered by the union of pipelines' {
@@ -36,6 +37,27 @@ param($ServiceConfigPath, $ExcludeRegions = @())
         $result = & (Join-Path $tempDir2 'Assert-GeographyCoverage.ps1') -PipelineParams $params -SkipPersist
         $result.missingCount | Should -Be 0
         $result.expectedCount | Should -Be 5
+    }
+
+    It 'is service-agnostic: covers geographies under arbitrary partition names' {
+        # No parameter is called PubRegions. A service with its own sovereign
+        # partitions, plus one flat-scope pipeline, must be scored identically.
+        $params = @{
+            'ALPHA' = @{ TerraRegions = 'regions(eastasia,southeastasia)'; AquaRegions = 'regions(northeurope,westeurope)' }
+            'BETA'  = @{ Regions      = 'regions(eastus,westus,uaecentral,southafricanorth)' }
+        }
+        $result = & (Join-Path $tempDir2 'Assert-GeographyCoverage.ps1') -PipelineParams $params -SkipPersist
+        $result.missingCount  | Should -Be 0
+        $result.expectedCount | Should -Be 5
+    }
+
+    It 'is service-agnostic: still detects a gap under arbitrary partition names' {
+        $params = @{
+            'ALPHA' = @{ TerraRegions = 'regions(eastasia,southeastasia)'; AquaRegions = 'regions(northeurope)' }
+            'BETA'  = @{ QuasarRegions = 'regions(eastus,westus)' }
+        }
+        { & (Join-Path $tempDir2 'Assert-GeographyCoverage.ps1') -PipelineParams $params -SkipPersist } |
+            Should -Throw '*GEOGRAPHY_COVERAGE_GAP*'
     }
 
     It 'throws GEOGRAPHY_COVERAGE_GAP when geographies are missing' {
@@ -92,6 +114,7 @@ param($ServiceConfigPath, $ExcludeRegions = @())
         # Copy the real Assert-GeographyCoverage.ps1 to temp so its $PSScriptRoot resolves to $tempDir
         $realScript = Get-Content $assertScript -Raw -Encoding UTF8
         $realScript | Set-Content (Join-Path $tempDir 'Assert-GeographyCoverage.ps1') -Encoding UTF8
+        Copy-Item (Join-Path (Split-Path $assertScript -Parent) 'lib') (Join-Path $tempDir 'lib') -Recurse -Force
     }
 
     It 'throws when geographies are missing (L-16 exact scenario: 66/73)' {
@@ -171,6 +194,7 @@ param($Organization, $Project, $PipelineId, $Top, $ResultFilter)
 
         $localScript = Get-Content $baselineScript -Raw
         $localScript | Set-Content (Join-Path $tempDir 'Get-PriorRunBaseline.ps1') -Encoding UTF8
+        Copy-Item (Join-Path (Split-Path $baselineScript -Parent) 'lib') (Join-Path $tempDir 'lib') -Recurse -Force
 
         $result = & (Join-Path $tempDir 'Get-PriorRunBaseline.ps1') `
             -Organization 'testorg' -Project 'testproj' `
@@ -199,6 +223,7 @@ param($Organization, $Project, $PipelineId, $Top, $ResultFilter)
 
         $localScript = Get-Content $baselineScript -Raw
         $localScript | Set-Content (Join-Path $tempDir 'Get-PriorRunBaseline.ps1') -Encoding UTF8
+        Copy-Item (Join-Path (Split-Path $baselineScript -Parent) 'lib') (Join-Path $tempDir 'lib') -Recurse -Force
 
         $result = & (Join-Path $tempDir 'Get-PriorRunBaseline.ps1') `
             -Organization 'testorg' -Project 'testproj' `
@@ -225,6 +250,7 @@ param($Organization, $Project, $PipelineId, $Top, $ResultFilter)
 
         $localScript = Get-Content $baselineScript -Raw
         $localScript | Set-Content (Join-Path $tempDir 'Get-PriorRunBaseline.ps1') -Encoding UTF8
+        Copy-Item (Join-Path (Split-Path $baselineScript -Parent) 'lib') (Join-Path $tempDir 'lib') -Recurse -Force
 
         $result = & (Join-Path $tempDir 'Get-PriorRunBaseline.ps1') `
             -Organization 'testorg' -Project 'testproj' `

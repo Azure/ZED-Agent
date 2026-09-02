@@ -21,6 +21,8 @@
 .PARAMETER ReleaseId    Test release id.
 .PARAMETER CriteriaPath Override. Default <skill>/requirements/success-criteria.json.
 .PARAMETER CatalogPath  Override. Default <target>/.github/skills/zed-agent/pipeline-catalog.json.
+.PARAMETER ReferenceRunsPath  Override for the golden reference cache consumed by Get-ReferenceRun.ps1.
+.PARAMETER SkipReferenceComparison  Skip the golden-run SHAPE comparison.
 .OUTPUTS PSCustomObject { verdict, releaseId, targetRepo, checks[], failedRequirements[] }
 #>
 [CmdletBinding()]
@@ -28,13 +30,16 @@ param(
     [Parameter(Mandatory)][string]$TargetRepo,
     [Parameter(Mandatory)][string]$ReleaseId,
     [string]$CriteriaPath,
-    [string]$CatalogPath
+    [string]$CatalogPath,
+    [string]$ReferenceRunsPath,
+    [switch]$SkipReferenceComparison
 )
 
 $ErrorActionPreference = 'Stop'
 $skillRoot = Split-Path $PSScriptRoot -Parent
 if (-not $CriteriaPath) { $CriteriaPath = Join-Path $skillRoot 'requirements\success-criteria.json' }
 if (-not $CatalogPath) { $CatalogPath = Join-Path $TargetRepo '.github\skills\zed-agent\pipeline-catalog.json' }
+if (-not $ReferenceRunsPath) { $ReferenceRunsPath = Join-Path $skillRoot 'requirements\reference-runs.json' }
 
 $relDir      = Join-Path $TargetRepo ".zed-agent/releases/$ReleaseId"
 $releaseFile = Join-Path $relDir 'release.json'
@@ -53,6 +58,11 @@ if (Test-Path $captureFile) {
     try { $parsed = Get-Content $captureFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ($parsed) { $capture = @($parsed) } } catch { $capture = @() }
 }
 $catalog = if (Test-Path $CatalogPath) { Get-Content $CatalogPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+$notifFile    = Join-Path $relDir 'notifications-capture.json'
+$notifRecords = @()
+if (Test-Path $notifFile) {
+    try { $nr = Get-Content $notifFile -Raw | ConvertFrom-Json; if ($nr) { $notifRecords = @($nr) } } catch {}
+}
 
 # ── Helpers ──
 function Get-StepStatusMap($st) {
@@ -101,15 +111,18 @@ function Test-ParamSyntax($posted, $syntax, $labelPrefix) {
     return $issues
 }
 
-function Test-CaptureRecord($rec, $stepCriteria, $labelPrefix, $syntax) {
+function Test-CaptureRecord($rec, $stepCriteria, $labelPrefix, $syntax, [bool]$acceptArtifactGap = $false) {
     # Returns list of issue strings ([] == clean).
+    # $acceptArtifactGap: derived by caller from whether the parent step's acceptedStatuses includes
+    # "completed-with-expected-artifact-gap". This collapses the former acceptExpectedArtifactFailure
+    # field (removed from success-criteria.json) into a single acceptance layer.
     $issues = @()
     if (-not $rec.triggered) {
         # Steps 5/10: canary/prod cannot trigger on a freshly-cut branch because their YAMLs pull a
         # build-artifact resource keyed on ArtifactsBranch that only exists after a COMPLETED build
         # (which fast test mode cancels) → ADO 400 "No version was found". This is EXPECTED, not a
         # failure; the resolved params are still validated below. Accept it when the step opts in.
-        $expectedArtifact = $stepCriteria.acceptExpectedArtifactFailure -and ("$($rec.error)" -match 'No version was found')
+        $expectedArtifact = $acceptArtifactGap -and ("$($rec.error)" -match 'No version was found')
         if (-not $expectedArtifact) {
             $issues += "$labelPrefix triggered=false (runId=$($rec.runId); error=$($rec.error))"
         }
@@ -169,7 +182,14 @@ foreach ($s in @($criteria.release.skippedSteps)) {
 # ── Overall ──
 if ($criteria.overall.allNonSkippedStepsCompleted) {
     foreach ($s in @($criteria.release.nonSkippedSteps)) {
-        Add-Check "step.$s.completed" ($stepMap["$s"] -eq 'completed') "step $s status='$($stepMap["$s"])' (want completed)"
+        # Check per-step acceptedStatuses if defined; fall back to requiring 'completed'
+        $stepCrit = $criteria.steps.PSObject.Properties["$s"]?.Value
+        if ($stepCrit -and $stepCrit.PSObject.Properties['acceptedStatuses']) {
+            $accepted = @($stepCrit.acceptedStatuses)
+        } else {
+            $accepted = @('completed')
+        }
+        Add-Check "step.$s.completed" ($stepMap["$s"] -in $accepted) "step $s status='$($stepMap["$s"])' (want one of: $([string]::Join(', ', $accepted)))"
     }
 }
 if ($criteria.overall.noStepFailed) {
@@ -179,6 +199,13 @@ if ($criteria.overall.noStepFailed) {
 if ($criteria.overall.captureFileRequired) {
     Add-Check 'overall.captureFile' ((Test-Path $captureFile) -and $capture.Count -gt 0) "test-run-capture.json present with $($capture.Count) record(s)"
 }
+if ($criteria.overall.notificationsCaptureRequired) {
+    $notifExists  = Test-Path $notifFile
+    $notifCount   = $notifRecords.Count
+    $failedNotifs = @($notifRecords | Where-Object { -not $_.ok }).Count
+    $notifOk = $notifExists -and $notifCount -gt 0 -and $failedNotifs -eq 0
+    Add-Check 'overall.notificationsCapture' $notifOk "notifications-capture.json: $notifCount record(s), $failedNotifs failed (ok=false)"
+}
 
 # ── Per-step checks ──
 foreach ($stepProp in $criteria.steps.PSObject.Properties) {
@@ -187,16 +214,24 @@ foreach ($stepProp in $criteria.steps.PSObject.Properties) {
     if ($sc.PSObject.Properties['status']) {
         Add-Check "step.$n.status" ($stepMap["$n"] -eq $sc.status) "step $n status='$($stepMap["$n"])' (want $($sc.status))"
     }
+    if ($sc.PSObject.Properties['acceptedStatuses']) {
+        $accepted = @($sc.acceptedStatuses)
+        Add-Check "step.$n.status" ($stepMap["$n"] -in $accepted) "step $n status='$($stepMap["$n"])' (want one of: $([string]::Join(', ', $accepted)))"
+    }
 
     # Trigger-and-cancel steps
     if ($sc.PSObject.Properties['capture']) {
         $cap = $sc.capture
         $recs = @($capture | Where-Object { "$($_.step)" -eq $n })
+        # Derive artifact-gap acceptance from this step's acceptedStatuses (WP-5b collapse).
+        # acceptExpectedArtifactFailure is no longer used in success-criteria.json.
+        $acceptArtGap = $sc.PSObject.Properties['acceptedStatuses'] -and
+                        (@($sc.acceptedStatuses) -contains 'completed-with-expected-artifact-gap')
         if ($cap.scope -eq 'single') {
             $rec = $recs | Where-Object { $_.pipelineKey -eq $cap.expectPipelineKey } | Select-Object -First 1
             if (-not $rec) { Add-Check "step.$n.capture" $false "no capture record for pipelineKey '$($cap.expectPipelineKey)'" }
             else {
-                $issues = Test-CaptureRecord $rec $cap "step $n [$($rec.pipelineKey)]" ($criteria.parameterSyntax)
+                $issues = Test-CaptureRecord $rec $cap "step $n [$($rec.pipelineKey)]" ($criteria.parameterSyntax) $acceptArtGap
                 Add-Check "step.$n.capture" ($issues.Count -eq 0) ($(if ($issues.Count) { [string]::Join('; ', $issues) } else { 'ok' }))
             }
         }
@@ -206,7 +241,7 @@ foreach ($stepProp in $criteria.steps.PSObject.Properties) {
             if ($recs.Count -lt $min) { Add-Check "step.$n.capture.count" $false "captured $($recs.Count) pipeline(s), need >= $min" }
             else {
                 $allIssues = @()
-                foreach ($rec in $recs) { $allIssues += Test-CaptureRecord $rec $cap "step $n [$($rec.pipelineKey)]" ($criteria.parameterSyntax) }
+                foreach ($rec in $recs) { $allIssues += Test-CaptureRecord $rec $cap "step $n [$($rec.pipelineKey)]" ($criteria.parameterSyntax) $acceptArtGap }
                 Add-Check "step.$n.capture" ($allIssues.Count -eq 0) ($(if ($allIssues.Count) { [string]::Join('; ', $allIssues) } else { "$($recs.Count) pipeline(s) ok" }))
             }
         }
@@ -230,6 +265,87 @@ foreach ($stepProp in $criteria.steps.PSObject.Properties) {
     if ($sc.PSObject.Properties['safeFlyFiledRequired'] -and $sc.safeFlyFiledRequired) {
         $filed = $release -and (($release.PSObject.Properties['safeFlyId'] -and $release.safeFlyId) -or ($release.PSObject.Properties['safeFlyRequestNumber'] -and $release.safeFlyRequestNumber))
         Add-Check "step.$n.safeFlyFiled" ([bool]$filed) "safeFlyId='$($release.safeFlyId)' safeFlyRequestNumber='$($release.safeFlyRequestNumber)'"
+    }
+
+    # Steps with emailNotificationRequired — check notifications-capture.json
+    if ($sc.PSObject.Properties['emailNotificationRequired'] -and $sc.emailNotificationRequired) {
+        $notifRec = $notifRecords | Where-Object { "$($_.step)" -eq "$n" -and $_.ok } | Select-Object -First 1
+        Add-Check "step.$n.emailNotification" ($null -ne $notifRec) "step $n email ok=$($notifRec.ok) subject='$($notifRec.subject)'"
+    }
+
+    # Step 16 — merge-back PR must have been created
+    if ($sc.PSObject.Properties['mergeBackPrRequired'] -and $sc.mergeBackPrRequired) {
+        $stepState = $null
+        if ($state -and $state.PSObject.Properties['steps']) {
+            # state.steps is a PSCustomObject keyed by step number string (e.g. "16"), NOT an array.
+            # Use direct property access to look up the step entry.
+            $stepState = $state.steps."$n"
+        }
+        $prId = $null
+        if ($stepState) {
+            if ($stepState.PSObject.Properties['pullRequestId'])    { $prId = $stepState.pullRequestId }
+            elseif ($stepState.PSObject.Properties['mergeBackPrId']) { $prId = $stepState.mergeBackPrId }
+            elseif ($stepState.PSObject.Properties['metadata'] -and $stepState.metadata.PSObject.Properties['pullRequestId']) {
+                $prId = $stepState.metadata.pullRequestId
+            }
+        }
+        # Also fall back to top-level release.json field
+        if (-not $prId -and $release.PSObject.Properties['mergeBackPrId']) { $prId = $release.mergeBackPrId }
+        Add-Check "step.$n.mergeBackPr" ([bool]$prId) "step $n pullRequestId='$prId'"
+    }
+}
+
+# ── Reference-run SHAPE comparison (golden run vs what ZED posted) ──
+# Values are ALLOWED to differ (CCOA exclusions, dev-status, region set, ephemeral test
+# branch — see requirements.md caveats). The FORM must not. A scalar where the golden run
+# used regions(...), or a bare list where it used a container literal, means ZED would post
+# syntax the pipeline cannot parse.
+if (-not $SkipReferenceComparison) {
+    $refScript = Join-Path $PSScriptRoot 'Get-ReferenceRun.ps1'
+    $libPath   = Join-Path $TargetRepo '.github\skills\zed-agent\scripts\lib\YamlParamModel.ps1'
+    if (-not (Test-Path $libPath)) { $libPath = Join-Path $skillRoot '..\zed-agent\scripts\lib\YamlParamModel.ps1' }
+
+    if (-not (Test-Path $refScript)) {
+        Add-Check 'reference.available' $false "Get-ReferenceRun.ps1 not found at $refScript"
+    }
+    elseif (-not (Test-Path $libPath)) {
+        Add-Check 'reference.available' $false "YamlParamModel.ps1 not found (needed for shape derivation)"
+    }
+    else {
+        . $libPath
+        $refRuns = @()
+        try {
+            $all = & $refScript -Scope 'all' -ReferencePath $ReferenceRunsPath
+            foreach ($s in 'prod', 'canary') { if ($all.PSObject.Properties[$s]) { $refRuns += @($all.$s) } }
+        } catch {
+            Add-Check 'reference.available' $false "Get-ReferenceRun.ps1 failed: $($_.Exception.Message)"
+        }
+
+        if ($refRuns.Count -gt 0) {
+            Add-Check 'reference.available' $true "$($refRuns.Count) golden reference run(s) loaded"
+            $compared = 0
+            foreach ($rec in @($capture | Where-Object { $_.PSObject.Properties['postedParameters'] -and $_.postedParameters })) {
+                $ref = $refRuns | Where-Object { "$($_.definitionId)" -eq "$($rec.pipelineId)" } | Select-Object -First 1
+                if (-not $ref) { continue }
+                $compared++
+                $diffs = @()
+                foreach ($p in $ref.templateParameters.PSObject.Properties) {
+                    $postedHas = $rec.postedParameters.PSObject.Properties[$p.Name]
+                    if (-not $postedHas) { continue }   # YAML evolved — declaration check already covers this
+                    $refShape = [string](Get-ParameterValueShape $p.Value).shape
+                    $gotShape = [string](Get-ParameterValueShape $rec.postedParameters."$($p.Name)").shape
+                    if ($refShape -eq $gotShape) { continue }
+                    # regionsWildcard vs regionsList are both regions(...) — scope differs, form does not.
+                    if (@($refShape, $gotShape) -contains 'regionsWildcard' -and @($refShape, $gotShape) -contains 'regionsList') { continue }
+                    # An empty container is a legitimate narrowing of any list/map.
+                    if ($gotShape -eq 'empty' -or $refShape -eq 'empty') { continue }
+                    $diffs += "$($p.Name): golden='$refShape' posted='$gotShape'"
+                }
+                Add-Check "reference.shape.$($rec.pipelineKey)" ($diffs.Count -eq 0) `
+                    $(if ($diffs.Count) { "vs golden build $($ref.buildId): " + [string]::Join('; ', $diffs) } else { "matches golden build $($ref.buildId) shape-for-shape" })
+            }
+            if ($compared -eq 0) { Add-Check 'reference.compared' $true 'no capture record matched a golden reference definitionId (nothing to compare)' }
+        }
     }
 }
 

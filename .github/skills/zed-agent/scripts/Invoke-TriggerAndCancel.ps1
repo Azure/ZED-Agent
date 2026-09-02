@@ -51,6 +51,18 @@
 .PARAMETER CapturePath
     Override for the capture file. Default .zed-agent/releases/<id>/test-run-capture.json.
 
+.PARAMETER PipelineCatalogPath / GateScope / DeclaredParameters / LearnedModel
+    Inputs for the P4 payload gate (Assert-ParameterPayload.ps1), which runs
+    BEFORE the POST and throws rather than queue a payload that disagrees with
+    the pipeline's YAML declaration or its learned model. Callers that already
+    hold the declaration and model (Resolve-TemplateParams.ps1 returns both)
+    should pass them to avoid a second catalog read.
+
+.PARAMETER SkipPayloadGate
+    Bypass the gate. Intended for tests that need to exercise the trigger path
+    itself; using it to get past a genuine finding re-opens the exact defect the
+    gate exists to prevent.
+
 .OUTPUTS
     PSCustomObject capture record (also appended to the capture file).
 #>
@@ -65,7 +77,12 @@ param(
     [Parameter(Mandatory)][hashtable]$TemplateParameters,
     [string]$ReleaseId,
     [int]$CancelAfterSeconds = 5,
-    [string]$CapturePath
+    [string]$CapturePath,
+    [string]$PipelineCatalogPath,
+    [string]$GateScope = 'production',
+    [AllowNull()][object[]]$DeclaredParameters,
+    [AllowNull()][object]$LearnedModel,
+    [switch]$SkipPayloadGate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,11 +108,37 @@ if (-not $adoToken) { throw "Failed to acquire ADO API token. Run 'az login --te
 $headers = @{ Authorization = "Bearer $adoToken"; 'Content-Type' = 'application/json' }
 $orgBase = "https://dev.azure.com/$Organization/$Project/_apis"
 
+# ── P4: blocking payload gate ──
+# The cheapest place to catch a malformed payload is before it exists in ADO
+# history. A rejected queue is an opaque 400; a wrong-shaped value is accepted
+# and deploys nothing at all. Both are caught here instead.
+$gateResult = $null
+if (-not $SkipPayloadGate) {
+    $gateArgs = @{
+        Payload     = $TemplateParameters
+        PipelineKey = $PipelineKey
+        Scope       = $GateScope
+    }
+    if ($PipelineCatalogPath) { $gateArgs.PipelineCatalogPath = $PipelineCatalogPath }
+    if ($null -ne $DeclaredParameters) { $gateArgs.DeclaredParameters = $DeclaredParameters }
+    if ($null -ne $LearnedModel)       { $gateArgs.Model              = $LearnedModel }
+    # Deliberately not wrapped in try/catch: a rejected payload must stop the
+    # step, not be recorded as a failed trigger and moved past.
+    $gateResult = & (Join-Path $PSScriptRoot 'Assert-ParameterPayload.ps1') @gateArgs
+}
+
 # ── Queue the run with the REAL params ──
 $queueUri = "$orgBase/pipelines/$PipelineId/runs?api-version=7.1-preview.1"
-$body = @{
-    resources          = @{ repositories = @{ self = @{ refName = $SourceBranch } } }
-    templateParameters = $TemplateParameters
+# Hashtable nested inside another hashtable serializes as its .NET object properties
+# (IsFixedSize, SyncRoot, etc.) rather than its key-value pairs via ConvertTo-Json.
+# Convert to PSCustomObject first to guarantee correct JSON serialization.
+$tpObj = New-Object PSObject
+foreach ($k in $TemplateParameters.Keys) {
+    $tpObj | Add-Member -MemberType NoteProperty -Name $k -Value ([string]$TemplateParameters[$k])
+}
+$body = [pscustomobject]@{
+    resources          = [pscustomobject]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $SourceBranch } } }
+    templateParameters = $tpObj
 } | ConvertTo-Json -Depth 16
 
 $queuedAt   = (Get-Date).ToUniversalTime().ToString('o')
@@ -217,6 +260,9 @@ $record = [ordered]@{
     ev2RolloutId       = $ev2RolloutId
     ev2CancelResult    = if ($ev2CancelResult) { $ev2CancelResult.cancelVerified } else { $null }
     ev2CancelError     = $ev2CancelError
+    payloadGate        = if ($gateResult) {
+        [ordered]@{ checked = $gateResult.checked; ok = $gateResult.ok; reason = $gateResult.reason }
+    } else { [ordered]@{ checked = $false; ok = $null; reason = 'gate skipped (-SkipPayloadGate)' } }
     error              = if ($queueError) { $queueError } elseif ($cancelError) { "cancel: $cancelError" } else { $null }
 }
 

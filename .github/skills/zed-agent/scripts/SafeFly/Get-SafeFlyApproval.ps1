@@ -40,12 +40,18 @@ $headers = @{ Authorization = "Bearer $token" }
 $uri = "$SafeFlyEndpoint/api/SafeFlyRequest/approvalstate?orgName=$OrgName&requestId=$SafeFlyId"
 
 try {
-    $response = Invoke-RestMethod -Uri $uri -Method GET -Headers $headers
+    $rawResp = Invoke-WebRequest -Uri $uri -Method GET -Headers $headers -UseBasicParsing
 }
 catch {
     $statusCode = $_.Exception.Response.StatusCode.value__
     throw "SafeFly approval state API returned HTTP $statusCode"
 }
+
+$contentType = if ($rawResp.Headers['Content-Type']) { ($rawResp.Headers['Content-Type'] -split ';')[0].Trim() } else { '' }
+if ($contentType -eq 'text/html' -or $rawResp.Content -match '^\s*<!DOCTYPE') {
+    throw "SAFEFLY_HTML_RESPONSE: SafeFly returned Content-Type '$contentType' instead of JSON at $uri. Endpoint may be wrong or SPA shell was served."
+}
+$response = $rawResp.Content | ConvertFrom-Json
 
 $state = $response.currentRequestState
 

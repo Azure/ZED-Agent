@@ -1,45 +1,215 @@
 # SafeFly R2D API Reference
 
-> Extracted from the SafeFly OpenAPI spec: `https://www.safefly.azure.com/swagger/v1/swagger.json`
-> This document gives the ZED Agent full knowledge of SafeFly's API schema, valid enum values, and field constraints.
+> Updated: 2026-08-24 -- **SafeFly V2 GraphQL is now the write path.** V1 REST write endpoint
+> (`https://www.safefly.azure.com/api/RequestCreation/v1/requests`) is in permanent read-only mode
+> (HTTP 410). All R2D creation uses the V2 GraphQL API at `https://safeflyv2.live.azure.com/api/v1.0/graphql`.
+> V1 REST **read** endpoints (approval state, leases, request details) remain operational.
 
-## Endpoints
+---
 
-> **V1 is deprecated.** As of mid-2026, V1 write endpoints return HTTP 410 (ReadOnlyMode).
-> V2 is the supported write path. The script tries endpoints in order:
-> 1. V2-live: `https://safeflyv2.live.azure.com/api/v1.0/requests`
-> 2. V2-classic: `https://www.safefly.azure.com/api/RequestCreation/v2/requests`
-> 3. V1-classic (fallback): `https://www.safefly.azure.com/api/RequestCreation/v1/requests`
->
-> ⚠️ **[UNVERIFIED — none of these currently accept a write.]** Measured 2026-08-23 during a
-> ZedForge validation run: V2-live returned **HTTP 405** on POST, V2-classic returned **HTTP 500**
-> on every payload shape tried, V1-classic returns **HTTP 410 ReadOnlyMode**. The published
-> migration guide (`aka.ms/safeflyv2/api-migration`) does not resolve. The V2 URLs above are
-> therefore **best-guess shapes, not confirmed contracts** — do not treat them as working.
-> **Step 13 R2D filing is externally blocked until SafeFly publishes a functional V2 write API.**
-> V1 **read** endpoints (approval state, leases, request details) still work.
->
-> When SafeFly V2 becomes available, confirm the real endpoint + payload shape and replace this
-> cascade with the single verified endpoint. Do **not** resolve this by weakening
-> `success-criteria.json → step.13.safeFlyFiled` — a release that cannot file an R2D must fail
-> loudly, not be recorded as green.
+## V2 GraphQL API (Current -- Write Path)
+
+### Transport
+
+| Property | Value |
+|----------|-------|
+| Endpoint | `https://safeflyv2.live.azure.com/api/v1.0/graphql` |
+| Method | `POST` |
+| Content-Type | `application/json` |
+| Accept | `application/json` |
+| Auth | Azure AD bearer token -- audience `api://f6f1426c-4d1b-44d8-8e36-db5824a21fe2` |
+
+> **Gotcha**: `Invoke-WebRequest.Content` returns a `byte[]` -- decode with
+> `[System.Text.Encoding]::UTF8.GetString($r.Content)`. Do NOT cast to string directly.
+
+> **Gotcha**: A bare `GET` returns HTTP 400. Always `POST` even for queries.
+
+> **Gotcha**: GraphQL errors arrive in the response **body** (`$.errors[]`), not as HTTP error
+> codes. Always check `$response.errors` -- a HTTP 200 with an `errors` array is a failure.
+
+### HTML Guard
+
+`safeflyv2.live.azure.com` may return `text/html` (SPA shell fallback) for misconfigured paths.
+Always check `Content-Type` before parsing as JSON. ZED scripts throw `SAFEFLY_HTML_RESPONSE`
+when an HTML body is detected.
+
+### V2 Authentication
+
+```powershell
+$token = az account get-access-token `
+    --resource 'api://f6f1426c-4d1b-44d8-8e36-db5824a21fe2' `
+    --query accessToken -o tsv
+```
+
+#### Required Caller Identity for V2 Writes
+
+| Field | Value |
+|-------|-------|
+| App role | `ExternalStandardAccess` (id `1ae39048-fba8-4242-9f99-4bec0a89c4fe`) |
+| Resource | `safeflyv2-prod` audience `api://f6f1426c-4d1b-44d8-8e36-db5824a21fe2` |
+| MAB SP | "BCDR SafeFly App" appId `62308d56-4ed4-41de-8a5c-ca98bb971ffc` (objectId `51c27a26-68f6-4ddb-b3ce-5856a81bf167`) |
+| ADO service connection | `712dc115-726d-45e5-8573-f174f12f836a` (msazure/One) |
+
+Configure via `safefly.tokenAudience` + `safefly.graphQlEndpoint` +
+`safefly.requestCreatorAdoServiceConnectionId` in `service-config.json`.
+
+### V2 Script Helpers
+
+| Script | Purpose |
+|--------|---------|
+| `Invoke-SafeFlyGraphQL.ps1` | Config-driven GraphQL transport: auth, byte-array decode, `errors[]` surfacing, 429/5xx retry (non-retry on 401/403/410), HTML guard |
+| `Get-SafeFlyForm.ps1` | Queries `activeForm(franchiseId, changeTypeId, expandWidgetQuestionsInline: true)`; asserts question count > 1 (truncation guard) |
+| `New-SafeFlyRequest.ps1` | Full V2 flow: form fetch -> SDP mapping -> answer assembly -> `Resolve-EffectiveRequired` -> fail-closed -> 14-field payload -> DryRun gate -> `submitRequest` mutation |
+
+### MAB-Specific V2 GUIDs (msazure/One/Mgmt-RecoverySvcs-BackupDataPlane)
+
+| Key | Value |
+|-----|-------|
+| `franchiseId` | `b52a8292-9c66-4139-9086-acb61009fad6` |
+| `serviceId` | `fb10185a-465d-42cd-b339-7d0d9331c340` |
+| `changeTypeId` | `1bdba704-213b-4239-8dd7-691457341440` ("App deployment") |
+| `formId` | `3cc72aed-0ecf-432e-92f2-133fee60a542` |
+
+### GraphQL Queries
+
+#### Fetch Active Form
+
+```graphql
+query GetActiveForm($franchiseId: ID!, $changeTypeId: ID!) {
+  activeForm(
+    franchiseId: $franchiseId
+    changeTypeId: $changeTypeId
+    expandWidgetQuestionsInline: true
+  ) {
+    id
+    questions {
+      id
+      name
+      label
+      required
+      type
+      options { id label value }
+      conditionalRule { type questionId value }
+    }
+  }
+}
+```
+
+> **Critical gotcha**: Using `staticOptions` instead of `options { id label value }` silently
+> truncates results to **1 question**. Always use the `options { id label value }` sub-selection.
+
+#### Submit Request Mutation
+
+```graphql
+mutation SubmitRequest($input: SaveRequestRequestBaseInput!) {
+  submitRequest(input: $input) {
+    id
+    requestNumber
+    status
+    url
+  }
+}
+```
+
+### `SaveRequestRequestBaseInput` -- exactly 14 fields
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `requestId` | string | New UUID for this request |
+| `changeTitle` | string | Title of the change |
+| `changeDescription` | string | Description of the change |
+| `franchiseId` | ID | From config |
+| `changeTypeId` | ID | From config |
+| `serviceId` | ID | From config |
+| `formId` | ID | From config |
+| `requestType` | string | `"New"` |
+| `answers` | QuestionAnswer[] | Array of `{ questionId, value }` |
+| `tagIds` | ID[] | `[]` (empty) |
+| `shouldSuppressIcmErrors` | boolean | `false` |
+| `requestExceptions` | string[] | `[]` (empty) |
+| `owner` | string | Release owner alias |
+| `ownerAssignmentNotes` | string | `""` |
+
+### Answer Assembly Rules
+
+#### SDP Mapping (V1 -> V2 option labels)
+
+| V1 value | V2 option label |
+|----------|----------------|
+| `Standard SDP` | `Standard SDP (Normal Rollout)` |
+| `Conservative SDP` | `Conservative SDP` |
+
+#### EV2 Partition Filtering
+
+The App deployment form has **43 questions** but only `ev2.*` questions apply to EV2 orchestrated
+deployments. Skip non-EV2 prefixes: `azdeployer.`, `lsm.`, `pilotfish.`, `storage.`, `other.`
+
+#### Effective-Required Derivation
+
+Never hardcode the required question set. Derive at runtime from each question's `conditionalRule`:
+
+```powershell
+function Resolve-EffectiveRequired($questions, $answers) {
+    $questions | Where-Object { $_.required } | Where-Object {
+        $r = $_.conditionalRule
+        if (-not $r) { return $true }  # always required
+        $parentAnswer = ($answers | Where-Object { $_.questionId -eq $r.questionId }).value
+        $parentAnswer -eq $r.value     # required only if parent equals expected value
+    }
+}
+```
+
+#### Fail-Closed Validation
+
+After answer assembly, verify every effective-required question has an answer. If any are missing,
+throw with the list of unanswered required question names. Never submit an incomplete R2D.
+
+### DryRun Gate
+
+`New-SafeFlyRequest.ps1` accepts a `-DryRun` switch. When set, the script logs the full
+14-field payload as JSON but **does NOT execute the `submitRequest` mutation**. Always use
+`-DryRun` in test mode. The true test run never submits to production.
+
+---
+
+## V1 REST API (Legacy -- Read-Only)
+
+> V1 **write** endpoint returns HTTP 410 permanently. V1 **read** endpoints remain working.
+
+### V1 Authentication
+
+```powershell
+$token = az account get-access-token `
+    --resource 'api://6bca76ac-6a99-4b70-bb47-23ae8bc1f0f6' `
+    --query accessToken -o tsv
+```
+
+### V1 Read Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | (see above — tried in order) | Create a new R2D request |
-| `GET` | `/api/SafeFlyRequest/approvalstate?orgName={org}&requestId={id}` | Check approval status (V1 reads still work) |
-| `GET` | `/api/SafeFlyLease/v1/lease/{serviceId}` | Get leases for a service (V1 reads still work) |
-| `GET` | `/api/SafeFlyRequest/v1/request/{orgName}/{requestId}` | Get request details (V1 reads still work) |
+| `GET` | `/api/SafeFlyRequest/approvalstate?orgName={org}&requestId={id}` | Check approval status |
+| `GET` | `/api/SafeFlyLease/v1/lease/{serviceId}` | Get leases for a service |
+| `GET` | `/api/SafeFlyRequest/v1/request/{orgName}/{requestId}` | Get request details |
 
-## Authentication
+### SPA-HTML Silent-Success Trap (V1)
 
-- **Resource ID**: `api://6bca76ac-6a99-4b70-bb47-23ae8bc1f0f6`
-- **Method**: Azure AD bearer token via `az account get-access-token --resource {resourceId}`
-- **Header**: `Authorization: Bearer {token}`
+`www.safefly.azure.com` returns **HTTP 200 Content-Type: text/html** for any unknown `/api/...`
+path (SPA shell catch-all). Always check Content-Type before treating the body as JSON. The
+SafeFly scripts throw `SAFEFLY_HTML_RESPONSE` when an HTML body is detected.
 
-## Request Creation DTO — `SafeFlyApiRequestCreationDTO`
+### Required Caller Identity for V1 (historical)
 
-All fields for `POST /api/RequestCreation/v1/requests`:
+| Field | Value |
+|-------|-------|
+| App role | `SafeFly.Request` (id `91767177-5551-4c8f-8491-f054949f3360`) |
+| Resource | Safefly_API appId `6bca76ac-6a99-4b70-bb47-23ae8bc1f0f6` |
+| MAB SP | "BCDR SafeFly App" appId `62308d56-4ed4-41de-8a5c-ca98bb971ffc` |
+| ADO service connection | `712dc115-726d-45e5-8573-f174f12f836a` (msazure/One) |
+
+---
+
+## V1 Request Creation DTO (historical reference)
 
 ### Identity & Organization
 
@@ -50,296 +220,3 @@ All fields for `POST /api/RequestCreation/v1/requests`:
 | `additionalNotifiers` | string[] | No | Extra email aliases to notify |
 | `r2DFranchiseName` | string | No | R2D franchise name |
 | `tags` | string[] | No | Tags for the request |
-
-### Deployment Details — `DeploymentDetail`
-
-| Field | Type | Required | Valid Values |
-|-------|------|----------|-------------|
-| `deploymentDetail.buildUrl` | string | Yes | URL to the build |
-| `deploymentDetail.buildId` | string | Yes | Build ID |
-| `deploymentDetail.buildNumber` | string | Yes | Build number |
-| `deploymentDetail.deploymentTool` | string | Yes | See **DeploymentTool** enum below |
-| `deploymentDetail.isGradualRollout` | boolean | Yes | `true` / `false` |
-| `deploymentDetail.isIntegratedWithSDP` | boolean | Yes | `true` / `false` |
-| `deploymentDetail.developmentDetails` | string | No | Dev details text |
-| `deploymentDetail.pilotFishBuildInformation` | object | No | PilotFish-specific build info |
-
-### Deployment Type — `DeploymentType`
-
-| Field | Type | Required | Valid Values |
-|-------|------|----------|-------------|
-| `deploymentType.deploymentTypeName` | string | Yes | See **DeploymentTypeName** enum below |
-| `deploymentTypeOther` | string | If "Other" | Name of other deployment type |
-
-### Timing
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `anticipatedStartTime` | datetime | Yes | Format: `YYYY-MM-DDTHH:MM:SS` |
-| `anticipatedEndTime` | datetime | Yes | Format: `YYYY-MM-DDTHH:MM:SS` |
-| `regionSpecificDeploymentEstimates` | array | No | Per-region start/end times |
-
-### Regions
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `targetedRegions` | string[] | Conditional | Required if onboarded to Azure Update Tracker or active CCOA. Uses **display names** from the SafeFly UI list (e.g., "East US 2", "Australia Central"). See the full list of ~77 Public Regions + sovereign regions in the agent's Domain Knowledge. |
-| `targetedRegionsOther` | string[] | If "Other" | Regions not in the standard SafeFly UI list — comma-separated free text |
-
-### Deployment Nature & SDP
-
-| Field | Type | Required | Valid Values |
-|-------|------|----------|-------------|
-| `deploymentNature` | string[] | Yes | See **DeploymentNature** enum below |
-| `sdpType` | string | Yes | See **SDPType** enum below |
-
-### Change Description
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `customerFacingChangeTitle` | string | Yes | Title visible to customers |
-| `customerFacingChangeDescription` | string | Yes | Description visible to customers |
-
-### Impact & Blast Radius
-
-| Field | Type | Required | Valid Values |
-|-------|------|----------|-------------|
-| `impactType` | string[] | Yes | See **ImpactType** enum below |
-| `impactDuration` | int32 | Yes | Duration in minutes |
-| `blastRadius` | string | Yes | See **BlastRadius** enum below |
-| `blastRadiusOther` | string | If "Other" | Custom blast radius |
-
-### Rollback
-
-| Field | Type | Required | Valid Values |
-|-------|------|----------|-------------|
-| `rollback` | string | Yes | See **Rollback** enum below |
-| `rollbackDetails` | string | If "Manual (TSG)" | How rollback will be performed |
-| `rollbackRollforwardTesting` | boolean | Yes | Whether rollback/rollforward tested |
-| `rollbackTimeInMinutes` | int32 | Yes | Expected rollback time |
-
-### Health Signals
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `sev2Alerting` | string | Yes | `"yes"` or `"no"` |
-| `hasSev2AlertingDetails` | string | If "yes" | Details of health signal integration |
-| `noSev2AlertingDetails` | string | If "no" | Why no health signals |
-
-### Risk
-
-| Field | Type | Required | Valid Values |
-|-------|------|----------|-------------|
-| `teamAssessedRisk` | string | Yes | `"Low"`, `"Medium"`, `"High"` |
-| `teamAssessedRiskJustification` | string | No | Justification text |
-| `plansForRiskMitigation` | string | No | Risk mitigation plan |
-
-### Pre-Production Testing — `PreProdTestingDetails[]`
-
-| Field | Type | Required | Valid Values |
-|-------|------|----------|-------------|
-| `preProdTesting[].preProdTestingType` | string | Yes | See **PreProdTestingType** enum below |
-| `preProdTesting[].preProdTestingDetail` | string | Yes | Link to test results |
-
-### Retake
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `hasRetake` | boolean | Yes | Whether this is a retake deployment |
-| `retakeDetails` | string | No | Retake details |
-| `deploymentRetakeDetails` | object | If retake | IcM ID, original SafeFly ID, justification |
-
-### CCOA
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `ccoaDetails.ccoaEventId` | string | Conditional | CCOA event ID |
-| `ccoaDetails.ccoaExceptionJustification` | string | Conditional | Why deploying during CCOA |
-
-### SFI Details — `SfiDetail`
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `sfiDetails` | object | No | SFI compliance information |
-
-### Config Change (conditional)
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `configChangeTypes` | string[] | If nature="Config change" | `"Service Config"`, `"Feature Flag"`, `"Secrets"`, `"Other"` |
-| `globalConfigChange` | string | If nature="Config change" | `"yes"` or `"no"` |
-| `configChangeTypesOther` | string | If type="Other" | Custom config change type |
-
-### Breaking Change
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `isBreakingChange` | string | No | `"yes"`, `"no"`, or `"undetermined"` |
-| `breakingChangeApprovedADOLink` | string | If "yes" | Link to approved ADO work item |
-
-### Lease
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `isRequestCoveredByALease` | boolean | No | Whether covered by a lease |
-| `coveredByLeaseId` | string | No | Lease ID |
-
-### IDNA Questions — `IDNAQuestionsApiDTO`
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `idnaQuestions.changeMechanism` | object | No | Change mechanism details |
-| `idnaQuestions.changeMonitoring` | object | No | Change monitoring details |
-| `idnaQuestions.changeRollback` | object | No | Change rollback details |
-| `idnaQuestions.pullRequestLink` | string | No | PR link |
-
-### Walmart
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `isDeploymentForWalmart` | boolean | No | Whether for Walmart |
-
----
-
-## Enum Reference — All Valid Values
-
-### DeploymentNature (string[], multi-select)
-1. `Config change`
-2. `CRI fixes`
-3. `Critical security fixes`
-4. `General bug fixes`
-5. `Monitoring/health signals`
-6. `New feature`
-7. `Policy change`
-8. `Secrets/Certificate management`
-9. `Sev 1/2 repair`
-10. `OS/Image patch`
-11. `Other`
-
-### SDPType (string, single-select)
-1. `Bypass SDP` — No SDP at all (emergency/livesite only)
-2. `SDP Exception` — Exception granted to skip SDP
-3. `Abbreviated SDP` — Shortened SDP process
-4. `Custom SDP` — Custom-defined SDP stages
-5. `Prioritized SDP` — Prioritized/fast-tracked SDP
-6. `Standard SDP` — Standard multi-ring deployment
-7. `Conservative SDP` — Most cautious, longest bake time
-
-### DeploymentTypeName (string, single-select)
-1. `Livesite Mitigation`
-2. `Hotfix`
-3. `Critical Rollout`
-4. `Regular`
-5. `Regular Maintenance`
-6. `Capacity and Buildout`
-7. `Config Change`
-8. `Decommission`
-9. `Other`
-
-### DeploymentTool (string, single-select)
-1. `EV2`
-2. `AzDeployer`
-3. `WARM`
-4. `CIS`
-5. `PilotFish`
-6. `Wan_Warpops`
-7. `CDT`
-8. `clockwerk`
-9. `Fuse`
-10. `ACIS_Geneva`
-11. `XDeploy`
-12. `AGSWorkloadConfiguration`
-13. `ConfigV2Platform`
-14. `DCMConfiguration`
-15. `ESTSBRS`
-16. `1PGitADOPipeline`
-17. `GatewayConfig`
-18. `LivesiteManagerLSM`
-19. `Oaas`
-20. `Other`
-
-### ImpactType (string[], single-select despite array)
-1. `Blackout`
-2. `Brownout`
-3. `Grayout`
-4. `Reboot`
-5. `DBFailover`
-6. `Latency`
-7. `None`
-
-### BlastRadius (string, single-select)
-1. `Single Node`
-2. `Single Customer`
-3. `Single Scale Unit (slice/partition)`
-4. `Single Rack`
-5. `Single Cluster`
-6. `Single Cell`
-7. `Single AZ`
-8. `Single Region`
-9. `Single Deployment Ring`
-10. `Multiple Racks`
-11. `Multiple Cluster`
-12. `Multiple AZs`
-13. `Multiple Regions`
-14. `Multiple Scale Units`
-15. `Global`
-16. `Other`
-
-### Rollback (string, single-select)
-1. `Fully automated`
-2. `Manual (TSG)`
-3. `No Rollback`
-4. `Rollforward`
-5. `DRI determines rollback or rollforward in real time based on the issue`
-
-### Risk / TeamAssessedRisk (string, single-select)
-1. `Low`
-2. `Medium`
-3. `High`
-
-### PreProdTestingType (string, single-select per entry)
-1. `Compatibility Testing`
-2. `Config Testing`
-3. `Configuration matrix Testing`
-4. `Configuration Schema Validation Testing`
-5. `End to End Testing`
-6. `Feature Flags Testing`
-7. `Hotfix Testing`
-8. `Integration Testing`
-9. `IPv6 Testing`
-10. `Performance Testing`
-11. `Resiliency/Chaos Testing`
-12. `Rollback Testing`
-13. `Runners and Monitoring Testing`
-14. `Security Testing`
-15. `Stress Testing`
-16. `Unit Testing`
-17. `Upgrade Testing`
-18. `Other`
-
-### RequestState (response only)
-`Archived`, `Unsubmitted`, `Draft`, `EngineeringDirectorPending`, `EngineeringDirectorRejected`, `ServiceManagerPending`, `ServiceManagerRejected`, `BuddyPending`, `BuddyRejected`, `ReadyToDeployPending`, `CvpPending`, `CvpRejected`, `Completed`, `ApprovedForDeployment`, `Deployed`, `Deleted`, `Unknown`, `DeploymentInProgress`, `DeploymentCompleted`, `DeploymentPaused`, `DeploymentCancelled`, `AutoApproved`, `Template`
-
-### CloudType
-`Azure`, `AzureGovernment`, `AzureChina`
-
-### SafeFlyFormType
-`Version1`, `Version2`, `Cloudnet`, `ReadyToDeploy`, `ReadyToDeployV2`
-
----
-
-## Response DTO — `SafeFlyApiRequestCreationResponse`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `safeFlyId` | string | The SafeFly request GUID |
-| `safeFlyUrl` | string | URL to view the request in SafeFly portal |
-| `requestNumber` | string | Numeric request number |
-| `requestStatus` | string | Current status (e.g., `EdApproved`) |
-| `message` | string | Confirmation message |
-
----
-
-## Source
-
-Full OpenAPI spec: `https://www.safefly.azure.com/swagger/v1/swagger.json`

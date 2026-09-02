@@ -3,36 +3,70 @@
 // Database: CONFIG[kusto.bvt.database]
 //
 // Placeholders (replaced by ZED Agent at runtime):
-//   {{PIPELINE_TRIGGER_TIME}}  — ISO 8601 UTC timestamp from state.json
-//                                 e.g. 2026-04-15T10:30:00Z
+//   {{PIPELINE_TRIGGER_TIME}}  — a complete KQL time EXPRESSION, not a bare literal.
+//                                 Absolute:  datetime(2026-04-15T10:30:00Z)
+//                                 Relative:  ago(48h)
+//                                 The agent must emit the wrapper itself, because a
+//                                 relative expression cannot be wrapped in datetime()
+//                                 — datetime(ago(48h)) is a Kusto syntax error.
+//   {{RESPONSIBLE_TEAM}}       — team attribution filter (from kusto.bvt.queryVariables)
 //
-// Two substitution points: both `ago(1d)` lines below become
-//   datetime({{PIPELINE_TRIGGER_TIME}})
-// The agent reads pipelineTriggerTimestamps.<stepN> from state.json
-// and substitutes before executing via Kusto MCP.
+// Two substitution points: both trigger-time lines below use {{PIPELINE_TRIGGER_TIME}}
+// bare. The agent reads pipelineTriggerTimestamps.<stepN> from state.json and
+// substitutes before executing via Kusto MCP.
+//
+// OUTPUT SCHEMA:
+//   Row 0        — liveness sentinel: columns _queryType="liveness", _rowCount=<int>,
+//                  _latestTimestamp=<datetime>, _noneTeamCount=<int>
+//                  ZED checks: if _rowCount==0 the BVT feed may be stale → BVT_DATA_STALE.
+//                  _noneTeamCount shows unattributed failures (team=None or empty) in window.
+//   Rows 1..N    — actual failure rows (same schema as before)
 
-BvtDailyTestRunData
-| extend TimeStamp = todatetime(DateString)
-| where TimeStamp >= datetime({{PIPELINE_TRIGGER_TIME}})
-| where TimeStamp <= now()
-| where (dayofweek(TimeStamp) > time(0.00:00:00) and dayofweek(TimeStamp) < time(6.00:00:00))
-| where Result == false and Analysis != "" and Environment != "BVTD3"
-| where IssueCategory !contains "test"
-| where ResponsibleTeam contains "{{RESPONSIBLE_TEAM}}"
-| project TimeStamp, WorkLoadType, Environment, TestCaseName,
-          IssueCategory = trim("\\s", IssueCategory), ResponsibleTeam,
-          CanBeCaughtInInnerLoop, RepairItem, Analysis,
-          lowerWorkLoadType = tolower(WorkLoadType)
-| sort by TimeStamp asc
-| join kind=leftouter (
-    BVTRawData
-    | extend TimeStamp = todatetime(Date)
-    | where TimeStamp >= datetime({{PIPELINE_TRIGGER_TIME}})
+// ── Part 1: Liveness sentinel ────────────────────────────────────────────────
+let triggerTime = {{PIPELINE_TRIGGER_TIME}};
+let unfilteredWindow =
+    BvtDailyTestRunData
+    | extend TimeStamp = todatetime(DateString)
+    | where TimeStamp >= triggerTime
     | where TimeStamp <= now()
     | where (dayofweek(TimeStamp) > time(0.00:00:00) and dayofweek(TimeStamp) < time(6.00:00:00))
-    | extend WorkLoadType = iff(WorkLoadType == "MABAgentCentralMgmt", "MAB", WorkLoadType)
-    | project TimeStamp, lowerWorkLoadType = tolower(WorkLoadType), FrontLiners
-) on TimeStamp, lowerWorkLoadType
-| project TimeStamp, WorkLoadType, Environment, TestCaseName,
-          IssueCategory = trim("\\s", IssueCategory), ResponsibleTeam,
-          CanBeCaughtInInnerLoop, FrontLiners, RepairItem, Analysis
+    | where Result == false and Analysis != "" and Environment != "BVTD3"
+    | where IssueCategory !contains "test";
+let noneTeamCount =
+    unfilteredWindow
+    | where isempty(ResponsibleTeam) or ResponsibleTeam == "None"
+    | count
+    | project noneTeamCount = Count;
+let liveness =
+    unfilteredWindow
+    | summarize _rowCount = count(), _latestTimestamp = max(TimeStamp)
+    | extend _queryType = "liveness"
+    | extend _noneTeamCount = toscalar(noneTeamCount)
+    | project _queryType, _rowCount, _latestTimestamp, _noneTeamCount;
+
+// ── Part 2: Team-attributed failures ─────────────────────────────────────────
+let failures =
+    unfilteredWindow
+    | where ResponsibleTeam contains "{{RESPONSIBLE_TEAM}}"
+    | project TimeStamp, WorkLoadType, Environment, TestCaseName,
+              IssueCategory = trim("\\s", IssueCategory), ResponsibleTeam,
+              CanBeCaughtInInnerLoop, RepairItem, Analysis,
+              lowerWorkLoadType = tolower(WorkLoadType)
+    | sort by TimeStamp asc
+    | join kind=leftouter (
+        BVTRawData
+        | extend TimeStamp = todatetime(Date)
+        | where TimeStamp >= triggerTime
+        | where TimeStamp <= now()
+        | where (dayofweek(TimeStamp) > time(0.00:00:00) and dayofweek(TimeStamp) < time(6.00:00:00))
+        | extend WorkLoadType = iff(WorkLoadType == "MABAgentCentralMgmt", "MAB", WorkLoadType)
+        | project TimeStamp, lowerWorkLoadType = tolower(WorkLoadType), FrontLiners
+    ) on TimeStamp, lowerWorkLoadType
+    | project _queryType = "failure", _rowCount = 0, _latestTimestamp = TimeStamp, _noneTeamCount = 0,
+              WorkLoadType, Environment, TestCaseName,
+              IssueCategory = trim("\\s", IssueCategory), ResponsibleTeam,
+              CanBeCaughtInInnerLoop, FrontLiners, RepairItem, Analysis;
+
+// ── Union: sentinel first, then failures ─────────────────────────────────────
+liveness
+| union failures

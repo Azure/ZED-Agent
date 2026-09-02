@@ -74,22 +74,51 @@ function Register-WatcherTask {
     }
 
     if ($Action -eq 'cleanup') {
-        # Remove ALL ZED watcher tasks (current + any orphaned/stale from prior runs)
-        $prefix = $cfg.operational.watcherTaskPrefix
+        # Remove ALL ZED watcher tasks (current + any orphaned/stale from prior runs).
+        # Guard against null/empty prefix — an empty prefix would match all tasks on the machine.
+        $prefix = "$($cfg.operational.watcherTaskPrefix)".Trim()
         $removed = @()
-        Get-ScheduledTask | Where-Object { $_.TaskName -like "$prefix*" } | ForEach-Object {
-            Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false
-            $removed += $_.TaskName
-        }
-        # Kill any running watcher processes
-        $killed = @()
-        Get-Process -Name pwsh, powershell -ErrorAction SilentlyContinue | ForEach-Object {
-            $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
-            if ($cmd -like "*Release-Watcher*" -or $cmd -like "*zed-agent*watcher*") {
-                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-                $killed += $_.Id
+        $errors  = @()
+        if ($prefix) {
+            Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like "$prefix*" } | ForEach-Object {
+                try {
+                    Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue
+                    $removed += $_.TaskName
+                } catch {
+                    $errors += "unregister '$($_.TaskName)': $_"
+                }
             }
         }
-        return @{ success = $true; action = 'cleanup'; tasksRemoved = $removed; processesKilled = $killed }
+        # Kill any running watcher processes.
+        # MUST exclude this process and its ancestors: the cleanup call itself runs
+        # from a path containing 'zed-agent', so a broad command-line glob matches
+        # the invoking shell and the helper kills itself before finishing teardown.
+        $killed = @()
+        try {
+            $selfChain = [System.Collections.Generic.HashSet[int]]::new()
+            $walk = $PID
+            $guard = 0
+            while ($walk -and $guard -lt 12) {
+                [void]$selfChain.Add($walk)
+                $p = Get-CimInstance Win32_Process -Filter "ProcessId=$walk" -ErrorAction SilentlyContinue
+                if (-not $p -or -not $p.ParentProcessId -or $p.ParentProcessId -eq $walk) { break }
+                $walk = [int]$p.ParentProcessId
+                $guard++
+            }
+
+            Get-Process -Name pwsh, powershell -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($selfChain.Contains($_.Id)) { return }   # never kill self or an ancestor
+                $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+                # Match the watcher ENTRY SCRIPT, not a two-part wildcard over the
+                # whole command line (which matched any pwsh running from zed-agent).
+                if ($cmd -like "*Release-Watcher*") {
+                    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                    $killed += $_.Id
+                }
+            }
+        } catch {
+            $errors += "kill watcher processes: $_"
+        }
+        return @{ success = $true; action = 'cleanup'; tasksRemoved = $removed; processesKilled = $killed; errors = $errors }
     }
 }

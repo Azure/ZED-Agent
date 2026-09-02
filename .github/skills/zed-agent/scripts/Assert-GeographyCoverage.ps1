@@ -15,9 +15,11 @@
     pipeline(s) should have covered it.
 
 .PARAMETER PipelineParams
-    Hashtable keyed by pipeline key (e.g. 'PROT-PROD-SFRP'), each value a
-    hashtable with at least a 'PubRegions' key whose value is a regions(...)
-    string or a semicolon/comma-separated region list.
+    Hashtable keyed by pipeline key, each value a hashtable of that pipeline's
+    resolved template parameters. Every parameter carrying the `Regions` facet
+    (discovered generically — `<Partition>Regions` or a flat `Regions`) is unioned
+    to compute coverage; values may be a regions(...) string or a
+    semicolon/comma-separated region list.
 
 .PARAMETER ServiceConfigPath
     Path to service-config.json. Used to call Get-RegionMapping.ps1.
@@ -34,7 +36,8 @@
 
 .PARAMETER PriorRunsBaseline
     Optional array of prior run objects (from Read-PriorRun.ps1 or union helper).
-    Each must have: pipelineKey, result, templateParameters.PubRegions.
+    Each must have: pipelineKey, result, templateParameters carrying at least one
+    parameter with the `Regions` facet (e.g. `Regions`, `PubRegions`, `FFRegions`).
     L-17: only 'succeeded' or 'inProgress' runs are included in the baseline.
 
 .PARAMETER SkipPersist
@@ -57,6 +60,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
+. (Join-Path $scriptDir 'lib\YamlParamModel.ps1')
 
 # ── 1. Build expected geography set from ASC (single source of truth) ──
 $regionMappings = & (Join-Path $scriptDir 'Get-RegionMapping.ps1') `
@@ -79,7 +83,7 @@ foreach ($r in $regionMappings) {
 }
 
 # ── 2. Parse each pipeline's covered regions → geographies ──
-# Helper: parse PubRegions value into an array of region short names
+# Helper: parse a regions-facet parameter value into an array of region short names
 function Parse-RegionList {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) { return @() }
@@ -97,13 +101,26 @@ foreach ($r in $regionMappings) {
 }
 
 $pipelineCoverageMap = @{}  # pipelineKey -> @{ regions = @(); geographies = HashSet }
+# Every regions-facet parameter actually seen, so the remedy can name the real
+# parameter(s) for THIS service rather than assuming a fixed name.
+$discoveredRegionParams = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase)
 $allCoveredGeographies = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase)
 
 foreach ($key in $PipelineParams.Keys) {
     $params = $PipelineParams[$key]
-    $pubRegions = $params['PubRegions']
-    $regions = Parse-RegionList $pubRegions
+    # Service-agnostic: a service may partition regions across any number of
+    # sovereign clouds under any naming, or use a single flat `Regions`.
+    # Union every parameter that carries the `Regions` facet.
+    $regions = @()
+    $paramNames = if ($params -is [System.Collections.IDictionary]) { @($params.Keys) }
+                  else { @($params.PSObject.Properties.Name) }
+    foreach ($rn in @(Get-FacetParameterNames -ParameterNames $paramNames -Facet 'Regions')) {
+        $regions += Parse-RegionList $params.$rn
+        [void]$discoveredRegionParams.Add($rn)
+    }
+    $regions = @($regions | Select-Object -Unique)
 
     $geoSet = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase)
@@ -130,12 +147,17 @@ if ($PriorRunsBaseline.Count -gt 0) {
         if ($result -and $result -notin @('succeeded', 'inProgress')) { continue }
 
         $pKey = $run.pipelineKey
-        $pubRegions = $null
-        if ($run.templateParameters -and $run.templateParameters.PubRegions) {
-            $pubRegions = $run.templateParameters.PubRegions
+        $regions = @()
+        if ($run.templateParameters) {
+            $tp = $run.templateParameters
+            $tpNames = if ($tp -is [System.Collections.IDictionary]) { @($tp.Keys) }
+                       else { @($tp.PSObject.Properties.Name) }
+            foreach ($rn in @(Get-FacetParameterNames -ParameterNames $tpNames -Facet 'Regions')) {
+                $regions += Parse-RegionList $tp.$rn
+                [void]$discoveredRegionParams.Add($rn)
+            }
         }
-        $regions = Parse-RegionList $pubRegions
-        foreach ($region in $regions) {
+        foreach ($region in @($regions | Select-Object -Unique)) {
             $geo = $regionToGeography[$region.ToLower()]
             if ($geo) {
                 [void]$allCoveredGeographies.Add($geo)
@@ -221,6 +243,12 @@ if ($missing.Count -gt 0) {
     }
     $detailBlock = $details -join "`n"
 
+    $remedyParam = if ($discoveredRegionParams.Count -gt 0) {
+        "'" + (@($discoveredRegionParams | Sort-Object) -join "' / '") + "'"
+    } else {
+        "the pipeline's regions parameter"
+    }
+
     $msg = @(
         "GEOGRAPHY_COVERAGE_GAP: $($missing.Count) of $($expectedGeographies.Count) expected geographies are not covered by any pipeline.",
         "Missing geographies:",
@@ -228,7 +256,7 @@ if ($missing.Count -gt 0) {
         "",
         "Covered: $($allCoveredGeographies.Count)/$($expectedGeographies.Count)",
         "",
-        "Remedy: Add the missing regions to the appropriate pipeline's PubRegions parameter.",
+        "Remedy: Add the missing regions to the appropriate pipeline's $remedyParam parameter.",
         "        Run Assert-GeographyCoverage.ps1 again to verify full coverage before proceeding."
     ) -join "`n"
 

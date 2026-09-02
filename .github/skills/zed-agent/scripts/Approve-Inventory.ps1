@@ -80,6 +80,10 @@ if ($inv.sdsReconciliation) {
         hash       = $inv.sdsReconciliation.hash
         source     = $inv.sdsReconciliation.source
         stampCount = $inv.sdsReconciliation.stampCount
+        # The SDS hash is CLOUD-SCOPED. Record which cloud it was computed for so
+        # Test-InventoryGate can rehash under the same cloud; otherwise every
+        # Public inventory reports a permanent, unfixable hashDrift.
+        cloud      = $inv.sdsReconciliation.cloud
     }
 }
 
@@ -96,7 +100,7 @@ $data = @{
     ranAt       = (Get-Date).ToUniversalTime().ToString('o')
     status      = $status
     pipelineKey = $inv.pipelineKey
-    cloud       = $inv.cloud
+    cloud       = $(if ($inv.cloud) { $inv.cloud } elseif ($inv.sdsReconciliation) { $inv.sdsReconciliation.cloud } else { $null })
     stampCount  = @($inv.stamps).Count
     sds         = $sdsBlock
     kusto       = $kustoBlock

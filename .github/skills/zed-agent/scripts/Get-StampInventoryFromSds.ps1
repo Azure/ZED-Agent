@@ -214,9 +214,12 @@ foreach ($cloudObj in @($clouds)) {
 }
 
 # ── Stable hash for drift detection ────────────────────────────────────
+# Hash ONLY cloud+stampId (true topology) so that feature-flag value changes,
+# BOM additions, and sdsFieldMapping renames do not produce false hashDrift.
+# A genuine topology change (stamp added/removed/renamed) still changes the hash.
 $sorted = $flat | Sort-Object cloud, stampId
 $canonical = $sorted | ForEach-Object {
-    "$($_.cloud)|$($_.stampId)|$($_.stampName)|$($_.dcShortName)|$($_.region)|$($_.deploymentName)"
+    "$($_.cloud)|$($_.stampId)"
 }
 $joined = ($canonical -join "`n")
 $sha = [System.Security.Cryptography.SHA256]::Create()

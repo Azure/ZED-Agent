@@ -392,12 +392,25 @@ This pattern fails silently in PowerShell because the deserialised object's prop
 
 ## Result Interpretation
 
-| Rows returned | Meaning | Action |
-|---------------|---------|--------|
-| 0 | No CONFIG[service.name] failures in window | ✅ Proceed — step → `completed` |
-| ≥ 1 | CONFIG[service.name]-attributed failures exist | ❌ HOLD — step → `failed`, email via `Resolve-NotificationRecipients -EventKey 'step-3-failed'` (default: current-owner-only; owner widens via `routing.3-wait-build.failure`) |
+The query returns a **liveness sentinel** on Row 0 (`_queryType="liveness"`) followed by attributed failure rows (`_queryType="failure"`). Always parse Row 0 first.
 
-Key columns in results: `WorkLoadType`, `Environment`, `TestCaseName`, `IssueCategory`, `FrontLiners`, `Analysis`, `CanBeCaughtInInnerLoop`
+### Step 1 — Liveness check (Row 0)
+
+| Condition | Meaning | Action |
+|-----------|---------|--------|
+| `_rowCount == 0` | No BVT data in the window — feed is dead or stale | ⚠️ `BVT_DATA_STALE` — do NOT auto-pass. Log the data-gap, capture it to `test-run-capture.json`, send owner email with `EventKey='bvt-data-stale'`, set step → `failed`. Never silently treat no-data as no-failures. |
+| `_rowCount > 0` AND `_latestTimestamp` is older than `now() - 3 days` | Data exists but is stale — pipeline feed lagging | ⚠️ Same as above — treat as `BVT_DATA_STALE`. |
+| `_rowCount > 0` AND feed is fresh | Data is current — proceed to Step 2. | |
+| `_noneTeamCount > 0` | Unattributed failures (team=None/empty) — NOT attributed to this service but may indicate a shared infrastructure issue | ℹ️ Include `_noneTeamCount` in the BVT summary email as an informational note ("N unattributed failures in window"). |
+
+### Step 2 — Failure rows (Rows 1..N, `_queryType="failure"`)
+
+| Failure rows | Meaning | Action |
+|--------------|---------|--------|
+| 0 failure rows | No CONFIG[service.name] failures in window | ✅ Proceed — step → `completed` |
+| ≥ 1 failure rows | CONFIG[service.name]-attributed failures exist | ❌ HOLD — step → `failed`, email via `Resolve-NotificationRecipients -EventKey 'step-3-failed'` (default: current-owner-only; owner widens via `routing.3-wait-build.failure`) |
+
+Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `IssueCategory`, `FrontLiners`, `Analysis`, `CanBeCaughtInInnerLoop`
 
 # Release Steps (16 total)
 
@@ -541,22 +554,80 @@ instead of waiting for the run to progress:
    verify ZED fills every parameter correctly.
 2. **Trigger + capture + cancel** via the helper:
    ```powershell
+   $rp = & .github/skills/zed-agent/scripts/Resolve-TemplateParams.ps1 ...   # step's normal resolve
+
    .github/skills/zed-agent/scripts/Invoke-TriggerAndCancel.ps1 `
        -Organization <org> -Project <project> `
        -PipelineId <id> -PipelineKey '<officialBuild|canary:<k>|production:<k>>' `
-       -Step <2|5|10> -SourceBranch "refs/heads/<currentBranch>" `
-       -TemplateParameters <hashtable of real params> `
+       -Step <2|5|10> -SourceBranch <sourceBranch> `
+       -TemplateParameters $rp.templateParameters `
+       -PipelineCatalogPath <catalogPath> `
+       -GateScope <canary|production> `
+       -DeclaredParameters $rp.declaredParameters `
+       -LearnedModel $rp.learnedModel `
        -ReleaseId <id> -CancelAfterSeconds ($cfg.testConfig.cancelAfterSeconds ?? 5)
    ```
+
+   **`-DeclaredParameters`, `-LearnedModel`, `-GateScope` and `-PipelineCatalogPath` are not
+   optional in practice.** They are the evidence the P4 payload gate validates against. Omitting
+   them does not disable the gate loudly — the gate falls back to the catalog and, failing that,
+   reports `NO_VALIDATION_SOURCE` and waves the payload through. A step that silently stops
+   validating is worse than one that never validated, so always thread all four from the resolver
+   output object (`declaredParameters` and `learnedModel` are returned by
+   `Resolve-TemplateParams.ps1` for exactly this purpose). `-GateScope` must match the `-Scope`
+   used to resolve: `canary` for Step 5, `production` for Steps 2 and 10.
+
+   **`-SourceBranch` is step-specific — do not use the same value for all three steps:**
+
+   - **Step 2 (officialBuild):** `"refs/heads/<currentBranch>"` — the release branch that was just
+     created. The officialBuild pipeline YAML exists on this branch; this is the branch whose content
+     will be built.
+
+   - **Steps 5 (canary) and 10 (production):** the deployment pipeline YAML lives on the service's
+     stable base branch, NOT on the ZED working/release branch. Posting the working branch causes ADO
+     HTTP 400 `"PipelineValidationException: No version was found for the pipeline"` because the
+     pipeline definition has no YAML on a short-lived release branch. Resolve this from
+     `pipeline-catalog.json → yamlRepos.<repoName>.baseBranch` via the helper:
+     ```powershell
+     $sourceBranch = & .github/skills/zed-agent/scripts/Get-YamlRepoSourceBranch.ps1 `
+         -CatalogPath <catalogPath> -RepoName $cfg.ado.repository
+     # Example: returns "refs/heads/develop"
+     ```
+     **Fail loudly** — `Get-YamlRepoSourceBranch.ps1` throws with an actionable message naming
+     the missing key if `yamlRepos` or `baseBranch` is absent. Do NOT silently fall back to the
+     working branch; that fallback is the root cause of the 400 failures.
+
+   Changing the self-repository ref for Steps 5/10 does **not** affect which build artifacts get
+   deployed — artifact provenance is controlled exclusively by the `ArtifactsBranch`/`BuildId`
+   templateParameters, which are resolved from the release state and passed verbatim. The self ref
+   controls only which YAML version ADO uses to queue the run.
    The helper POSTs the run, records `{ step, pipelineKey, pipelineId, sourceBranch,
-   postedParameters, runId, triggered, queuedAt, cancelledAt, finalState, error }`, then cancels
-   the run within a few seconds (retry ×3) so nothing deploys. It **appends** the record to
-   `.zed-agent/releases/<id>/test-run-capture.json`.
-3. For a step with multiple pipelines (5/10), call the helper **once per pipeline** so every
+   postedParameters, payloadGate, runId, triggered, queuedAt, cancelledAt, finalState, error }`,
+   then cancels the run within a few seconds (retry ×3) so nothing deploys. It **appends** the
+   record to `.zed-agent/releases/<id>/test-run-capture.json`.
+3. **The payload gate runs BEFORE the POST and is blocking.** `Invoke-TriggerAndCancel.ps1` calls
+   `Assert-ParameterPayload.ps1` first; if the payload carries an undeclared parameter, a missing
+   declared parameter, a shape mismatch (e.g. a `regions(...)` value degraded to a bare scalar), or
+   a region-set shrink against the learned model, it **throws `PARAMETER_PAYLOAD_REJECTED` and no
+   run is queued**. This is deliberate: a malformed payload is either rejected by ADO as an opaque
+   400, or — far worse — accepted and silently deploys to nothing. Do **not** reach for
+   `-SkipPayloadGate` to get past a finding; fix the payload. The gate's verdict is recorded on the
+   capture record as `payloadGate` whether it passed or was skipped.
+4. For a step with multiple pipelines (5/10), call the helper **once per pipeline** so every
    pipeline gets its own capture record.
-4. Mark the step `completed` **as soon as every pipeline was triggered** (a successful trigger is
-   success — ADO run outcome after cancel is irrelevant). If any `triggered == false`, mark the
-   step `failed` and email the owner with the capture error. Do **not** arm a watcher.
+5. **Pass `-TemplateParameters` VERBATIM — the resolved hashtable value from `Resolve-TemplateParams.ps1`
+   must be passed AS-IS to `Invoke-TriggerAndCancel.ps1`.** Do NOT reformat, stringify, or substitute
+   values that contain ADO array syntax. Specifically:
+   - `@()` (empty stamp list) — pass as the literal string `'@()'`, not as `' '` or `''`
+   - `@("v1","v2")` (stamp list) — pass as the literal string e.g. `'@("ea-01","wus-01")'`
+   - `regions(r1,r2)` (region list) — pass as the literal string e.g. `'regions(eastus,westus)'`
+   - `regions()` (empty region list) — pass as the literal string `'regions()'`
+   Silently converting these to spaces (`' '`) or empty strings causes ADO parameter validation to
+   fail and triggers verifier FAIL on format checks.
+6. Mark the step `completed` **as soon as every pipeline was triggered** (a successful trigger is
+   success — ADO run outcome after cancel is irrelevant). If any `triggered == false` **for a
+   reason other than the expected artifact-dependency gap** (see Step 5/10 override sections below),
+   mark the step `failed` and email the owner with the capture error. Do **not** arm a watcher.
 
 `test-run-capture.json` is the machine-readable contract the development agent (ZedForge) verifies
 against its requirements file (`success-criteria.json`).
@@ -576,6 +647,9 @@ When `testMode` is `true` and Step 4 runs: perform the **real** commit collectio
 the manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes"),
 **suppress the Teams commit-request post** (owner-only, Teams is off in test mode), and mark Step 4
 `completed` immediately — do **not** arm the Excel side-channel or wait for a human to fill impact.
+**If `commitCount` is 0 (the release branch has no commits relative to `previousBranch`), skip Excel
+creation and upload entirely; instead set `release.json.commitExcelUrl = 'test-run:no-commits'` so
+the verifier can confirm the field was written.** Mark Step 4 `completed` regardless.
 
 ## Step 5: Cancel Canary Pipelines at Trigger
 
@@ -585,14 +659,12 @@ Then, instead of triggering + polling, call the trigger-and-cancel helper **once
 pipeline** (`-Step 5`, `-PipelineKey "canary:<k>"`). Skip the EV2 approval-link scan. Mark Step 5
 `completed` once all pipelines were triggered.
 
-**Expected artifact-dependency failure (do NOT remediate):** the canary YAMLs pull a build-artifact
-resource on a branch derived from `ArtifactsBranch` that only exists after a **completed**
-officialBuild. Fast test mode cancels the build (Step 3 skipped), so the release-branch trigger
-returns HTTP 400 `"No version was found for the pipeline"`. This is **expected** — the resolved
-params are still captured (`postedParameters`) for verification. Record the honest attempt
-(`Invoke-TriggerAndCancel` writes `triggered=false` + the error incl. the ADO `ErrorDetails`), mark
-Step 5 `completed`, and **do NOT** retry, mechanism-validate on another branch, or apply Behavior
-Rule 13 here — the failure is intrinsic to fast test mode, not a ZED bug.
+**ArtifactsBranch test-mode override:** when calling `Resolve-TemplateParams.ps1` for each canary
+pipeline, pass `-TestMode` — this overrides `ArtifactsBranch` from the synthetic test branch
+(which has no completed officialBuild) to `pipeline-catalog.json → yamlRepos.<repo>.baseBranch`
+(the stable base branch that does). The trigger should succeed with a real runId. Mark Step 5
+`completed` once all pipelines have been triggered. If any trigger fails for a reason unrelated to
+artifact resolution, record the error honestly and mark Step 5 `failed`.
 
 ## Step 6: BVT Query-Works Check (no wait, no approval)
 
@@ -612,15 +684,14 @@ When `testMode` is `true` and Step 6 is reached:
 When `testMode` is `true` and Step 10 runs: run the inventory gate and resolve the production
 trigger set + REAL `templateParameters` exactly as normal. Then call the trigger-and-cancel helper
 **once per resolved pipeline** (`-Step 10`, `-PipelineKey "production:<k>"`). This is the step that
-validates the PROD pipeline parameters (the old Step 15 trigger-and-cancel behavior now lives
-here). Mark Step 10 `completed` once all pipelines were triggered. (Step 15 — the real public EV2
-rollout — is **skipped** in test mode.)
+validates the PROD pipeline parameters. Mark Step 10 `completed` once all pipelines were triggered.
+(Step 15 runs its test-mode override — sends the transition notification, then marks itself `skipped`.
+Step 16 creates the merge-back PR.)
 
-**Expected artifact-dependency failure (do NOT remediate):** same as Step 5 — the prod YAMLs pull a
-build-artifact resource keyed on `ArtifactsBranch` that requires a **completed** officialBuild, so
-the release-branch trigger returns HTTP 400 `"No version was found"` in fast test mode. This is
-**expected**; the resolved params are still captured for verification. Record the honest attempt,
-mark Step 10 `completed`, and **do NOT** retry, mechanism-validate, or apply Behavior Rule 13.
+**ArtifactsBranch test-mode override:** same as Step 5 — pass `-TestMode` to
+`Resolve-TemplateParams.ps1` so `ArtifactsBranch` resolves to `baseBranch` from `yamlRepos`.
+Mark Step 10 `completed` once all pipelines were triggered (triggered = real runId obtained).
+If any trigger fails for reasons unrelated to artifact resolution, record the error honestly.
 
 ## Step 13: SafeFly BuildNumber in test mode
 
@@ -632,6 +703,13 @@ a `BuildNumber`. **Derive it from the release branch leaf** — the last path se
 returned an unexpanded version after early cancel. (Service-agnostic — the derivation uses only the
 branch name.)
 
+**HTTP 410 from SafeFly → mark Step 13 `failed` immediately.** If the SafeFly write endpoint returns
+HTTP 410 ReadOnlyMode, this is a **permanent server-side block**, not a transient error and not an
+artifact-precondition issue. Record `safeFlyFiled=false`, `status: "failed"`,
+`error: "SafeFly API HTTP 410 ReadOnlyMode"` in the capture, and surface the error to the owner. Do
+NOT mark Step 13 `completed` — a release that cannot file an R2D must fail loudly. Do **not** weaken
+`success-criteria.json` to paper over this; the fix belongs with SafeFly's API, not ZED.
+
 ## PowerShell URL construction (pwsh 7.x)
 
 When building an ADO/Graph REST URL inline in a double-quoted string, a `?` **immediately after an
@@ -642,8 +720,15 @@ scripts already use the braced `${var}?api-version=...` form — keep it that wa
 
 ## Skipped steps
 
-In test mode Steps **3, 7, 8, 9, 11, 12, 14, 15, 16** are `skipped` (see `test-run` setup). The
+In test mode Steps **3, 7, 8, 9, 11, 12, 14** are `skipped` (see `test-run` setup). The
 agent bypasses them via the normal "if `skipped` → advance" loop rule.
+
+Steps **15 and 16 are NOT skipped** — test-mode overrides make them safe:
+- **Step 15** sends its transition email (using Step 10's captured params for scope data), then
+  marks itself `skipped` with `reason: "test-run: EV2 rollout skipped, transition notification sent"`.
+  This sends a real `[TEST]` email and records it in `notifications-capture.json`.
+- **Step 16** runs fully: creates the merge-back PR in ADO (safe in test mode — a real PR is opened
+  but nothing deploys), stores `mergeBackPrId` in `release.json`, and marks `completed`.
 
 ## No watcher in test mode
 
@@ -653,1317 +738,74 @@ completion. (This replaces the old "cap poll interval at 1800s" rule.)
 
 ## Test Summary Email
 
-Sent at end of Step 13 (the last non-skipped step). Template: `templates/test-run-summary-email.html`
+Sent at the end of **Step 16** (the last step in the true test run). Template: `templates/test-run-summary-email.html`
 
 Contents:
 - Subject: `[TEST] 🧪 ZED Agent Test Run Complete — {releaseId}`
 - Step-by-step results table (step #, name, result, duration)
-- Steps 3, 7-9, 11-12, 14-16 marked as "⊘ Skipped"
+- Steps 3, 7-9, 11-12, 14 marked as "⊘ Skipped"; Step 15 marked as "⊘ Skipped (notification sent)"; Step 16 marked as "✅ Completed"
 - A **capture summary** table from `test-run-capture.json`: per trigger step — pipelineKey,
   triggered (✓/✗), runId, finalState
 - SafeFly R2D abandon reminder with link
 - Total test duration
 
+## Notification Capture
+
+Every time ZED sends an email in **test mode** (including all non-skipped steps AND the Step 15
+test-mode notification), it MUST append a record to
+`.zed-agent/releases/<id>/notifications-capture.json`. This file is machine-readable and is used
+by ZedForge to verify notification coverage.
+
+Schema (one element per notification sent):
+```json
+{
+  "step": 1,
+  "eventKey": "release-setup",
+  "resolvedTo": ["owner@microsoft.com"],
+  "subject": "[TEST] subject line",
+  "sentAt": "2026-08-24T00:18:06Z",
+  "ok": true,
+  "error": null
+}
+```
+
+Rules:
+- Append; do not overwrite. If the file does not exist, create it as a JSON array `[]`.
+- Record **every** call to `SendEmailWithAttachments` or the mail MCP tool, whether or not it
+  succeeds (`ok: false, error: "<message>"` for failures).
+- `resolvedTo` is the output of `Resolve-NotificationRecipients` for the event — in test mode this
+  is always `[owner]`, so the field confirms the resolver ran.
+
 ---
 
 # Command Behaviors
 
-> **IMPORTANT**: These commands are NOT Copilot CLI slash commands. They are natural language
-> keywords that the release owner types as chat messages. For example, the release owner types `setup` or
-> `run setup` — NOT `/setup`. When showing available commands to the release owner, NEVER use the
-> `/` prefix. Present them as plain keywords: `setup`, `status`, `run`, `skip`, etc.
-
-## help — Show Commands and Workflow
-
-When the release owner says `help`:
-
-Display the following reference. Do NOT add `/` prefix to any command — these are chat message keywords, not CLI slash commands.
-
-**Available Commands:**
-
-| Command | Description |
-|---------|-------------|
-| `test-preflight` | Environment + tooling readiness check — invokes the `/test-preflight` skill. Auto-remediates failures per Behavior Rule 13 and writes `.zed-agent/readiness.json → preflight`. Variants: `test-preflight fix` (alias), `test-preflight check` (read-only, show last result). |
-| `setup-service` | One-time onboarding skill — invokes the `/setup-service` skill to populate `service-config.json` + `pipeline-catalog.json`. Reads whatever the release owner has already filled in and only asks about empty fields. Always runs `test-preflight` as Phase 0. Supports `setup-service validate` and `setup-service group <N>`. |
-| `setup` | First-run initialization for the current release — reads the readiness chain (`preflight` < 24h + `setupService` must be `pass`), creates the release env directory, collects secrets, auto-detects CCOA. Does NOT re-run pre-flight. |
-| `run` | Start a new release or resume the current one |
-| `status` | Show the 16-step pipeline dashboard with progress |
-| `skip` or `skip N` | Skip the current step (or step N) at runtime |
-| `modify skip 4,5` | Skip specific steps mid-release (also supports `reorder` and `reset`). For up-front skipping, the per-release `setup` command has an interactive skip prompt. |
-| `approve-bvt` | Approve BVT check results (unblocks step 6) |
-| `approve-rollback` | Approve post-rollback results (unblocks step 9) |
-| `approve-rollforward` | Approve post-roll-forward results (unblocks step 12) |
-| `approve-crb` | Approve CRB review (dual-gate with SafeFly approval — unblocks step 14) |
-| `ack retry` | Retry a failed step |
-| `ack skip` | Skip a failed step and move on |
-| `mitigated` | Re-run the currently halted (`failed-drift`) step normally. Use after editing `service-config.json` canary inventory or fixing the Kusto cluster-type extraction. Resolver re-validates; if drift persists, the step halts again. |
-| `approve drift` | Re-run the currently halted (`failed-drift`) step with `-IgnoreDrift` on the resolver. Owner explicitly accepts the reported drift; agent writes an `event: "drift-approved"` audit row capturing the original drift list and the approver alias before triggering pipelines. |
-| `resume` | Manually resume pipeline and restart watcher if needed |
-| `stop` | Pause the release and stop the watcher |
-| `test N` or `test all` | Dry-run a step or all steps (no real API calls) |
-| `test-run` | Fast trigger-and-cancel validation — no deployment, no approvals, minutes. Steps 2/5/10 trigger→cancel+capture; 3,7-9,11-12,14-16 skipped |
-| `teardown` | Post-release cleanup — remove secrets, unregister watcher |
-| `gate on <N>` | Enable approval gate for step N |
-| `gate off <N>` | Disable approval gate for step N (except step 14) |
-| `gate list` | Show all 16 steps with current gate status |
-| `approve-step <N>` | Approve the specified step to proceed |
-| `approve` | Approve the currently waiting step |
-| `help` | Show this command reference |
-
-**Release Workflow:**
-
-```
-Step 1:  run                  ← Sends reminder
-Step 2:  (automatic)          ← Cuts branch, queues build
-Step 3:  (automatic)          ← Watcher polls until build completes
-Step 4:  (automatic)          ← Collects commits, generates Excel, uploads to SharePoint
-Step 5:  (automatic)          ← Deploys canary (CANARY pipelines → EACan/ECY/CCY)
-Step 6:  (automatic)          ← BVT check runs, frontliners notified if failures
-Step 7:  (automatic)          ← Rollback (CANARY pipelines with previous bits)
-Step 8:  (automatic)          ← Post-rollback BVT check runs
-Step 9:  approve-rollback     ← Release owner reviews post-rollback results, approves
-Step 10: (automatic)          ← Roll-forward (PROD pipelines → canary regions)
-Step 11: (automatic)          ← Post-roll-forward BVT check runs
-Step 12: approve-rollforward  ← Release owner reviews post-roll-forward results, approves
-Step 13: (automatic)          ← SafeFly R2D request created via API, email sent
-Step 14: approve-crb          ← Watcher polls SafeFly approval + release owner approves CRB
-Step 15: (automatic)          ← Trigger all PROD pipelines, EV2 managed rollout
-Step 16: (automatic)          ← Merge-back PR created, release complete
-         teardown             ← Release owner cleans up (secrets, watcher, scheduler)
-```
-
-**~9 release owner commands** — everything else is autonomous via the watcher.
-
-**How it works:** Type any command above as a chat message. The agent reads `state.json`, executes the appropriate logic, and updates state. Long-running operations (builds, deployments) are handled by a background watcher that polls and re-invokes the agent when conditions are met.
-
-## setup-service — One-Time Service Onboarding
-
-> **The full wizard procedure now lives in the `setup-service` skill at `.github/skills/setup-service/SKILL.md`.** When the release owner types `setup-service`, `setup-service validate`, or `setup-service group <N>`, **invoke the `/setup-service` skill** — do not attempt to run the wizard inline. The skill contains the complete 11-group flow (groups 1, 2, 3, 4a, 4b, 5a, 5b, 6, 7, 8, 9, 10, 11), the schema-aware Kusto branches for BVT and canary detection, the notification-routing customizer, the pipeline catalog collector, the Generation finalization pass, and the `setup-service validate` routine.
-
-> **Internal invocation from `setup`:** When Behavior Rule 13's auto-remediation cascade encounters empty `service-config.json` or `pipeline-catalog.json` fields during `Test-PreFlight`, invoke the `/setup-service` skill with the matching group identifier (e.g., `/setup-service` then "group 5b") rather than asking the owner to start a new command. The skill is the single source of truth for the wizard logic — never reproduce its prompts here.
-
-> **What stays in this agent file:** behavior rules that *reference* `setup-service` (Rules 11, 13), the `help` command listing, cross-references from step bodies (e.g., Step 5 cluster-type routing mentions setup-service-time collection), and the Notification Routing domain-knowledge section. These remain because they are read by the agent in contexts unrelated to the wizard itself.
-
-> **Side effects to be aware of**: Group 11 (pipeline catalog) is evidence-driven — for every pipeline the owner declares, the wizard queues a real ADO pipeline run with the discovered parameters and cancels it within 5 seconds (same queue+cancel mechanic Step 15 test-mode uses). No deployment happens because cancellation occurs before any agent picks the work up, but cancelled runs ARE visible in ADO pipeline history. The wizard requires owner consent before entering Phase 11.2; sub-identifier `setup-service group 11.discovery-only` skips dry-runs entirely. Helper scripts: `scripts/Read-PriorRun.ps1`, `scripts/Read-PipelineYaml.ps1`, `scripts/Invoke-PipelineDryRun.ps1`. Auth uses the existing `az login` identity (ADO resource GUID `499b84ac-1321-427f-aa17-267ca6975798`) — no new credentials.
-
-## setup — First-Run Initialization
-
-> **Skill-owned.** Full procedure lives in [.github/skills/setup/SKILL.md](.github/skills/setup/SKILL.md).
-> Do not reproduce the steps inline. Invoke `/setup` when the release owner types `setup`, `setup check`, or `setup skip <N,N,N>`.
-> Auto-remediation of broken environment state is owned by `test-preflight`; service-config gaps cascade into `/setup-service` per Behavior Rule 13.
-
-
-## status — Display Release Pipeline Status
-
-When the release owner says `status`:
-
-1. Load state (all config files)
-2. If no active release → report "No active release"
-3. If active release exists:
-   - Show release ID, release owner name, current step
-   - Show branch cut date ONLY — do NOT show canary target or production target dates
-   - Show a table of all 16 steps with status icons, step name, and duration
-   - Show progress (N/16 done)
-   - Show watcher status (running/stopped, PID, what it's polling)
-   - Show next expected action
-
-Status icons:
-- `pending` → ⬚
-- `in-progress` → ⏳
-- `completed` → ✅
-- `failed` → ❌
-- `skipped` → ⊘
-- `waiting-approval` → ✧
-
-## run — Start or Continue Release
-
-When the release owner says `run`:
-
-**0. Readiness chain check (do NOT re-run pre-flight):**
-
-`run` reads `.zed-agent/readiness.json` and gates on the recorded outcome of every upstream stage. It does NOT invoke `Test-PreFlight` itself — `test-preflight` is now a first-class command that owns that responsibility.
-
-Render a 3-row chain table:
-
-```
-| Stage          | Status | Detail                                                     |
-|----------------|--------|------------------------------------------------------------|
-| test-preflight |  ✅   | pass — ran 3h ago                                          |
-| setup-service  |  ✅   | pass — last group: 11                                      |
-| setup          |  ❌   | incomplete — missing: environment.json:repoRoot            |
-```
-
-Apply the gates in order. Each broken link gets an impact line:
-
-| Broken link | Impact — what WILL break |
-|---|---|
-| `preflight` missing | Nothing has been verified — `az`, ADO, Kusto, Teams, MCP could all be broken. Every step that calls an external system can fail. |
-| `preflight` stale (>24h) | Most likely an expired `az` token. ADO/Kusto/Graph calls in Steps 2, 3, 4, 5, 6, 8, 11, 13, 15 will return 401. |
-| `preflight.status == fail` | The specific failures listed in `$r.preflight.failures` are still broken — list each one and the step it would affect. |
-| `setupService` missing | Service config never collected — `service-config.json` and `pipeline-catalog.json` are likely empty. Step 2 cannot cut the branch, Steps 5/7/10/15 have no pipelines to trigger, Step 13 has no SafeFly title template. |
-| `setupService.status == incomplete` | The wizard exited mid-flow at group `{lastGroup}`. List `$r.setupService.missingFields`. Affected steps depend on which fields are missing (e.g., missing Kusto config breaks Steps 6/8/11; missing notification routing breaks every email/Teams notification). |
-| `setupService.status == fail` | Schema validation failed — list `missingFields`. Same impact as `incomplete`. |
-| `setup` missing | No release directory — nothing in `.zed-agent/` for this month. Watcher cannot register, no `state.json`, no `secrets.json`. Pipeline cannot start. |
-| `setup.status == incomplete` | Setup exited before producing required artifacts. List `$r.setup.missingArtifacts`. Notifications, SharePoint upload, CCOA exclusions, and Teams messages will silently misbehave. |
-
-**If every gate is green** → proceed silently to step 1 below.
-
-**If any gate is red:**
-
-1. Render the chain table above with each red row's impact line directly underneath it.
-2. Tell the release owner the exact command to fix it:
-   - `preflight` issues → *"Run `test-preflight fix` — it will auto-remediate auth, modules, and MCP. Then re-run `run`."*
-   - `setupService` issues → *"Run `setup-service group {lastGroup}` to resume, or `setup-service validate` after fixing fields by hand. Then re-run `run`."*
-   - `setup` issues → *"Run `setup` to finish initializing this month's release. Then re-run `run`."*
-3. Ask via `ask_user`:
-   > *"Do you want to fix this now (recommended) or proceed anyway?"*
-   > Choices: `Fix it now — stop run`, `Proceed anyway — I accept the risk`
-4. On `Fix it now` → HALT silently. The owner re-runs `run` after fixing.
-5. On `Proceed anyway` → show the **strong warning** before continuing:
-
-   ```
-   ⚠️  YOU ARE RUNNING WITH KNOWN-BROKEN READINESS
-
-   The following stages are NOT green:
-     - {stage}: {detail}
-     - ...
-
-   The following pipeline steps WILL fail or behave incorrectly:
-     - {step-list derived from the impact table above}
-
-   Audit will record this as a `run-with-broken-readiness` event with the
-   exact list of broken gates and overridden checks.
-
-   Do you still want to proceed?
-   ```
-   Choices: `Yes — proceed despite the risk`, `No — let me fix it first`
-
-6. On `No` → HALT. On `Yes` → append to `audit.jsonl`:
-   ```json
-   {"action":"run-with-broken-readiness","brokenGates":["preflight.stale","setup.incomplete"],"impactedSteps":[2,5,6,8,15],"timestamp":"<UTC ISO>"}
-   ```
-   … then continue with step 1 below.
-
-The chain check **never** mutates `readiness.json` except to set the relevant `overridden` flag to `true` on whichever stage(s) the owner waived.
-
-**Then proceed with the normal run flow:**
-
-1. Verify a release directory exists for the current month (format: `YYYY-MM`). If **no release exists** → tell the release owner: *"No release initialized for this month. Run `setup` first."* and **HALT**.
-2. Load state from `state.json`, resume from current step
-3. Execute steps in order following the Step Execution Loop above
-4. For async steps: write `watcherDirective` to state, start watcher process, exit
-
-## modify — Skip, Reorder, or Override Steps
-
-When the release owner says `modify`:
-
-**Input patterns**:
-- `modify skip 4,5` — Skip steps 4 and 5
-- `modify reorder 8 before 7` — Execute step 8 before step 7
-- `modify reset 3` — Reset step 3 to `pending` for re-execution
-
-> **Tip**: To skip steps **before** the release starts, the per-release `setup` command offers an interactive skip prompt (sub-step 11.f). Same persistence — both write `status: "skipped"` to `state.json`. Use `setup` for planned skips, `modify skip` for mid-release adjustments.
-
-**Behavior**:
-1. Parse the modification request
-2. Check the dependency matrix for warnings
-3. Show a confirmation view:
-   ```
-   Proposed changes to release {id} pipeline:
-
-    ⚠ SKIP Step 4 (Collect Commit Details)
-      → Warning: Step 11 (Create R2D) references commit data from Step 4.
-                 R2D description may be incomplete.
-
-   Confirm? (yes/no)
-   ```
-4. If confirmed, apply changes to `state.json`
-5. Log modification in `audit.jsonl` with actor `release-owner`
-
-## skip — Quick Skip Current Step
-
-When the release owner says `skip` or `skip N`:
-
-1. If no step number → skip the current step (first non-completed step)
-2. If step number → skip that specific step
-3. Set step status to `skipped`
-4. Advance `currentStep` to next pending step
-5. Log in audit with reason
-
-## approve-bvt — Approve BVT Results
-
-When the release owner says `approve-bvt`:
-
-1. Verify step 6 (bvt-check) is in `waiting-approval`
-2. Record approval: `state.json → approvals.bvt`
-3. Set step 6 → `completed`, advance to step 7
-4. Resume execution loop
-5. Log in audit
-
-## approve-rollback — Approve Post-Rollback Results
-
-When the release owner says `approve-rollback` or `approve rollback`:
-
-1. Verify step 9 (post-rollback-signoff) is in `waiting-approval`
-2. Record approval: `state.json → approvals.rollback`
-3. Set step 9 → `completed`, advance to step 10
-4. Resume execution loop
-5. Log in audit
-
-## approve-rollforward — Approve Post-Roll-Forward Results
-
-When the release owner says `approve-rollforward` or `approve rollforward`:
-
-1. Verify step 12 (post-rollforward-signoff) is in `waiting-approval`
-2. Record approval: `state.json → approvals.rollforward`
-3. Set step 12 → `completed`, advance to step 13
-4. Resume execution loop
-5. Log in audit
-
-## approve-crb — Approve CRB Review
-
-When the release owner says `approve-crb` or `approve crb`:
-
-1. Verify step 14 (crb-review) is in `waiting-approval`
-2. Set `state.json → step14.crbApproved = true`, record timestamp
-3. **Check dual-gate**: Read `state.json → step14.safeFlyApproved`
-   - If **both** `safeFlyApproved` and `crbApproved` are `true`:
-     - Set step 14 → `completed`, advance to step 15
-     - Send transition email to release owner via `Resolve-NotificationRecipients -EventKey 'step-14-completed'`: *"✅ Both CRB and SafeFly approved — proceeding to production rollout"* (no Teams unless owner has configured `step-14-completed` routing)
-     - Resume execution loop
-   - If SafeFly is **not yet approved**:
-     - Send email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: *"✅ CRB approved. Waiting for SafeFly R2D #{number} approval — currently: {safeFlyApprovalState}"* (no Teams per Rule 1)
-     - Keep step 14 in `waiting-approval` — watcher continues polling SafeFly
-4. Log in audit
-
-## ack — Acknowledge Failure
-
-When the release owner says `ack retry` or `ack skip`:
-
-- **`ack retry`**: Reset the failed step to `pending`, re-enter execution loop
-- **`ack skip`**: Set the failed step to `skipped`, advance to next step
-
-Log acknowledgment and action in audit.
-
-## resume — Manual Resume
-
-When the release owner says `resume`:
-
-1. Read state, detect where the pipeline left off
-2. Check if watcher is running (parse `watcher.lock` as JSON per the "Reading `watcher.lock`" sub-section in Step Execution Loop → liveness-check the PID)
-3. If watcher not running → restart it
-4. Re-enter step execution loop from current step
-5. Report current status and next action
-
-## stop — Stop Watcher and Pause Release
-
-When the release owner says `stop`:
-
-1. Parse `watcher.lock` as JSON (per the "Reading `watcher.lock`" sub-section in Step Execution Loop) → extract `$lock.pid`
-2. Kill watcher process: `Stop-Process -Id $lock.pid`
-3. Set release status → `stopped`
-4. Send email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: "Release paused by release owner" (no Teams per Rule 1)
-5. Log in audit
-
-## test — Dry-Run Step or Full Flow
-
-When the release owner says `test N` or `test all`:
-
-1. Set a dry-run flag in context
-2. Execute the step(s) with all external calls mocked:
-   - Skills return `{ dryRun: true, wouldHaveDone: "..." }` instead of making real API calls
-   - MCP tools are not invoked — agent describes what it would have done
-3. Report what **would have** happened at each step
-4. **No state changes** are persisted — state.json is not modified
-
-## test-run — Real Run with Steps Skipped
-
-When the release owner says `test-run`:
-
-> **Design principle**: `test-run` is a **fast, non-destructive validation** of the release
-> pipeline. Every pipeline that a real release would trigger (build, canary, prod) is triggered
-> **for real and cancelled within seconds** — proving the trigger works and capturing the exact
-> parameters ZED posted, without deploying anything. Steps whose only purpose is to wait
-> (build wait, 24h bakes, SafeFly/CRB approval, EV2 monitoring) are skipped. There are **no human
-> approval gates** — the run completes autonomously in minutes so a development agent (ZedForge)
-> can loop fix→validate→harvest. The trigger-and-cancel steps write a machine-readable
-> `test-run-capture.json` that the development agent verifies against its requirements file.
-
-> **Non-interactive invocation**: When ZED is invoked headlessly (e.g. by ZedForge with
-> `--no-ask-user --autopilot`, and the prompt says "non-interactive"), **skip the confirmation
-> prompt in step 1** and proceed directly to Setup using the `currentBranch` / `previousBranch` /
-> `releaseId` / `releaseOwner` supplied in the prompt. The confirmation is only for interactive owners.
-
-1. **Confirm**: Display this message and wait for release owner confirmation:
-   ```
-   🧪 TEST RUN — Fast Trigger-and-Cancel Validation (no deployment)
-
-   This runs the pipeline end-to-end WITHOUT deploying anything. For each pipeline
-   a real release would trigger, ZED triggers it for real, captures the exact posted
-   parameters + runId, then cancels it within ~5s (before any agent picks it up):
-
-   ✅ Step 1  Branch cut reminder — owner-only email
-   ✅ Step 2  Cut release branch + queue build → INSTANTLY CANCEL + capture params
-   ⊘ Step 3  Wait for build — SKIPPED (build was cancelled)
-   ✅ Step 4  Collect & analyze commits — REAL run, owner-only mail, no human wait
-   ✅ Step 5  Canary pipelines → trigger then INSTANTLY CANCEL + capture params
-   ✅ Step 6  BVT check — run the Kusto query as a "does-it-work" check (no 24h wait, no approval)
-   ⊘ Steps 7-9   Rollback cycle — SKIPPED
-   ✅ Step 10 Roll-forward PROD pipelines → trigger then INSTANTLY CANCEL + capture params
-   ⊘ Steps 11-12 Post-roll-forward — SKIPPED
-   ✅ Step 13 SafeFly R2D — REAL filing (you abandon it afterwards)
-   ⊘ Steps 14-15 SafeFly/CRB wait + EV2 prod rollout — SKIPPED
-   ⊘ Step 16 Merge-back PR — SKIPPED
-
-   No human approvals. Notifications go to you only (email, [TEST] prefix, no Teams).
-   Cancelled runs ARE visible in ADO build history. Remember to abandon the SafeFly R2D.
-   Expected duration: minutes.
-
-   Proceed? (yes/no)
-   ```
-
-2. **Setup** (same flow as `setup` command but with test overrides):
-   a. Release ID: `TEST-{YYYY-MM}` (e.g., `TEST-2026-04`)
-   b. Ask for `currentBranch` (release branch to test) and `previousBranch`
-   c. Run full `setup` prerequisites check
-   d. Create `release.json` with test mode config:
-      ```json
-      {
-        "releaseId": "TEST-2026-04",
-        "testMode": true,
-        "testConfig": {
-          "skippedSteps": [3, 7, 8, 9, 11, 12, 14, 15, 16],
-          "triggerAndCancelSteps": [2, 5, 10],
-          "cancelAfterSeconds": 5,
-          "skipBvtBakeTimer": true,
-          "bvtMode": "query-works-check",
-          "autoApprove": true,
-          "notificationTarget": "owner-email-only"
-        },
-        "currentBranch": "...",
-        "previousBranch": "...",
-        "releaseOwner": { "alias": "...", "email": "..." }
-      }
-      ```
-   e. Create `state.json` — mark steps 3, 7, 8, 9, 11, 12, 14, 15, 16 as `skipped` with reason `"test-run"`:
-      ```json
-      {
-        "steps": {
-          "3":  { "status": "skipped", "reason": "test-run: build cancelled at trigger" },
-          "7":  { "status": "skipped", "reason": "test-run" },
-          "8":  { "status": "skipped", "reason": "test-run" },
-          "9":  { "status": "skipped", "reason": "test-run" },
-          "11": { "status": "skipped", "reason": "test-run" },
-          "12": { "status": "skipped", "reason": "test-run" },
-          "14": { "status": "skipped", "reason": "test-run" },
-          "15": { "status": "skipped", "reason": "test-run" },
-          "16": { "status": "skipped", "reason": "test-run" }
-        }
-      }
-      ```
-   f. Run preflight checks. **No watcher is needed** — the true test run has no async waits
-      (build wait, bakes, approvals and EV2 monitoring are all skipped), so it runs
-      synchronously to completion in one invocation. Do NOT register the watcher task.
-
-3. **Execute**: Enter the normal Step Execution Loop. Steps **1→2→4→5→6→10→13** run;
-   steps 3,7,8,9,11,12,14,15,16 are bypassed automatically ("if `skipped` → advance to next
-   pending step"). Steps 2/5/10 use the trigger-and-cancel override (see Test Mode Overrides).
-   The whole run is synchronous — no step arms a `watcherDirective` in test mode.
-
-4. **After Step 13 completes** (the last non-skipped step): Send test summary email (see Test
-   Mode Overrides below) including the `test-run-capture.json` summary, remind owner to abandon
-   the SafeFly R2D, and auto-teardown.
-
-## teardown — Post-Release Cleanup
-
-When the release owner says `teardown`:
-
-1. **Unregister ALL ZED watcher scheduled tasks and kill watcher processes**:
-   ```powershell
-   . .github\skills\zed-agent\scripts\Register-WatcherTask.ps1
-   $result = Register-WatcherTask -Action cleanup
-   # Reports: tasksRemoved (list of task names), processesKilled (list of PIDs)
-   ```
-   This removes the current release task AND sweeps any orphaned/stale tasks from crashed runs or old test-runs.
-2. Delete `.zed-agent/secrets.json`
-3. Send final email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: "Release {id} teardown complete" (no Teams per Rule 1)
-4. Log in audit
-5. Report teardown completion summary — include count of tasks removed and processes killed
-
-## rebuild — Re-queue Build + Selective Canary Retrigger
-
-When the release owner says `rebuild` (e.g. after late cherry-picks into the release branch):
-1. Queue a new officialBuild on `release.json → currentBranch` (Step 2's queueing logic; the branch
-   already exists, so skip branch creation). Update `release.json → buildId` / `buildNumber` and log.
-2. Arm Step 3's build watcher for the new build. On completion, **ask the owner which canary pipelines
-   to retrigger** — only the pipelines whose service had missing commits need it; the others keep
-   their existing canary results.
-3. Retrigger only the chosen canary pipelines (Step 5 logic) with the new build artifacts.
-Rationale: a mid-release rebuild invalidates canary results for the affected service only; blindly
-re-running everything wastes ~1h/pipeline. Service-agnostic — pipeline keys come from the catalog.
-
-## new-stamp — Onboard / Reclassify a Stamp
-
-When the release owner says `new-stamp` (onboarding a new stamp, or reclassifying one between pipeline
-types, e.g. SFRP↔SFMC), collect per stamp: **prefix**, **region** (Azure short name), **pipeline
-type**, **cloud**. Then compute the parameter deltas for the affected `pipeline-catalog.json` entries:
-- **Add** the stamp's region to the target pipeline-type's `PubRegions` — look the region up in
-  `service-config.json → stampPrefixToRegion` (the prefix is not always the literal region code, e.g.
-  `uae`→`uaecentral` via short code `uac`); do not guess.
-- **Remove** the stamp from the target type's `PublicExcludestamps`; **keep** it excluded in the
-  other type(s) it does not belong to.
-- Confirm boolean flags (e.g. `CanaryScript`) and `ev2CloudCoverage` differ per pipeline type.
-Both EV2 gates must align: a stamp deploys only if its region is in `PubRegions` **and** it is not in
-`PublicExcludestamps`. Service-agnostic — every value comes from the two config files.
-
-## Teams conversation IDs — collected at setup, not auto-discovered
-
-Teams group-chat conversation IDs are **collected during `setup` and stored in
-`.zed-agent/secrets.json → teamsChats`** (keyed by chat name), NOT auto-discovered at runtime.
-Reliable runtime auto-discovery is unavailable (`Find-TeamsChat` needs Teams-Desktop CDP; Graph needs
-a delegated `Chat.ReadBasic` token). If a conversation ID is missing at send time, prompt the owner
-for it once and persist it to `secrets.json` rather than attempting discovery.
-
----
+The full behavior of every command — `help`, `setup-service`, `setup`, `status`,
+`run`, `modify`, `skip`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
+`approve-crb`, `ack`, `resume`, `stop`, `test`, `test-run`, `teardown`, `rebuild`,
+`new-stamp` — is specified in:
+
+    .github/skills/zed-agent/reference/command-behaviors.md
+
+**You MUST read that file before executing any command.** Read it once per session,
+at the moment the release owner issues their first command, and follow it exactly.
+Do not act on a command from memory or from the command's name alone — the file
+carries the required prompts, guardrails, ordering, and output contracts.
 
 # Release Step Detailed Behaviors
 
-## Step 1: Send Branch Cut Reminder
+The full behavior of every one of the 16 release steps — inputs, scripts to invoke,
+parameters, validation gates, notification contracts, failure handling and the exact
+state written back — is specified in:
 
-**Trigger**: Start of `run` execution
-**Actions**:
-1. Render `templates/reminder-message.html` with release dates via `Expand-Template`
-2. Resolve recipients via `Resolve-NotificationRecipients -EventKey 'reminder'` (returns Teams chat list + email recipients per `routing.reminder` block: `teamsGroups: ["teams"]`, `emailGroups: ["permanent"]`). For each Teams chat returned, post via `Send-TeamsMessage`.
-3. Render `templates/reminder-email.html` via `Expand-Template`
-4. Send to the email recipients returned by `Resolve-NotificationRecipients` via `SendEmailWithAttachments` MCP tool with the rendered HTML as `body`, `contentType: "HTML"`
-**State**: Step 1 → `completed`
-**Next**: Proceed immediately to Step 2
-**Failure**: Notification failure → log warning, continue (non-blocking)
+    .github/skills/zed-agent/reference/step-behaviors.md
 
-## Step 2: Cut Release Branch & Queue Build
+**You MUST read that file before executing any step**, and re-read the section for
+the specific step you are about to run. Read it once per session and keep the
+relevant step's contract in working memory while that step executes.
 
-**Trigger**: Step 1 completed
-**⚠️ Test Mode Override**: When `testMode` is `true`, create the branch and resolve the officialBuild params as normal, but **trigger the build via `Invoke-TriggerAndCancel.ps1 -Step 2` (instant cancel + capture)** instead of arming the build watcher. Mark Step 2 `completed`, Step 3 `skipped`. See "Test Mode Overrides → Step 2".
-**Actions**:
-1. Create branch `{release.currentBranch}` from `origin/CONFIG[ado.baseBranch]` in ADO repo via ADO API. Always branch from origin, never local — local can be stale. (Branch name was already confirmed during `setup` — do NOT re-prompt here.)
-2. Verify branch exists
-3. Queue CloudBuild pipeline (ID: CONFIG[pipelines.officialBuild.id], see pipeline-catalog.json → officialBuild) on the new branch via ADO API:
-   - `sourceBranch` = `refs/heads/{release.currentBranch}` — the release branch being built (NOT develop)
-   - `templateParameters`: Use all key-value pairs from `CONFIG[pipelines.officialBuild.templateParameters]` (loaded from pipeline-catalog.json)
-4. Store `buildId` in `release.json` and step metadata
-5. **Run Step 4's inline (synchronous) work in parallel with the about-to-be-armed build watcher.** Per the Step Dependency Matrix parallelism note (Step 3 ∥ Step 4), execute Step 4 Actions sub-steps 1–9 **right here, before arming any watcher** — git fetch, `git log --cherry-pick`, classify every commit, build `commits.xlsx`, upload to SharePoint, post the commit-request Teams message.
-   **IDEMPOTENCY**: On entry, check `state.step4InlineCompleted`. If already `true`, skip all inline work (SharePoint upload, Teams post already done in a prior session) and proceed directly to arming the watcher side-channel.
-   On completion:
-   - Set `state.step4InlineCompleted = true`
-   - Set `state.step4InlineCompletedAt = <UTC ISO 8601 now>` (used by the watcher's 24 h nudge timer)
-   - Set `state.step4ExcelUrl = <SharePoint sharing URL>` (same value stored in `release.json.commitExcelUrl`)
-   - Set `state.steps[4].status = "in-progress"` (the Excel Impact poll will continue via the watcher side-channel; `completed` is set automatically by the watcher when Impact reaches 100%)
-   - Append `{ "event": "step4-inline-done", "excelUrl": "...", "commitCount": N }` to `audit.jsonl`
-   - **Test mode override**: if `release.json.testMode == true`, auto-fill the Excel manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes"), skip Teams post, set `state.steps[4].status = "completed"` immediately, and skip the watcher side-channel entirely.
-   - **Failure of Step 4 inline work** is non-fatal for Step 3: log the error, set `state.steps[4].status = "failed"`, send owner email, but **still arm Step 3's build watcher** and exit. Step 13's prerequisite check will catch the Step 4 failure later.
-6. Arm Step 3's build watcher and EXIT.
-**State**: Step 2 → `completed`, Step 3 → `in-progress` (build watcher armed), Step 4 → `in-progress` (Excel-fill side-channel armed; or `completed` in test mode)
-**Watcher**: `{ action: "poll-ado-build", target: "<build API URL>", pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], successCondition: "$.status == 'completed'", onSuccess: "continue release {id}", onFailure: "release {id} build failed" }`
-**Failure**: Branch creation failure → `failed`, Teams notify, halt. (Step 4 inline failure does NOT block Step 2 from completing — see Action 5 above.)
-
-## Step 3: Wait for Build Completion
-
-**Trigger**: Watcher detects build status `completed`
-**Actions**:
-1. Fetch build result (succeeded/failed) via ADO API
-2. If **succeeded**: send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-3-completed'` with build number and duration, advance to next step
-3. If **failed**: send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-3-failed'` (default: current-owner-only — owner widens via `routing.3-wait-build.failure`), set step → `failed`, halt for `ack`.Release owner can issue `ack retry` to re-queue the build on the same release branch with the same `templateParameters` (Step 2's queueing logic, but Step 1's branch-creation is skipped because the branch already exists). Any other `ack` aborts the release.
-**State**: Step 3 → `completed` or `failed`
-**Next**: Proceed to Step 4
-
-## Step 4: Collect & Analyze Commit Details
-
-**Trigger**: Step 2 completed (runs in **parallel** with Step 3 — commit analysis happens while the build is running).
-
-**Execution model (parallelism implementation):** This step is split into two phases — see the Step Dependency Matrix parallelism note for the full rationale.
-
-- **Phase A — Inline (Actions 1–9 below)**: Runs **synchronously inside Step 2's body** right after the build is queued. Generates `commits.xlsx`, uploads to SharePoint, posts the Teams commit-request message. Sets `state.step4InlineCompleted = true` and `state.step4ExcelUrl`. Step 4's status becomes `in-progress` at the end of Phase A (not `completed`, because the team still has to fill the Impact column).
-- **Phase B — Side-channel poll**: Runs **inside `Release-Watcher.ps1`'s main loop, opportunistically on every tick**, as long as `state.step4InlineCompleted == true` and `state.steps[4].status == 'in-progress'`. No dedicated `watcherDirective` is needed — the build watcher's polling loop reads the OneDrive Excel and updates `state.step4ExcelImpactPct` on every iteration. When Impact reaches 100 %, the watcher sets `state.steps[4].status = "completed"` and writes a `step4-completed-by-side-channel` audit entry.
-
-**Step 13 fallback**: If Step 12 finishes before Step 4 reaches 100 % (uncommon — Step 6 alone bakes 24 h), Step 13 arms a dedicated `poll-onedrive-file` directive and EXITs. See Step 13.
-
-**Actions (Phase A — executed inline during Step 2)**:
-1. Read `repoRoot` from `environment.json` and branch names from `release.json`
-2. Run `git -C "{repoRoot}" fetch --all` to ensure branches are up to date
-3. Run `git -C "{repoRoot}" log --cherry-pick origin/{currentBranch}..origin/{previousBranch} --pretty=format:"%h%x1f%an%x1f%aD%x1f%s%x1f%b%x1e"` to collect commits (fields separated by US `0x1f`, records by RS `0x1e`). Parse the delimiter-separated output into a list of raw commits with fields: CommitID, Author, Date, Subject, Body.
-4. **Analyze each commit**: For every commit, run `git -C "{repoRoot}" diff-tree --no-commit-id --name-only -r {CommitID}` to get the list of changed files. Then classify the commit and write `Title` and `Comments` fields:
-   - **Set Title** from the commit Subject — clean up if needed (remove ticket prefixes, trim whitespace).
-   - **Classify change type** based on changed file paths:
-     - Files under `src/` (excluding test directories) → **Production code change**
-     - Files under `**/test/**`, `**/tests/**`, `**/*.Tests.*` → **Test change**
-     - Files matching `*.yml`, `*.yaml`, `*pipeline*`, `build/`, `eng/` → **Pipeline/CI change**
-     - Files under `.github/`, `copilot-docs/` → **Tooling/docs change**
-     - Files matching `*.config`, `*.json`, `*.props`, `*.targets`, `NuGet.config`, `Directory.*` → **Build/config change**
-     - If multiple categories apply, list the primary one first
-   - **Assess production impact**: A commit is **production-impacting** if it changes files under `src/` (excluding test directories). Otherwise it is **not production-impacting**.
-   - **Classify change nature** — determine the intent of the commit for SafeFly DeploymentNature reporting. Use the commit Subject, Body, and changed files to assign one of the 11 SafeFly-aligned nature tags:
-
-     | Tag | SafeFly value | Signals (keywords, file patterns, context) |
-     |-----|--------------|---------------------------------------------|
-     | `[NewFeature]` | `New feature` | feat, add, implement, introduce, enable, support, new endpoint/workflow/capability |
-     | `[BugFix]` | `General bug fixes` | fix, bug, patch, resolve, correct, repair, handle, workaround, regression |
-     | `[ConfigChange]` | `Config change` | config, setting, parameter, threshold, toggle, flag, *.config, feature flag toggled |
-     | `[SecurityFix]` | `Critical security fixes` | security, CVE, vulnerability, auth bypass, injection, OWASP, credential fix |
-     | `[CRIFix]` | `CRI fixes` | CRI, customer-reported, customer issue, support case, hotfix for customer |
-     | `[Monitoring]` | `Monitoring/health signals` | monitor, alert, health, telemetry, logging, diagnostics, metrics, Geneva |
-     | `[PolicyChange]` | `Policy change` | policy, compliance, governance, RBAC, access control, audit, SFI |
-     | `[SecretsCerts]` | `Secrets/Certificate management` | cert, certificate, secret, key rotation, managed identity, KeyVault |
-     | `[SevRepair]` | `Sev 1/2 repair` | sev1, sev2, livesite, repair item, incident, IcM, hotfix for outage |
-     | `[OSPatch]` | `OS/Image patch` | OS, image, patch, base image, container image, runtime update |
-     | `[Other]` | `Other` | refactoring, cleanup, dependency updates, doc-only, test-only, tooling — anything not above |
-
-     **Priority rules**: Security > CRI > Sev repair > Bug (use the most specific match). If truly unclear, prefer `[BugFix]` for changes to existing code and `[NewFeature]` for new code.
-
-   - **Compose the Comments field** as a concise single line (max 200 chars), format: `"[Production-impacting] [NatureTag] <brief description>"` or `"[Non-production] [NatureTag] <brief description>"`. The `[NatureTag]` is one of the 11 tags above. Examples:
-     - `"[Production-impacting] [NewFeature] Added retry logic in BackupEngine recovery flow"`
-     - `"[Production-impacting] [BugFix] Fixed null reference in service catalog validation"`
-     - `"[Non-production] [ConfigChange] Added canary timeout parameter to SFMC pipeline YAML"`
-     - `"[Non-production] [Other] Added unit tests for service catalog validation"`
-     - `"[Production-impacting] [SecurityFix] Patched auth bypass in DPP token validation"`
-     - `"[Production-impacting] [Monitoring] Added Geneva alerting for backup job failure rates"`
-5. Write the enriched data to `commits.json` with fields: CommitID, Author, Date, Subject, Comments.
-6. Generate `commits.xlsx` via `New-CommitExcel` (5 auto-filled columns: CommitHash, Owner, Date, Title, Comments + 3 manual columns: Impact, Validations, Rollback Friendly).
-7. Upload `.xlsx` to SharePoint via `Upload-ToSharePoint`, get sharing URL.
-8. Store URL in `release.json.commitExcelUrl`.
-9. Post `templates/commit-request-message.html` to Teams (route key `commit-request`) using `Send-TeamsMessage -TemplatePath <path> -TemplateVariables <hashtable>`. The template **requires all six** placeholders below — populate every one or the message will render with literal `{{...}}` text and a broken link:
-   - `releaseId` — from `release.json → releaseId`
-   - `commitCount` — total rows in `commits.json`
-   - `contributorCount` — distinct count of `Author` values in `commits.json`
-   - `prevBranch` — from `release.json → previousBranch`
-   - `currentBranch` — from `release.json → currentBranch`
-   - `excelUrl` — the SharePoint sharing URL stored in step 8 (`release.json → commitExcelUrl`)
-
-   Before sending, verify the rendered body contains no `{{` substring; if any remain, fix the variable map and re-render rather than sending a broken message.
-**State**: Step 4 → `in-progress` after Phase A completes (during Step 2). Transitions to `completed` automatically when the watcher side-channel detects 100 % Impact fill.
-**⚠️ Test Mode Override**: When `testMode` is `true`, auto-fill the manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes") for all rows. Skip the side-channel poll — mark Step 4 as `completed` immediately after upload. No Teams commit-request message (test mode suppresses Teams).
-**Watcher (Phase B side-channel — no dedicated directive)**: `Release-Watcher.ps1` polls the uploaded Excel on SharePoint every `CONFIG[operational.watcherPollIntervalSeconds]` (default 1 hour) **as a side-channel inside whatever directive is currently active** (typically `poll-ado-build` during Step 3, then `poll-ado-pipelines` during Step 5). The watcher reads the Excel via Graph API + ImportExcel and counts how many rows have the **Impact** column filled (non-empty). Completion condition: **100 % of Impact cells are filled**.
-- On each poll: update `state.step4ExcelImpactPct`, log fill percentage to `audit.jsonl` as event `step4-side-channel-poll`
-- When 100 % filled → set `state.steps[4].status = "completed"` and log `step4-completed-by-side-channel`
-- If no progress after **24 hours** (computed from `state.step4InlineCompletedAt`), send a reminder nudge to Teams using `templates/commit-nudge-message.html` (includes fill progress, pending contributors, and SharePoint link). The watcher sets `state.step4NudgeSentAt` to avoid duplicate nudges.
-**Next**: Step 13 (Create R2D) waits for **both** Step 12 and Step 4 to complete — ensuring the team has reviewed commit impact before the R2D is created. If Step 4 is still `in-progress` when Step 13 fires, Step 13 arms a dedicated `poll-onedrive-file` directive and EXITs (see Step 13). In test mode, Step 12 is `skipped` (satisfies dependency) and Step 4 auto-fills (completes immediately).
-**Failure**: Git/SharePoint/upload failure → `failed`, notify, halt
-
-## Step 5: Deploy Canary
-
-**Trigger**: Step 3 completed (build done). Step 4 (commit analysis) runs in parallel and is NOT a prerequisite for canary.
-**⚠️ Test Mode Override**: When `testMode` is `true`, resolve the trigger set + REAL params as normal, then call `Invoke-TriggerAndCancel.ps1 -Step 5` **once per resolved pipeline** (instant cancel + capture) instead of triggering + polling. Skip the EV2 approval-link scan. See "Test Mode Overrides → Step 5".
-**Actions**:
-1. Read `pipeline-catalog.json → canaryRouting` (default `{ mode: "static" }` if absent):
-   - **`mode: "static"`** — skip Kusto. Trigger EVERY entry under `canary.*` in parallel. Pass each entry's `templateParameters` to ADO verbatim.
-   - **`mode: "cluster-type"`** — run the cluster-type routing sub-procedure below. **Kusto is mandatory in this mode**: if the query fails, the step MUST halt with `failed` and emit the owner-only step-transition email per Behavior Rule 11. Do NOT silently fall back to triggering everything — that is what caused the PROT 2026-05 mis-routing.
-
-   ### Cluster-type routing sub-procedure (used by Steps 5, 7, 10)
-
-   > **Key insight**: cluster type is a property of the **pipeline**, not of the stamp short name. `ea-01` in `PROT-SFRP` always means an SFRP stamp (because that pipeline only deploys SFRP); the same short name in `PROT-SFMC` always means an SFMC stamp. The agent never translates short names to physical Kusto `StampName`s and never filters stamp lists at runtime. Kusto's runtime role is **pipeline selection only** — it returns the set of cluster types currently in canary, which resolves to a set of pipeline keys via `clusterTypeMap`. Each selected pipeline's `templateParameters` (collected and confirmed at `setup-service` time) are passed to ADO **verbatim**. Safety of the deployment therefore depends entirely on `pipeline-catalog.json` being correct.
-
-   a. **Pipeline selection via the resolver** — invoke `.github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope canary` (Step 10 and Step 15 pass `-Scope production`). Cluster type is a pipeline-level attribute, so the resolver runs **once per scope per release**, not once per cloud — a production pipeline that targets multiple clouds in `ev2CloudCoverage.<key>` is still resolved by a single query. As of Layer 2 (capability B), the resolver delegates Kusto execution + ASC join to `Get-StampInventory.ps1` and returns `{ resolved, skipped, liveClusterTypes, stamps, drift, inventorySources, queryRanAt }`. `stamps` is the per-stamp evidence row for every entry that survived ASC validation; `drift` lists every stamp the inventory could NOT validate (bad grammar, serviceTag mismatch, layout unknown to ASC, shortName not in the resolved cloud, canary cloudHint mismatch, etc.). On any token error, **first** invoke `.github/skills/zed-agent/scripts/Repair-AzAuth.ps1 -Tenant 'microsoft.com' -Resource <kusto.{scope}.cluster>` (3-attempt cascade: interactive login → WAM-disable + retry → device-code), then re-invoke the resolver once; if it still throws, mark the step `failed` — do not proceed.
-
-   a.1. **Drift halt (Layer 2 + Layer 3 — Steps 5, 7, 10, 15)** — the resolver throws with message prefix `DRIFT_HALT:` followed by the drift list whenever `Get-StampInventory` reports any drift row in `cluster-type` mode. The agent MUST handle this by invoking the centralised handler:
-
-      ```powershell
-      try {
-          $res = & .github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope $scope
-      } catch {
-          if ($_.Exception.Message -like 'DRIFT_HALT:*') {
-              & .github/skills/zed-agent/scripts/Invoke-DriftHalt.ps1 `
-                  -ReleaseId $releaseId -StepNumber $stepNumber -StepName $stepName `
-                  -Scope $scope -ResolverError $_.Exception.Message `
-                  -Branch $branch -ReleaseOwner $releaseOwnerAlias
-              return  # halt the step
-          }
-          throw
-      }
-      ```
-
-      `Invoke-DriftHalt` performs the full protocol in one call:
-      1. Parses drift rows from the resolver exception message.
-      2. Flips `state.json → steps[$n].status` to `failed-drift` and attaches `steps[$n].driftPayload = { haltedAt, scope, count, rows[] }` via `Update-ReleaseState` (single state lock).
-      3. Writes `audit.jsonl` row `{ "event": "drift-halt", "step": <n>, "scope": "<scope>", "drift": [ { stampName, reason, source } ] }`.
-      4. Resolves Teams recipients via `Resolve-NotificationRecipients -EventKey "step-<n>-failed"` and posts `.github/skills/zed-agent/templates/drift-halt-message.html` (rendered with the drift table) to every resolved conversation.
-
-      After `Invoke-DriftHalt` returns, the agent MUST NOT trigger any pipelines for this step. It MUST send the owner-only step-transition email per Behavior Rule 11 (subject: "🛑 Drift halt — Step {n} — release halted"; body summarises the drift count and links to the Teams thread). The release then waits in `failed-drift` until the owner replies in the Teams thread.
-
-      **Owner reply commands** (recognised by the agent on re-entry; see "Owner Commands" section):
-      - `mitigated` — owner has edited `service-config.json → inventory.canary.stamps` (canary) or fixed the Kusto query / `kusto.production.clusterTypeExtraction` (production). The agent re-runs the step normally; the resolver re-validates and proceeds if drift has cleared. If the resolver throws `DRIFT_HALT:` again, `Invoke-DriftHalt` re-fires with the new drift list.
-      - `approve drift` — owner explicitly approves the current drift. The agent re-runs the step with `-IgnoreDrift` on the resolver call. An additional `audit.jsonl` row `{ "event": "drift-approved", "step": <n>, "scope": "<scope>", "approver": "<alias>", "originalDrift": [...] }` MUST be written before triggering pipelines.
-
-      Drift only halts in `cluster-type` mode. In `static` mode the resolver still attaches `stamps` / `drift` to its output (best-effort), but these are informational — Steps 5/10/15 should still surface them in the Teams summary message but do not halt and do not invoke `Invoke-DriftHalt`.
-
-   b. **Trigger set = `resolved` from the resolver output.** Each entry has `{ pipelineKey, clusterType, source: "kusto-resolved", evidence }`. Cluster types with no `clusterTypeMap` entry, and `clusterTypeMap` entries referencing keys missing from `{scope}.*`, appear in `skipped` with a `reason` field — log them at warn level. The resolver also surfaces `{scope}.*` entries whose declared `clusterType` is NOT in the live set as `skipped` with `reason: "no live cluster type matched at query time"`; those pipelines are deliberately omitted from the trigger set (this is the whole point of `cluster-type` mode). If the resolver throws because the live set is empty, halt the step — do not silently trigger nothing or everything.
-
-   c. **Audit log entry** — write to `audit.jsonl` before triggering. Required fields:
-      ```json
-      { "event": "cluster-type-routing",
-        "step": 5,
-        "kustoClusterTypes": ["sfmc","sfrp"],
-        "triggeredPipelines": [
-          { "key": "PROT-SFRP", "clusterType": "sfrp",
-            "params": { "CanarystampsProd": ["ea-01","ecy-01"] } },
-          { "key": "PROT-SFMC", "clusterType": "sfmc",
-            "params": { "CanarystampsProd": ["ccy-01"] } }
-        ],
-        "skippedDueToNoMapping": [] }
-      ```
-      This audit row is the single source of truth for what was triggered and is reused by Step 7 (Rollback).
-
-2. Trigger all resolved pipelines in **parallel** with their `templateParameters` (passed verbatim from `pipeline-catalog.json`).
-   **ATOMICITY**: Before triggering, write `pipelineTriggerTimestamps.step5` and `triggeredPipelines.5` to `state.json` via `Update-ReleaseState -StateProperties @{ ... }`. After trigger, update `triggeredPipelines.5` with actual run IDs.
-3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState` (already done in Action 2's pre-trigger write)
-4. Email notification via `SendEmailWithAttachments` MCP tool: "Canary deployment started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-5-completed'` (this is part of the Step 5 → Step 6 transition email per Behavior Rule 11; do not emit a separate "canary started" broadcast).
-4a. **Per-pipeline stamp summary** (Layer 3 — narrative addition): for each triggered pipeline key, call `Get-StampsForPipeline -PipelineKey $key -Scope canary` (Step 5/7) or `-Scope production` (Step 10/15) to expand the pipeline → stamp list, and render it into the Teams summary message under a "Deploying to" column. Format: `<pipelineName>: stamp1, stamp2, …` (or `(all routed stamps)` if the call returns the full set). This makes it visually obvious which DCs each pipeline will actually hit — caught a misrouted pipeline twice in dry-runs.
-5. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):
-   ```powershell
-   . .github\skills\zed-agent\scripts\Get-PipelineApprovalLinks.ps1
-   $builds = @(
-       # One entry per triggered canary pipeline from CONFIG[pipelines.canary.*]
-       @{ pipelineName = "<key> Canary"; buildId = <id> }
-       # ... all triggered builds
-   )
-   $links = Get-PipelineApprovalLinks -Builds $builds
-   ```
-   - If any `approvalUrl` found → compose HTML table rows for `{{approvalRows}}`:
-     ```
-     <tr><td>{pipelineName}</td><td>{stage}</td><td>{status}</td><td><a href="{approvalUrl}">Approve</a></td><td><a href="{buildUrl}">Build</a></td></tr>
-     ```
-   - If any `ev2RolloutUrl` found → compose `{{ev2Links}}` as `<a href="{url}">{pipelineName}</a><br>` entries
-   - Send Teams message to the first group in `CONFIG[notifications.groups.teamsExtended]`:
-     ```powershell
-     . .github\skills\zed-agent\scripts\Send-TeamsMessage.ps1
-     $secrets = Get-Content ".zed-agent/secrets.json" -Raw | ConvertFrom-Json
-     $chatName = (CONFIG[notifications.groups.teamsExtended])[0]
-     $convId = $secrets.teamsChats.$chatName
-     Send-TeamsMessage -ConversationId $convId -TemplatePath ".github/skills/zed-agent/templates/canary-approval-request.html" -Variables @{
-         releaseId = $releaseId; buildVersion = $buildVersion; branch = $branch
-         approvalRows = $rowsHtml; ev2Links = $ev2LinksHtml; releaseOwner = $releaseOwnerAlias
-     }
-     ```
-   - If no approval links found after scan → post simpler message: "Canary pipelines triggered, check ADO for status"
-   - Log `canary-approval-links-posted` event to `audit.jsonl`
-   - **If `az` CLI token is expired** (Get-PipelineApprovalLinks returns partial results): post what you have, note in message that some links may be missing. If the agent is mid-step and needs a fresh token immediately, dot-source `Repair-AzAuth.ps1` (see Step 5(a)) before retrying — same 3-attempt cascade as preflight.
-6. Watcher polls all triggered pipeline runs every 1 hour
-**Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
-**Watcher approval detection**: On each poll cycle, the watcher also scans for new approval links (see `poll-ado-pipelines` action in `Release-Watcher.ps1`). If new links are found that haven't been posted, the watcher sends an updated Teams message to the Teams chat specified in the watcher directive's `teamsChatName` field.
-**Completion**: All triggered pipelines succeed → send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-completed'`: "Canary deployment completed"
-**Failure**: Any pipeline fails → step `failed`, send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-failed'` (default: current-owner-only — owner widens via `routing.5-deploy-canary.failure`), halt for `ack`
-
-## Step 6: BVT Check (Kusto-Based Failure Analysis)
-
-**Trigger**: Step 5 completed (canary deployed)
-**Wait**: **24 hours** after Step 5 completion. Set a timer watcher directive:
-`{ action: "wait-timer", waitUntil: "<step5CompletionTime + 24h ISO 8601>", onSuccess: "continue release {id}", onFailure: "wait-timer error for release {id}" }`
-**⚠️ Test Mode Override**: When `testMode` is `true`, this step becomes a **BVT-query-works check** — skip the 24h wait (no `wait-timer` directive), query Kusto with `ago(48h)`, and **auto-pass with no `approve-bvt`**: if the query executes, mark Step 6 `completed`; if it errors (auth, unreachable cluster, malformed KQL), mark it `failed`. Write a `bvt-query-check` record to `test-run-capture.json`. See "Test Mode Overrides → Step 6" for details.
-
-**Actions** (after wait completes):
-1. Load the BVT query template from `.github/skills/zed-agent/queries/CONFIG[kusto.bvt.queryFile]`
-2. Read `state.json` → `pipelineTriggerTimestamps.step5` to get the pipeline trigger time
-3. Substitute placeholders in the query:
-   - `{{PIPELINE_TRIGGER_TIME}}` → value from `pipelineTriggerTimestamps.step5` (ISO 8601 UTC)
-   - `{{RESPONSIBLE_TEAM}}` → `CONFIG[kusto.bvt.queryVariables.RESPONSIBLE_TEAM]`
-4. Execute the query via Kusto MCP:
-   - Cluster: `CONFIG[kusto.bvt.cluster]`
-   - Database: `CONFIG[kusto.bvt.database]`
-5. Analyze results:
-
-   **If rows returned** (CONFIG[service.name] failures found):
-   - Count total failures, group by WorkLoadType, Environment, IssueCategory
-   - Extract FrontLiners from results (contact aliases for each workload)
-   - **For each FrontLiner**, send **personal** notifications only (NO group chat posting):
-     - **Teams 1:1**: Load `templates/bvt-frontliner-teams-message.html`, fill placeholders (`{{workloadType}}`, `{{workloadFailureCount}}`, `{{environments}}`, `{{issueCategories}}`, `{{workloadFailureDetails}}`, `{{releaseOwner}}`, `{{pipelineTriggerTime}}`). Use `Resolve-OneOnOneChat -Alias "{frontlinerAlias}"` to get the 1:1 conversation ID, then `Send-TeamsMessage -ConversationId $chat.conversationId -Body $renderedHtml`.
-     - **Email**: Load `templates/bvt-frontliner-email.html`, fill placeholders (`{{frontlinerName}}`, `{{workloadType}}`, `{{workloadFailureCount}}`, `{{environments}}`, `{{pipelineTriggerTime}}`, `{{queryEndTime}}`, `{{workloadFailureDetails}}`, `{{releaseOwner}}`). Send via `SendEmailWithAttachments` MCP tool to `{alias}@microsoft.com`.
-     - If `Resolve-OneOnOneChat` fails for an alias (Graph API error), fall back to **email only** for that FrontLiner.
-   - **CRITICAL**: NEVER use `Find-TeamsChat` for personal messages — it uses fuzzy name matching and can misroute to the wrong person or a group chat. Always use `Resolve-OneOnOneChat` which is deterministic and zero-ambiguity.
-   - **CRITICAL**: Do NOT post BVT failure details to any group chat. Only FrontLiners receive notifications, and only via personal 1:1 channels.
-   - Set step status → `failed` with reason: `"CONFIG[service.name] BVT failures detected: {count} failures across {workloads}"`
-   - **HALT** — release owner must `ack retry` (re-run BVT check after fixes) or `ack skip` (proceed despite failures)
-
-   **If zero rows returned** (no CONFIG[service.name] failures):
-   - Send approval-needed email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-6-waiting-approval'` (defaults to owner-only; owner can broadcast if configured): "✅ BVT Check passed — no CONFIG[service.name] failures in window {triggerTime} → {now}. Results ready — please review and sign off" (use `templates/approval-needed-message.html` as body).
-   - No Teams post (Rule 1: approval halts are owner-only email)
-   - Set step status → `waiting-approval`
-   - **HALT** — release owner must `approve-bvt` to proceed
-
-**State**: Step 6 → `waiting-approval` (pass, awaiting sign-off) or `failed` (CONFIG[service.name] failures)
-**Release owner**: `approve-bvt` — confirms BVT results are acceptable, advances to Step 7
-**Note**: BVT check **always** requires release owner sign-off, even when no failures are detected. This ensures the release owner has reviewed the BVT window before proceeding.
-
-## Step 7: Rollback
-
-**Trigger**: Step 6 approved
-**Actions**:
-1. **Reuse Step 5's actually-triggered set** — do NOT re-query Kusto and do NOT recompute pipeline selection. Rollback MUST target exactly the same canary surface that was deployed to in Step 5, otherwise the rollback either (a) restores bits in regions that were never updated, or (b) misses regions that received the forward bits. Read from the Step 5 `cluster-type-routing` audit row (or equivalent `state.json → step5.triggeredPipelines`) the list of `{ key, params }` pairs that were actually triggered with their `templateParameters`. Use those verbatim. This applies to both `mode: "static"` and `mode: "cluster-type"` — Step 7 never re-runs the routing sub-procedure. If Step 5's triggered-set is missing from state/audit (e.g., manual intervention scrubbed it), halt with `failed` and ask the release owner to provide the list explicitly via `modify` before retrying.
-2. Trigger each of those CANARY pipelines, but with `ArtifactsBranch` overridden to `release.json → previousBranch` (the previous release branch containing known-good production bits), in **parallel**. Preserve every other parameter (including the stamp lists) exactly as Step 5 sent them.
-3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step7 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
-4. Email notification via `SendEmailWithAttachments` MCP tool: "Rollback started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-7-completed'` (Step 6 → Step 7 transition per Behavior Rule 11).
-5. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use `releaseId` + `releaseOwner` + the rollback build details for the template vars. Rollback pipelines have the same EV2 approval gates as forward canary, so release owners need these links.
-6. Watcher polls all triggered pipeline runs every 1 hour
-**Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
-**Completion**: All triggered pipelines succeed
-**Note**: Rollback deploys from `previousBranch` via CANARY pipelines to restore known-good bits in canary regions
-
-## Step 8: Post-Rollback BVT
-
-**Trigger**: Step 7 completed
-**Wait**: **24 hours** after Step 7 completion (same timer pattern as Step 6)
-**Actions**: Same Kusto-based BVT failure analysis as Step 6, but uses `pipelineTriggerTimestamps.step7` as the query start time.
-**State**: Step 8 → `completed` (pass) or `failed` (CONFIG[service.name] failures)
-
-## Step 9: Post-Rollback Sign-off
-
-**Trigger**: Step 8 completed
-**Actions**:
-1. Send approval-needed email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-9-waiting-approval'` (defaults to owner-only) with BVT summary + `templates/approval-needed-message.html` body: "Post-rollback results ready for review"
-2. No Teams post (Rule 1)
-3. **HALT** — waiting for release owner `approve-rollback`
-**State**: Step 9 → `waiting-approval`
-**Release owner**: `approve-rollback`
-
-## Step 10: Roll-Forward (PROD Pipelines → Canary Regions)
-
-**Trigger**: Step 9 approved
-**⚠️ Test Mode Override**: When `testMode` is `true`, run the inventory gate + resolve the production trigger set + REAL params as normal, then call `Invoke-TriggerAndCancel.ps1 -Step 10` **once per resolved pipeline** (instant cancel + capture). This is where PROD-pipeline params are validated in a test run (the old Step 15 trigger-and-cancel moved here). See "Test Mode Overrides → Step 10".
-**Actions**:
-0. **Inventory gate** — BEFORE doing anything else, invoke `.github/skills/zed-agent/scripts/Test-InventoryGate.ps1`. The script reads `.zed-agent/readiness.json → inventory` and the live SDS hash. Handle the verdict:
-   - `pass` or `skip` — proceed to action 1.
-   - `missing` — halt the step `failed`. Tell the owner: *"Inventory snapshot has not been recorded for this release. Run `Get-StampInventory.ps1 -Scope production -PipelineKey <key>` then `Approve-Inventory.ps1` before retrying Step 10."*
-   - `notApproved` — halt the step `failed`. Tell the owner: *"Inventory exists but has not been approved. Review the drift list and run `Approve-Inventory.ps1` to record explicit approval."*
-   - `driftExceeded` — halt the step `failed-drift` (same class as the cluster-type drift halt). Tell the owner: *"Inventory status is `drift` and was not overridden. Re-approve with `-Override` to acknowledge the drift, or resolve it and re-run the inventory."*
-   - `hashDrift` — halt the step `failed-drift`. Tell the owner: *"The SDS file changed since the inventory was approved (was `<hashApproved>`, now `<hashLive>`). Re-run `Get-StampInventory.ps1` and `Approve-Inventory.ps1` against the current SDS."*
-   - `stale` — halt the step `failed`. Tell the owner: *"Approved inventory is older than `<MaxAgeHours>`h. Re-run `Get-StampInventory.ps1` and `Approve-Inventory.ps1` to refresh."*
-   Audit-log the verdict as `event: "inventory-gate"` with `step: 10`, `verdict`, and `pipelineKey`.
-1. **Resolve trigger set** via `Resolve-PipelinesByClusterType.ps1 -Scope production` (the resolver internally branches on `pipeline-catalog.json → productionRouting.mode` — `static` returns every `production.*` key, `cluster-type` queries Kusto and intersects with `productionRouting.clusterTypeMap`; see the **cluster-type routing sub-procedure defined in Step 5**). `productionRouting` is a SEPARATE block from `canaryRouting` because services often have asymmetric canary vs production topology. In `cluster-type` mode Kusto failure → halt with `failed` (no silent fallback). Trigger each resolved pipeline's `templateParameters` to ADO **verbatim** (no stamp-list filtering). Write a `cluster-type-routing` audit row with `step: 10` and the resolver output (resolved + skipped + liveClusterTypes).
-2. This validates that the PROD pipelines work correctly before using them for public regions.
-3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step10 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
-4. **Capture BuildNumber**: After the PROD pipeline runs start, read the `buildNumber` from **any** of the triggered pipeline runs via ADO API (`GET /{project}/_apis/build/builds/{buildId}`) — all PROD pipelines build from the same release branch so `buildNumber` is identical across runs. The format is `<BranchName>-<RunCount>` (e.g., `Release-2604-2` means branch `Release-2604`, 2nd run). Store this in `release.json → buildNumber`. This value is used later by Step 13 for the SafeFly `DeploymentDetails.DeploymentToolInputs.BuildNumber` parameter.
-5. Email notification via `SendEmailWithAttachments` MCP tool: "Roll-forward started (PROD pipelines → canary)" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-10-completed'` (Step 9 → Step 10 transition per Behavior Rule 11).
-6. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use the PROD pipeline build details for the template vars; PROD pipelines have EV2 approval gates just like canary.
-7. Watcher polls all triggered pipeline runs every 1 hour
-**Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
-**Completion**: All triggered pipelines succeed
-**Note**: Uses the same release bits as Step 5 (canary) but deploys via the PROD pipeline path
-
-## Step 11: Post-Roll-Forward BVT
-
-**Trigger**: Step 10 completed
-**Wait**: **24 hours** after Step 10 completion (same timer pattern as Step 6)
-**Actions**: Same Kusto-based BVT failure analysis as Step 6, but uses `pipelineTriggerTimestamps.step10` as the query start time.
-**State**: Step 11 → `completed` (pass) or `failed` (CONFIG[service.name] failures)
-
-## Step 12: Post-Roll-Forward Sign-off
-
-**Trigger**: Step 11 completed
-**Actions**:
-1. Send approval-needed email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-12-waiting-approval'` (defaults to owner-only) with BVT summary + `templates/approval-needed-message.html` body: "Post-roll-forward results ready for review"
-2. No Teams post (Rule 1)
-3. **HALT** — waiting for release owner `approve-rollforward`
-**State**: Step 12 → `waiting-approval`
-**Release owner**: `approve-rollforward`
-
-## Step 13: Create SafeFly R2D Request
-
-**Trigger**: Step 12 approved AND Step 4 completed (commit data)
-
-**Prerequisite check (Step 4 join point — see Step Dependency Matrix parallelism note):**
-
-Before running any of the actions below, read `state.json` and verify `state.steps[4].status == "completed"`. If Step 4 is still `in-progress` (Phase B side-channel hasn't reached 100 % Impact fill yet — uncommon, because Step 6 alone bakes 24 h before Step 13 is reached):
-
-1. Arm a dedicated `poll-onedrive-file` watcher directive targeting `state.step4ExcelUrl` — this is the only place in the pipeline that uses `poll-onedrive-file` as a primary directive (during normal flow it runs as the side-channel inside the build/canary watchers):
-   ```json
-   {
-     "action": "poll-onedrive-file",
-     "target": "<state.step4ExcelUrl>",
-     "pollIntervalSeconds": "CONFIG[operational.watcherPollIntervalSeconds]",
-     "successCondition": "$.impactPct == 100",
-     "onSuccess": "continue release {id}",
-     "onFailure": "release {id} step 4 excel poll failed at step 13 barrier"
-   }
-   ```
-2. Set `state.steps[13].status = "waiting"` and log `step13-waiting-on-step4` to `audit.jsonl`.
-3. Send the release owner a Behavior Rule 11 step-transition email with subject `⏸ Step 13 waiting on Step 4 Excel completion`.
-4. EXIT (per Rule 10). The watcher re-invokes the agent when Step 4 reaches 100 %.
-
-If `state.steps[4].status == "failed"`, halt Step 13 with `failed`, email owner with the chain of remediation attempts (per the Self-Healing rule), and wait for `ack`.
-
-If `state.steps[4].status == "completed"`, proceed with the actions below.
-
-**Skill**: `.github/skills/zed-agent/scripts/SafeFly/New-SafeFlyRequest.ps1`
-**API Reference**: `.github/skills/zed-agent/scripts/SafeFly/SAFEFLY-API-REFERENCE.md` — full schema, all enums, valid values for every field (sourced from [SafeFly OpenAPI spec](https://www.safefly.azure.com/swagger/v1/swagger.json))
-
-This step uses the SafeFly skill to create the R2D request. Most payload parameters are defined inside the skill script — the agent provides dynamic per-release values plus a **DeploymentNature** array derived from the commit Excel. Consult the API Reference for any questions about valid field values or constraints.
-
-**Actions**:
-
-1. **Derive DeploymentNature from the commit Excel** — the team may have rewritten the Comments column in their own words (removed tags, added free-text), so do NOT rely on exact `[NatureTag]` pattern matching. Instead, perform intelligent analysis:
-
-   **a. Download the latest Excel** from SharePoint (the URL in `release.json.commitExcelUrl`). Read every row — all columns: CommitHash, Owner, Date, Title, **Comments**, Impact, Validations, Rollback Friendly.
-
-   **b. For each commit row, determine its nature** by analyzing ALL available signals holistically:
-   - The **Title** (commit subject — often the strongest signal)
-   - The **Comments** field (may contain agent-written tags like `[NewFeature]`, OR human-written free text like "added new backup retry mechanism" or "patching the CVE-2026-1234 vulnerability")
-   - The **Impact** column (team may have written "production", "config only", "security patch", etc.)
-   - The commit's original `Subject` and `Body` from `commits.json` (cross-reference if the team rewrote Comments)
-
-   **c. Map each commit to exactly one SafeFly DeploymentNature value** from this authoritative list:
-
-   | SafeFly DeploymentNature value | What it means — classify a commit here if... |
-   |-------------------------------|-----------------------------------------------|
-   | `New feature` | New capability, new endpoint, new workflow, feature flag, new API |
-   | `General bug fixes` | Fixing broken behavior, error handling, null checks, regressions |
-   | `Config change` | Configuration/settings/parameters/thresholds/feature flag toggled |
-   | `Critical security fixes` | Security vulnerability, CVE patch, auth bypass, credential fix |
-   | `CRI fixes` | Customer-reported incident fix, support case resolution |
-   | `Monitoring/health signals` | Monitoring, alerting, telemetry, logging, diagnostics, Geneva |
-   | `Policy change` | Policy, compliance, governance, RBAC, access control, SFI |
-   | `Secrets/Certificate management` | Cert rotation, secret update, managed identity, KeyVault |
-   | `Sev 1/2 repair` | Livesite repair, sev1/sev2 incident fix, IcM item |
-   | `OS/Image patch` | OS update, base image update, container image, runtime patch |
-   | `Other` | Refactoring, cleanup, dependency update, doc-only, test-only, tooling |
-
-   **d. Understanding human-written comments** — people write naturally, not in tags. You must interpret intent:
-   - "fixed crash when restoring large VMs" → `General bug fixes`
-   - "new support for cross-region backup" → `New feature`
-   - "updated timeout settings for canary" → `Config change`
-   - "patched CVE-2026-XXXX in auth module" → `Critical security fixes`
-   - "addressing customer Contoso backup failure" → `CRI fixes`
-   - "added alerts for job queue depth" → `Monitoring/health signals`
-   - "rotated storage account keys" → `Secrets/Certificate management`
-   - "cleanup and refactoring of old V1 paths" → `Other`
-
-   **e. Build the DeploymentNature array**: Collect all **unique** SafeFly nature values across all commits (deduplicated). If no commits map to any specific nature, default to `@("General bug fixes")`.
-
-   Example: 12 commits → 5 `New feature`, 4 `General bug fixes`, 2 `Config change`, 1 `Other` → `@("New feature", "General bug fixes", "Config change")`
-   Note: `Other` is only included if ALL commits are `Other`. When mixed with specific natures, omit `Other`.
-
-2. **Determine SDPType** — analyze the commit Excel holistically and select either `Standard SDP` or `Conservative SDP`. This agent handles monthly releases only; no other SDP types apply.
-
-   **Default to `Standard SDP`** unless ANY of the following escalation triggers are true:
-
-   | Escalation Trigger | Why it escalates | How to detect |
-   |-------------------|-----------------|---------------|
-   | **Live production feature** | A new feature enabled/active in production (not behind a disabled config flag) | DeploymentNature includes `New feature` AND the commit's Comments/Title do NOT mention "behind config", "feature flag disabled", "dark launch", "gated", or similar |
-   | **Breaking change** | Changes APIs, removes functionality, or alters existing behavior | Comments/Title contain "breaking", "removal", "deprecated", "migration required", "schema change", "contract change", "incompatible" |
-   | **High commit volume (>100)** | Large change sets carry higher combinatorial risk | Total row count in the commit Excel exceeds 100 |
-   | **Any impact above Low** | Team has flagged elevated risk for at least one commit | ANY row in the **Impact** column contains `Medium`, `High`, `Critical`, or anything that is NOT `Low`, `None`, or empty |
-
-   **Decision logic**:
-   ```
-   IF any_escalation_trigger_is_true THEN
-       SDPType = "Conservative SDP"
-   ELSE
-       SDPType = "Standard SDP"
-   END
-   ```
-
-   **Examples**:
-   - 40 commits, all bug fixes and config changes, all Impact=Low → `Standard SDP`
-   - 60 commits, one small feature behind disabled config flag, all Impact=Low → `Standard SDP`
-   - 50 commits, one new live feature going to production → `Conservative SDP`
-   - 30 commits, all bug fixes, but one commit has Impact=Medium → `Conservative SDP`
-   - 120 commits, all trivial changes → `Conservative SDP` (volume alone triggers escalation)
-
-3. **Derive TargetedRegions** — use the region mapping skill to compute targeted regions dynamically:
-   ```powershell
-   $excludedRegions = (Get-Content release.json | ConvertFrom-Json).excludedRegions  # short names from CCOA
-   $targeted = .\.github\skills\zed-agent\scripts\Get-RegionMapping.ps1 -AllClouds -ExcludeRegions $excludedRegions
-   $targetedRegions = $targeted | ForEach-Object { $_.DataCenterName }
-   ```
-   The skill fetches `AzureServiceConfig.json` from the region source-of-truth repo configured in `service-config.json` (`regions.ascRepo`), extracts all ACTIVE datacenters across **all 5 deployment clouds** (Public, Fairfax, Mooncake, USNat, USSec), adds any configured supplementary SafeFly regions (`regions.supplementaryRegions`) not yet in ASC, subtracts CCOA-excluded ones, and returns the targeted regions with their SafeFly display names.
-   If `excludedRegions` is empty → all regions are targeted (no subtraction).
-
-   > SafeFly expects **display names** (e.g., "East US 2", "Australia Central") — the skill's `DataCenterName` field provides these exactly.
-
-4. **Run the SafeFly creation skill**:
-   ```powershell
-   $result = .\.github\skills\zed-agent\scripts\SafeFly\New-SafeFlyRequest.ps1 `
-       -BuildId           "{release.json → buildId}" `
-       -BuildNumber       "{release.json → buildNumber}" `
-       -ReleaseId         "{release.json → releaseId}" `
-       -ReleaseOwnerAlias      "{release.json → releaseOwner.alias}" `
-       -DeploymentNature  $derivedNatures `
-       -SDPType           $derivedSDPType `
-       -TargetedRegions   $targetedRegions `
-       -CommitExcelUrl    "{release.json → commitExcelUrl}"
-   ```
-   The skill handles: token acquisition, full payload construction (all 45+ fields), POST to SafeFly API, response parsing.
-
-5. **Handle the result**:
-   - **Success**: `$result` contains `safeFlyId`, `safeFlyRequestNumber`, `safeFlyUrl`, `requestStatus`
-   - **Failure** (skill throws): Log full error, set step → `failed`, send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-13-failed'` (default: current-owner-only — owner widens via `routing.13-create-r2d.failure`), then **HALT**. Do NOT post to Teams or any other channel.
-
-6. **Store SafeFly details** in `release.json` via `Update-ReleaseState`:
-   ```json
-   {
-     "safeFlyId": "<from $result.safeFlyId>",
-     "safeFlyRequestNumber": "<from $result.safeFlyRequestNumber>",
-     "safeFlyUrl": "<from $result.safeFlyUrl>",
-     "safeFlyStatus": "<from $result.requestStatus>"
-   }
-   ```
-
-7. **Send R2D notification email** via `SendEmailWithAttachments` MCP tool with rendered `templates/r2d-email.html`:
-   - Recipients: resolve via `Resolve-NotificationRecipients -EventKey 'create-r2d'` — default cell (`routing.13-create-r2d.success`) CCs `notifications.groups.cc`; the current release owner is always on the To-line. Do **not** use `{{managerEmail}}` — managers are not separately tracked by this agent.
-   - **Email format**:
-     ```
-     Subject: ✅ SafeFly R2D #{requestNumber} Created — Release {releaseId}
-
-     Hi {releaseOwnerName},
-
-     SafeFly R2D request has been created for the CONFIG[service.displayName] monthly release.
-
-     | Field                | Value                                      |
-     |----------------------|--------------------------------------------|
-     | Request Number       | #{requestNumber}                            |
-     | SafeFly URL          | {safeFlyUrl}                                |
-     | Release              | {releaseId}                                 |
-     | Branch               | {branchName}                                |
-     | Title                | CONFIG[safefly.titleTemplate] for {Month}-{YY} |
-     | SDP Type             | {sdpType}                                   |
-     | Deployment Nature    | {nature1}, {nature2}, ...                   |
-     | Targeted Regions     | {count} regions (CCOA exclusions applied)   |
-     | Commit Excel         | {commitExcelUrl}                            |
-     | Build Number         | {buildNumber}                               |
-     | ADO Build ID         | {buildId}                                   |
-
-     Next step: Present at CRB and get approval. The agent will auto-poll SafeFly approval every 60 minutes.
-     ```
-
-8. **No separate Teams notification** — the R2D creation broadcast is handled entirely by the email in action 7 (event `create-r2d` routes to release owner + CC per `routing.create-r2d`). No additional Teams post is sent (Rule 1).
-
-**Dry run**: To validate the payload without submitting, the release owner can run:
-```powershell
-.\.github\skills\zed-agent\scripts\SafeFly\New-SafeFlyRequest.ps1 -BuildId 12345 -BuildNumber "Release-2604-2" -ReleaseId "2026-04" -ReleaseOwnerAlias "test" -DeploymentNature @("New feature","General bug fixes") -SDPType "Standard SDP" -TargetedRegions @("East Asia","West US 2") -CommitExcelUrl "https://microsoft.sharepoint.com/..." -DryRun
-```
-
-**State**: Step 13 → `completed`
-
-## Step 14: Wait for SafeFly Approval + CRB Review
-
-**Trigger**: Step 13 completed (SafeFly request created)
-
-**Skill**: `.github/skills/zed-agent/scripts/SafeFly/Get-SafeFlyApproval.ps1`
-
-This step polls SafeFly approval via the skill and waits for the release owner's CRB approval. Both gates must pass before proceeding.
-
-**Actions**:
-
-1. **Set up SafeFly approval polling** via watcher directive:
-   ```json
-   {
-     "watcherDirective": {
-       "action": "safefly-approval-poll",
-       "safeFlyId": "<from release.json>",
-       "pollIntervalSeconds": 3600,
-       "timeoutHours": 72,
-       "startedAt": "<current UTC ISO 8601>",
-       "onTimeout": "safefly approval timeout for release {id}"
-     }
-   }
-   ```
-   The watcher tracks `startedAt + timeoutHours` and, when the timeout elapses without an `Approved` classification, re-invokes the agent with the `onTimeout` prompt. The agent then runs the timeout-handling action below (action 5) and re-arms the same directive to keep polling.
-
-2. **On each watcher poll**, run the approval skill:
-   ```powershell
-   $status = .\.github\skills\zed-agent\scripts\SafeFly\Get-SafeFlyApproval.ps1 `
-       -SafeFlyId "{release.json → safeFlyId}"
-   ```
-   The skill returns: `state`, `classification` (Approved|Pending|Rejected|Invalidated).
-
-3. **Act on classification**:
-
-   | Classification | Action |
-   |----------------|--------|
-   | `Approved` | ✅ SafeFly approved — update `state.json → step14.safeFlyApproved = true`, post Teams, check if CRB also approved |
-   | `Pending` | ⏳ Continue polling |
-   | `Rejected` | ❌ Set step → `failed`, notify Teams with rejection state, HALT |
-   | `Invalidated` | ❌ Request invalidated — set step → `failed`, HALT |
-
-4. **Track dual-gate approval** in `state.json`:
-   ```json
-   {
-     "step14": {
-       "safeFlyApproved": false,
-       "safeFlyApprovalState": "<from skill>",
-       "safeFlyApprovedAt": null,
-       "crbApproved": false
-     }
-   }
-   ```
-   - When skill returns `Approved` → update `safeFlyApproved: true`, send email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: *"✅ SafeFly R2D #{number} approved!"* (no Teams per Rule 1)
-   - When release owner runs `approve-crb` → update `crbApproved: true`
-   - **Step 14 completes ONLY when both gates are true**
-
-5. **Timeout handling**: If 72 hours pass without SafeFly approval:
-   - Send email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'judgment'` (Rule 1: owner-only): *"SafeFly R2D #{number} has not been approved after 72 hours — please attend the next R2D review meeting or follow up with the SafeFly approvers."*
-   - No Teams message (Rule 1) — release owner handles this offline
-   - Keep step in `waiting-approval` (continue polling)
-
-**State**: Step 14 → `waiting-approval` (dual-gate: SafeFly skill + release owner `approve-crb`)
-**Release owner**: `approve-crb` — marks the CRB gate as done. If SafeFly is also approved, step proceeds.
-
-## Step 15: Production Rollout (EV2 Managed) + Rollout Diagnostics
-
-**Trigger**: Step 14 approved
-**⚠️ Test Mode Override**: When `testMode` is `true`, Step 15 is **skipped entirely** — the real public EV2 rollout never runs in a test run. The PROD-pipeline trigger-and-cancel validation now happens at **Step 10** (see "Test Mode Overrides → Step 10").
-
-**Actions — Phase 1: Trigger Pipelines + Start EV2 Monitoring**:
-0. **Inventory gate** — same procedure as Step 10 action 0. Invoke `.github/skills/zed-agent/scripts/Test-InventoryGate.ps1` and halt on any non-`pass`/non-`skip` verdict. Step 15 is the production rollout to public regions — SDS drift between approval and trigger is exactly the failure class this gate exists to catch. Audit-log as `event: "inventory-gate"` with `step: 15`. Sovereign clouds (Fairfax / Mooncake / USNat / USSec / Bleu) reach this step with SDS as the *sole* stamp source, so the hash check is non-negotiable for them.
-1. **Resolve trigger set, then trigger pipelines** in parallel via ADO API (same pattern as Step 5 canary — cluster type is a pipeline attribute, not a per-cloud attribute, so the resolver runs once):
-   - Invoke `.github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope production`. In `productionRouting.mode == "static"` the resolver returns every `production.*` key; in `mode == "cluster-type"` the resolver runs `kusto.production.queryFile` and returns only the keys whose declared cluster type is currently live. Use `$res.resolved | ForEach-Object pipelineKey` as the Step 15 trigger set. Each resolved pipeline pushes to whichever clouds are listed under `CONFIG[pipelines.ev2CloudCoverage.<key>]` — cloud fan-out happens via EV2 inside the pipeline, NOT by triggering the same pipeline multiple times. Write one `cluster-type-routing` audit row plus a `production-trigger-set` row summarizing the resolved keys and their `ev2CloudCoverage`.
-   - Pipeline IDs from `CONFIG[pipelines.production.*]` (loaded from pipeline-catalog.json) for each resolved key.
-   - Parameters from `pipeline-catalog.json`: `ArtifactsBranch` = current release branch, `PubRegions` = regions from SafeFly R2D scope, `PublicExcludestamps` = CCOA-excluded stamps, `SdpType` = derived SDP type (Standard/Conservative), `ValidateOnlyRollOut` = `"false"`
-   - **⛔ Geography coverage gate (L-16) — run AFTER params are resolved and BEFORE any pipeline is triggered.** Invoke `.github/skills/zed-agent/scripts/Assert-GeographyCoverage.ps1 -PipelineParams $resolvedParams -ReleaseId $ReleaseId`. It computes the **union** of every pipeline's covered geographies and **throws when any expected geography is uncovered**. This is the prot2608 failure class: that rollout was declared complete at **66 of 73** geographies because coverage was only ever checked per pipeline, never across them. Let the throw halt the step as `failed` — do **not** catch it, and do not proceed on a warning. The report it persists to `state.geographyCoverage` is also what feeds the scope note in action 4, so this gate must run before the email is composed or the note renders "not yet computed".
-2. **Record pipeline trigger timestamps**: Save `pipelineTriggerTimestamps.step15.<pipelineKey> = <current UTC ISO 8601>` to `state.json`
-3. **Write watcher directive**: `wait-timer` with `waitUntil` = 1 hour from now (UTC ISO 8601). EV2 rollouts start immediately when the pipeline triggers them, so we wait 1 hour before first poll to let initial SDP stages progress:
-   - `onSuccess`: `"start ev2 monitoring for release {id}"`
-   This replaces the old `poll-ado-pipelines` approach — we do **NOT** wait for ADO pipeline completion because:
-   - ADO pipeline completion is irrelevant — the EV2 rollout runs independently
-   - ADO builds may even show `Failed` (e.g., monitoring step timeout) while the EV2 rollout continues normally
-4. Send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-15-completed'`: *"Production rollout triggered — {N} pipelines running. EV2 manages staged rollout via SDP nodes. First EV2 status check in 1 hour."* Include EV2 portal link: `https://ev2portal.azure.net/#/?servicegroups=CONFIG[pipelines.ev2ServiceGroups]*&daterange=1&rolloutinfra=Prod`. No Teams unless owner has configured `step-15-completed` routing.
-   - **Scope note (mandatory).** The email MUST state what is *not* in the rollout, not just how many pipelines are running. Build the tokens with:
-     ```powershell
-     . .\.github\skills\zed-agent\scripts\Get-ScopeTemplateVars.ps1
-     $vars = Get-ScopeTemplateVars -ReleaseId $ReleaseId `
-         -ServiceConfig $cfg `
-         -InventoryDrift $readiness.inventory.drift `
-         -ApprovedRegions $safeFlyApprovedRegions
-     # → routeCount, geographyCount, regionListHtml, exclusionNoteHtml
-     ```
-     Append `{{exclusionNoteHtml}}` to the body under a **"Regions/stamps NOT in this rollout"** heading. It renders two clearly separated blocks: **🔴 unintended** (missing geographies from the L-16 gate, and stamps the inventory could not validate — these mean the rollout may be wrong) and **ℹ️ deliberate** (CCOA exclusions, regions outside the SafeFly R2D scope, other-cloud stamps).
-   - ⚠️ **The note REPORTS, it never authorises.** Action 0b below still blocks the rollout on missing geographies. Never treat "it was mentioned in the email" as approval — every P0 in `lessons-learned.md` reached production because a warning was skimmed past under release pressure.
-   - This is the same renderer the Teams path uses, so the two channels cannot state different scopes.
-
-**Actions — Phase 2: EV2 Rollout Monitoring** (triggered by the 1-hour wait-timer completing):
-5. **Write watcher directive**: `poll-ev2-rollout` with `pollIntervalSeconds = 3600` (1 hour) and targets from `pipeline-catalog.json → ev2ServiceGroups` — includes **all clouds** from `CONFIG[pipelines.ev2CloudCoverage]`. Each pipeline produces rollouts for multiple clouds. **The Release-Watcher polls the EV2 REST API for rollout progress — it does NOT check ADO pipeline status:**
-   ```json
-   { "action": "poll-ev2-rollout", "pollIntervalSeconds": 3600, "targets": [
-       // Targets are dynamically generated from CONFIG[pipelines.ev2ServiceGroups]
-       // and CONFIG[pipelines.ev2CloudCoverage] — one entry per serviceGroup × cloud combination.
-       // Example entry:
-       { "buildId": "<pipeline-build-id>", "serviceGroup": "<from CONFIG[pipelines.ev2ServiceGroups]>", "rolloutInfra": "<from CONFIG[pipelines.ev2CloudCoverage]>" }
-     ],
-     "onSuccess": "continue release {id}", "onFailure": "ev2 rollout failure report for release {id}" }
-   ```
-6. **On EV2 failure** (any region fails): Read `state.ev2Diagnostics` from `state.json`, then:
-   a. For each `failedNode`, extract: `node.error` (summary), `node.errorCode`, `node.errorReason`, `node.errorDetail` (full StatusMessage)
-   b. **Research the error** using the **EV2 Error Analysis — Dynamic Documentation Lookup** procedure (below): search MS Learn, ES Chat, and ADO wiki for the `errorCode`/`errorReason`, then synthesize findings into actionable `agentAnalysis` text
-   c. No Teams post (Rule 1: failure notifications are owner-only email). The failure-report HTML (`ev2-failure-report-message.html`) is sent only as the email body.
-   d. **Send failure email** via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-15-failed'` (default: current-owner-only — owner widens via `routing.15-production-rollout.failure`) — body = rendered `ev2-failure-report-message.html` with failed regions, actual error details, agent analysis, and suggested actions
-   e. Set step → `failed`, halt for `ack retry` or `ack skip`
-7. **On EV2 success**: All rollouts completed (all 10 targets show `Completed/Succeeded`) → Step 15 → `completed`. **ADO pipeline status is irrelevant** — a pipeline may show `Failed` in ADO but the EV2 rollout it triggered can still succeed independently.
-
-**EV2 manages the staged rollout** through SDP nodes in `RolloutPolicyConfiguration.json` (ProdSdp, FairfaxSdp, MooncakeSdp, EXSdp, RXSdp). The agent does **not** manage individual region stages — it monitors and diagnoses.
-
-> **⚠️ CRITICAL: Monitor EV2 rollout progress, NOT ADO pipeline status.**
-> The ADO pipeline build status (`Completed`/`Failed`/`InProgress`) is **irrelevant** for rollout progress tracking. ADO builds can show `Failed` or `Completed` while the EV2 rollout is still actively progressing through SDP stages. The EV2 rollout is a separate long-running process that continues independently of the ADO pipeline run.
->
-> - **Use EV2 REST API** (`Get-Ev2RolloutStatus.ps1`) to track per-region, per-stage rollout progress
-> - **Never use ADO build status** to determine if a rollout is complete, failed, or in-progress
-> - **ADO pipeline is only used for**: (1) triggering the rollout, (2) extracting the EV2 rollout ID from build logs
-> - **EV2 rollout status** (`Running`/`Completed`/`Failed` from the EV2 API) is the single source of truth for deployment progress
-
-**Multi-cloud diagnostics**:
-- **Prod** → Direct EV2 REST API (`azureservicedeploy.msft.net`)
-- **Fairfax/Mooncake** → Edge portal scraping via CDP (REST API DNS unreachable from CorpNet)
-
-> **⚠️ Shared ServiceGroup:** Pipeline variants (e.g., SFMC/SFRP) may share a single EV2 ServiceGroup per CONFIG[pipelines.ev2ServiceGroups]. Always query by **BuildId or RolloutId** — never ServiceGroup alone — to avoid mixing variant data.
-
-The gov-cloud scraper (`Invoke-Ev2PortalScrape.js`) connects to the user's running Edge via Chrome DevTools Protocol, reuses an existing browser tab (to inherit full session cookies), opens the EV2 portal page, and intercepts the portal's own XHR API response (raw JSON). This approach is immune to UI changes. Falls back to DOM text extraction if interception fails. Auth uses the user's existing Edge Microsoft session — no extra login needed.
-
-**Gov-cloud auth-failure handling**: If any gov-cloud query returns `overallStatus = "AuthRequired"`, the agent MUST:
-1. **Continue gracefully** — render the dashboard with Prod data and mark gov-clouds as "⚠️ Auth Required" (do NOT block on gov-cloud failures)
-2. **Send a notification email** to recipients from `Resolve-NotificationRecipients -EventKey 'judgment'` (Rule 1: owner-only) via `SendEmailWithAttachments` MCP tool with:
-   - **Subject**: `[ZED Agent] Gov-Cloud EV2 Auth Expired — Action Required`
-   - **Body** (Text):
-     ```
-     The ZED release agent encountered an authentication failure while querying gov-cloud ({clouds}) EV2 rollout status.
-
-     What happened:
-     The agent uses Edge CDP (Chrome DevTools Protocol) to scrape rollout data from the EV2 portal for Fairfax/Mooncake clouds, because the EV2 REST API DNS is unreachable from CorpNet. This requires an active Microsoft auth session in Edge.
-
-     Your Edge browser session for the EV2 portal has expired.
-
-     Action required:
-     1. Open Microsoft Edge
-     2. Navigate to https://ra.ev2portal.azure.net
-     3. Sign in when prompted
-     4. Once the EV2 dashboard loads, ask the agent to re-query gov-cloud status
-
-     Prod-cloud data was retrieved successfully. Only gov-cloud ({clouds}) data is affected.
-     ```
-   - Replace `{clouds}` with the specific clouds that failed (e.g., "Fairfax, Mooncake")
-3. **Log it** — note the auth failure in the step status so subsequent polls know to retry
-
-**State**: Step 15 → `in-progress` (Phase 1: pipelines triggered, 1h wait) → `in-progress` (Phase 2: EV2 monitoring, hourly polls) → `completed` or `failed`
-**Note**: CCOA-excluded regions via `PublicExcludestamps`. `SdpType` (Standard/Conservative) controls rollout speed.
-**Scripts**: `scripts/EV2/Get-Ev2RolloutStatus.ps1` (main), `scripts/EV2/Invoke-Ev2PortalScrape.js` (gov-cloud scraper), `scripts/EV2/Ensure-EdgeCDP.ps1` (Edge CDP helper), `scripts/EV2/Show-Ev2Dashboard.ps1` (terminal dashboard).
-
-**Dashboard**: When the release owner asks for rollout status, rollout details, or EV2 diagnostics:
-1. **Run `Show-Ev2Dashboard.ps1`** to collect data from EV2 APIs (Prod + gov-clouds)
-2. **ALWAYS render the results as a per-stage markdown table** in your response — never dump the raw script output. Use this exact format:
-
-```
-## 🚀 EV2 Rollout Dashboard — {date} {time} IST
-
-| Pipeline | Cloud | Stage | Status | Regions |
-|----------|-------|-------|--------|---------|
-| **<Pipeline-1>** | Prod | Canary | ✅ 2/2 | centraluseuap, eastus2euap |
-| | | Low | ✅ 3/3 | westus2, eastus, northeurope |
-| | | Medium | ✅ 5/5 | westeurope, southcentralus, ... |
-| | | Heavy | ✅ 7/7 | australiaeast, japaneast, ... |
-| | | Day1 | ✅ 5/5 | koreacentral, francecentral, ... |
-| | | Day2 | 🔄 2/3 | ✅ westus, ✅ uksouth, 🔶 southeastasia |
-| | Fairfax | Day4 | ✅ 1/1 | usgovarizona |
-| | Mooncake | — | ⬚ N/A | SFMC doesn't deploy |
-| **<Pipeline-2>** | Prod | Canary | ✅ 2/2 | ... |
-| | | Low | ✅ 3/3 | ... |
-| | | ... | ... | ... |
-| | Fairfax | Day1 | ✅ 1/1 | usdodcentral |
-| | | Day2 | ✅ 1/1 | usdodeast |
-| | | Day3 | ⏳ 0/0 | — |
-| | | Day4 | ⏳ 0/0 | — |
-| | Mooncake | Day1 | ✅ 1/1 | chinanorth |
-| | | Day2 | ✅ 1/1 | chinanorth2 |
-| ...all pipelines × all clouds × all stages... |
-
-**Summary:** X/12 rollouts complete | Y/Z regions done | **Remaining:** list any 🔶 regions
-```
-
-Table rules:
-- **One row per pipeline×cloud×stage** — every SDP stage gets its own row
-- Pipeline name only on first row of each pipeline group (blank for subsequent)
-- Cloud name only on first row of each cloud group (blank for subsequent stages)
-- Show **ALL stages** that exist in the rollout, including Waiting/NotStarted stages (so gov-clouds show Day1-Day4 even if only Day1-Day2 have completed)
-- Stage ordering follows SDP order: Canary → ManagedValidation → Low → Medium → Heavy → Day1 → Day2 → ... → Day10
-- Status column format: `{emoji} {completed}/{total}` — e.g., `✅ 3/3`, `🔄 2/3`, `⏳ 0/0`
-- Status emojis: ✅ all complete, 🔄 in-progress, ❌ has failures, ⏳ waiting/not started, ⬚ N/A
-- Regions column: comma-separated list of ALL regions in that stage. Prefix non-completed regions: `🔶 regionname` (in-progress), `❌ regionname` (failed), `⏳ regionname` (waiting). Completed regions listed without prefix. Show `—` if stage has no regions yet.
-- For clouds that don't deploy (e.g., SFMC+Mooncake): single row with Stage=`—`, Status=`⬚ N/A`, Regions=`SFMC doesn't deploy`
-- Use `batchStages[]` from `Get-Ev2RolloutStatus.ps1` to discover all parent stages, and `completedNodes[]`/`inProgressNodes[]`/`waitingNodes[]`/`failedNodes[]` to build per-stage region lists (nodes have `sdpNode` = stage name, `name` = region)
-- Summary line at bottom with overall counts and any remaining regions
-
-Usage:
-```powershell
-# Gather rollout data for all pipelines × clouds, then render dashboard
-# Pipeline keys and cloud coverage come from CONFIG[pipelines.ev2ServiceGroups] and CONFIG[pipelines.ev2CloudCoverage]
-$data = @{}
-$authFailedClouds = @()
-$pipelineKeys = $cfg.pipelines.ev2ServiceGroups.PSObject.Properties.Name  # e.g., keys from pipeline-catalog.json
-foreach ($pipeKey in $pipelineKeys) {
-    $data[$pipeKey] = @{}
-    # ev2CloudCoverage is keyed by pipeline key directly (see pipeline-catalog.schema.json)
-    $clouds = $cfg.pipelines.ev2CloudCoverage.$pipeKey  # e.g., @("Prod", "Fairfax")
-    if (-not $clouds) {
-        Write-Warning "Pipeline key '$pipeKey' has no entry in ev2CloudCoverage — skipping"
-        continue
-    }
-    foreach ($cloud in $clouds) {
-        $result = & .\.github\skills\zed-agent\scripts\EV2\Get-Ev2RolloutStatus.ps1 `
-            -RolloutId "<id>" -ServiceGroup "<sg>" -RolloutInfra $cloud
-        $data[$pipeKey][$cloud] = $result
-        # Detect auth failure for gov-clouds
-        if ($result.overallStatus -eq "AuthRequired" -and $cloud -notin $authFailedClouds) {
-            $authFailedClouds += $cloud
-        }
-    }
-}
-
-# Render dashboard (works with partial data — auth-failed clouds show warning)
-& .\.github\skills\zed-agent\scripts\EV2\Show-Ev2Dashboard.ps1 -RolloutData $data
-
-# If auth failures detected, send notification email to release owner
-if ($authFailedClouds.Count -gt 0) {
-    $cloudList = $authFailedClouds -join ", "
-    # → Use Mail MCP: SendEmailWithAttachments to release owner (see auth-failure handling above)
-}
-```
-
-**⚠️ RULE**: Never show raw `Get-Ev2RolloutStatus.ps1` output to the release owner. Always pipe through `Show-Ev2Dashboard.ps1` for a consistent, presentable view.
-
-### Step 15: Stage Transition Notifications (sub-procedure)
-
-During `poll-ev2-rollout`, the agent MUST track batch-level stage transitions and send email notifications. `Get-Ev2RolloutStatus.ps1` returns `batchStages[]` with parent SDP stage status (Canary, Day1, Day2, etc.).
-
-**State tracking**: Maintain `state.json → step15.ev2StageTracker` — a map of `{pipelineKey}.{cloud}` → `{ lastCompletedStage, lastNotifiedStage, waitingForPromotion }`:
-```json
-{
-  "step15": {
-    "ev2StageTracker": {
-      "<pipelineKey>.<cloud>": { "lastCompletedStage": "Day1", "lastNotifiedStage": "Day1", "waitingForPromotion": false }
-    }
-  }
-}
-```
-
-**On each poll cycle**, for each pipeline×cloud rollout:
-1. Read `result.batchStages[]` — find the highest completed stage and the next stage's status
-2. Compare against `ev2StageTracker[key].lastCompletedStage`
-3. **Stage completion detected** (new completed stage > last tracked):
-   - Update `lastCompletedStage` and `lastNotifiedStage`
-   - Set `waitingForPromotion = false`
-   - **Send stage progress email** via `SendEmailWithAttachments` MCP tool:
-     - **Template**: `templates/ev2-stage-progress-email.html`
-     - **Subject**: `[ZED] EV2 Stage Complete — {{completedStageName}} ✅ | {{releaseId}}`
-     - **Recipients**: resolve via `Resolve-NotificationRecipients -EventKey 'ev2-stage-progress'` (maps to `15-production-rollout.success`; default seed broadcasts to `permanent` + `cc` email groups; owner always included on To-line).
-     - **Body**: Render template with `{{dashboardRows}}` = current full dashboard table rows as HTML `<tr>` elements
-4. **Waiting for manual promotion detected** (next stage has status `Waiting|NotStarted|Queued` AND all regions in current stage are completed AND `waitingForPromotion` was `false`):
-   - Set `waitingForPromotion = true`
-   - **Send promotion reminder email** via `SendEmailWithAttachments` MCP tool:
-     - **Template**: `templates/ev2-promotion-reminder-email.html`
-     - **Subject**: `[ZED] ⏳ Manual Promotion Needed — {{nextStageName}} | {{pipelineName}} {{cloud}}`
-     - **To**: recipients from `Resolve-NotificationRecipients -EventKey 'ev2-promotion-reminder'` (maps to `15-production-rollout.halt`; default: owner-only — owners can widen via `routing.15-production-rollout.halt`)
-     - **Body**: Render template with pipeline name, cloud, completed stage, next stage, dashboard table
-5. **Avoid duplicate emails**: Only send if `lastNotifiedStage` differs from current completed stage, or `waitingForPromotion` transitioned from `false` → `true`
-
-**SDP stage ordering** (for determining "next stage"):
-`Canary → Low → Medium → Heavy → Day1 → Day2 → Day3 → Day4 → Day5`
-Stages vary per SDP configuration — use `batchStages[]` order from the API response as the source of truth.
-
-**Templates**: `templates/ev2-stage-progress-email.html` (stage completion), `templates/ev2-promotion-reminder-email.html` (promotion reminder). Both include `{{dashboardRows}}` placeholder for an HTML table with the current dashboard. Render using `Expand-Template`.
-
-**Dashboard rows for email**: Convert the markdown dashboard table into HTML `<tr>` rows. Each row: `<tr><td>Pipeline</td><td>Cloud</td><td>Status</td><td>Progress</td><td>Current Stage</td><td>Regions</td></tr>`. Use the same data and format as the chat dashboard but in HTML table syntax.
-
-### Step 15: EV2 Error Analysis — Dynamic Documentation Lookup (sub-procedure)
-
-When composing failure reports or analyzing EV2 errors, the agent must **research the error in real time** using available documentation tools rather than relying on hardcoded error tables. The script (`Get-Ev2RolloutStatus.ps1`) extracts error details from `ResourceOperations[].StatusMessage` and populates `node.errorCode`, `node.errorReason`, and `node.errorDetail`.
-
-#### Error Research Procedure
-
-When an EV2 failure is detected with `node.errorCode` and/or `node.errorReason`:
-
-1. **Search MS Learn docs** — Use `microsoft_docs_search` with the error code and reason as query terms (e.g., `"ClusterChildResourceOperationFailed UpgradeDomainTimeout Service Fabric"`). If a relevant page is found, use `microsoft_docs_fetch` to get the full remediation steps.
-2. **Search internal engineering docs** — Use `es_search` (ES Chat) with keywords from the error (e.g., `"UpgradeDomainTimeout SFRP rollout failure"`). Internal docs often have runbooks and TSGs specific to our environment.
-3. **Search ADO wiki** — Use `search_wiki` (Bluebird) with the error code to find team-specific troubleshooting pages or past incident write-ups.
-4. **Synthesize findings** — Combine documentation results into a concise `agentAnalysis` paragraph that explains: what the error means, likely root cause, and recommended next steps. Cite the source (e.g., "Per MS Learn docs: ...").
-5. **If no documentation is found** — State that no documentation was found for this specific error code and include the raw `node.errorDetail` so the release owner can investigate manually.
-
-#### Analysis Heuristics (always apply regardless of lookup results)
-
-When writing failure analysis for email reports:
-1. If `errorReason` is present, lead with it: _"UpgradeDomainTimeout on ud:/zone1/3"_
-2. If the same `errorCode` repeats across multiple retries with **different** context (e.g., different upgrade domains), note: _"Different targets are failing across retries, indicating a systemic issue rather than a single-resource problem."_
-3. Include retry count and time span: _"This region has been failing for {hours}h across {count} retries."_
-4. If retries ≥ 3 AND same error pattern persists, recommend: _"This error is persistent and unlikely to self-resolve. Consider: (1) skipping this region in EV2 portal, (2) engaging the owning team via ICM, or (3) investigating the underlying resource health directly."_
-5. Always include `node.errorDetail` (full `StatusMessage`) in the email body so the release owner has the complete error without needing to query the API manually.
-
-
-
-## Step 16: Create Merge-Back PR
-
-**Trigger**: Step 15 completed (all EV2 rollouts reported `Completed/Succeeded` — ADO pipeline status is irrelevant per Step 15 spec)
-**Actions**:
-1. Create PR from `{branch}` to `CONFIG[ado.baseBranch]` via ADO MCP
-2. Set PR title: "Merge back: {branch}"
-3. Store `mergeBackPrId` in `release.json`
-4. No notification (per `notifications.md`: `merge-back` has no email + no Teams)
-5. Unregister Task Scheduler task
-**State**: Step 16 → `completed`, release status → `completed`
-**Watcher**: Cleared — watcher exits on next poll
-
----
+Never infer a step's behavior from its title, from the Step Dependency Matrix, or
+from a previous release. The per-step section is the contract.
 
 # Per-Step Approval Gates
 

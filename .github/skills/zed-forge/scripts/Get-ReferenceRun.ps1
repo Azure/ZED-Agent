@@ -15,6 +15,8 @@
 .PARAMETER BuildId   Fetch one specific build live from ADO (ignores the cache).
 .PARAMETER Refresh   Re-fetch ALL cached reference builds from ADO, rewrite the cache.
 .PARAMETER ReferencePath  Override. Default <skill>/requirements/reference-runs.json.
+.PARAMETER Organization   ADO org. Default: `organization` in the cache, else 'msazure'.
+.PARAMETER Project        ADO project. Default: `project` in the cache, else 'One'.
 .OUTPUTS  Reference run object(s): { buildId, definitionId, name, buildNumber, sourceBranch, templateParameters }.
 #>
 [CmdletBinding()]
@@ -22,13 +24,28 @@ param(
     [ValidateSet('prod', 'canary', 'all')][string]$Scope = 'all',
     [int]$BuildId,
     [switch]$Refresh,
-    [string]$ReferencePath
+    [string]$ReferencePath,
+    [string]$Organization,
+    [string]$Project
 )
 
 $ErrorActionPreference = 'Stop'
 if (-not $ReferencePath) { $ReferencePath = Join-Path $PSScriptRoot '..\requirements\reference-runs.json' }
 $adoResource = '499b84ac-1321-427f-aa17-267ca6975798'
-$org = 'msazure'; $project = 'One'
+
+# Org/project come from the reference cache when it declares them, so this script is not
+# bound to any one ADO tenant.
+$cachePeek = $null
+if (Test-Path $ReferencePath) {
+    try { $cachePeek = Get-Content $ReferencePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $cachePeek = $null }
+}
+if (-not $Organization) {
+    $Organization = if ($cachePeek -and $cachePeek.PSObject.Properties['organization'] -and $cachePeek.organization) { [string]$cachePeek.organization } else { 'msazure' }
+}
+if (-not $Project) {
+    $Project = if ($cachePeek -and $cachePeek.PSObject.Properties['project'] -and $cachePeek.project) { [string]$cachePeek.project } else { 'One' }
+}
+$org = $Organization; $project = $Project
 
 function Get-AdoBuild([int]$id) {
     $tok = az account get-access-token --resource $adoResource --query accessToken -o tsv 2>$null

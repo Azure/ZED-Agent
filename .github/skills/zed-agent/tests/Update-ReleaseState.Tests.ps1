@@ -52,6 +52,50 @@ Describe 'Update-ReleaseState' {
             $written = Get-Content(Join-Path $relDir 'state.json') -Raw | ConvertFrom-Json
             $written.currentStep | Should -Be 5
         }
+
+        It 'truncation guard: throws when called with no DirectiveJson and no StateProperties' {
+            { Update-ReleaseState -ReleaseId '2026-04' -Action write } |
+                Should -Throw '*requires either -DirectiveJson*'
+        }
+
+        It 'truncation guard: does not truncate the existing file when guard fires' {
+            $relDir = Join-Path $testRoot '.zed-agent/releases/2026-04'
+            try { Update-ReleaseState -ReleaseId '2026-04' -Action write } catch { }
+            $remaining = Get-Content (Join-Path $relDir 'state.json') -Raw
+            $remaining | Should -Not -BeNullOrEmpty
+        }
+
+        It 'StateProperties merge: merges single new top-level property into state' {
+            Update-ReleaseState -ReleaseId '2026-04' -Action write -StateProperties @{ newProp = 'hello' }
+            $state = Update-ReleaseState -ReleaseId '2026-04' -Action read
+            $state.newProp | Should -Be 'hello'
+        }
+
+        It 'StateProperties merge: overwrites existing top-level property' {
+            Update-ReleaseState -ReleaseId '2026-04' -Action write -StateProperties @{ currentStep = 99 }
+            $state = Update-ReleaseState -ReleaseId '2026-04' -Action read
+            $state.currentStep | Should -Be 99
+        }
+
+        It 'StateProperties merge: preserves other existing properties' {
+            Update-ReleaseState -ReleaseId '2026-04' -Action write -StateProperties @{ newProp = 'hi' }
+            $state = Update-ReleaseState -ReleaseId '2026-04' -Action read
+            $state.releaseId | Should -Be '2026-04'
+        }
+
+        It 'StateProperties merge: updates lastUpdated from its original value' {
+            # Initial state has lastUpdated = '2026-04-01T10:00:00Z' (well in the past)
+            Update-ReleaseState -ReleaseId '2026-04' -Action write -StateProperties @{ newProp = 'ts-test' }
+            $state = Update-ReleaseState -ReleaseId '2026-04' -Action read
+            $state.lastUpdated | Should -Not -BeNullOrEmpty
+            # The value must have changed from the seeded '2026-04-01T10:00:00Z'
+            $state.lastUpdated | Should -Not -Be '2026-04-01T10:00:00Z'
+        }
+
+        It 'StateProperties merge: throws when state file does not exist' {
+            { Update-ReleaseState -ReleaseId 'nonexistent' -Action write -StateProperties @{ x = 1 } } |
+                Should -Throw '*not found*'
+        }
     }
 
     Context 'Action: update-step' {

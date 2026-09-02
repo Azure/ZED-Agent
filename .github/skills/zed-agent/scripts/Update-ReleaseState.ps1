@@ -41,11 +41,34 @@ function Update-ReleaseState {
     }
 
     Invoke-WithStateLock -LockFile $stateLock -Action ({
-        # For write operations, create backup first
-        if (Test-Path $stateFile) { Copy-Item $stateFile "$stateFile.bak" -Force }
+        # For write operations, create backup first — but never overwrite a good backup
+        # with an empty/corrupt state file (that is how the only recovery copy was lost).
+        if (Test-Path $stateFile) {
+            if ((Get-Item $stateFile).Length -gt 0) { Copy-Item $stateFile "$stateFile.bak" -Force }
+        }
 
         if ($Action -eq 'write') {
-            $DirectiveJson | Set-Content $stateFile -Encoding UTF8 -NoNewline
+            # Guard: a bare -Action write with no DirectiveJson used to truncate state.json to
+            # 0 bytes. The spec (Steps 5/10 atomicity) calls Update-ReleaseState with
+            # -StateProperties only, so support that here as a merge instead of a clobber.
+            if ([string]::IsNullOrWhiteSpace($DirectiveJson)) {
+                if ($null -eq $StateProperties) {
+                    throw "Update-ReleaseState -Action write requires either -DirectiveJson (full state document) or -StateProperties (merge). Refusing to truncate $stateFile."
+                }
+                if (-not (Test-Path $stateFile)) { throw "State file not found: $stateFile" }
+                $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                $stateProps = if ($StateProperties -is [hashtable]) { $StateProperties.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
+                              else { $StateProperties.PSObject.Properties | ForEach-Object { @{ Name = $_.Name; Value = $_.Value } } }
+                foreach ($sp in $stateProps) {
+                    if ($state.PSObject.Properties[$sp.Name]) { $state.($sp.Name) = $sp.Value }
+                    else { Add-Member -InputObject $state -MemberType NoteProperty -Name $sp.Name -Value $sp.Value -Force }
+                }
+                $state.lastUpdated = (Get-Date).ToUniversalTime().ToString('o')
+                $state | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+            }
+            else {
+                $DirectiveJson | Set-Content $stateFile -Encoding UTF8 -NoNewline
+            }
         }
         elseif ($Action -eq 'update-step') {
             $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json

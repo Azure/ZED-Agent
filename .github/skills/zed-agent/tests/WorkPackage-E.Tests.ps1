@@ -258,10 +258,10 @@ Describe 'L-06: canaryProdStamps and canaryProdRegions tokens' {
         $cfg = New-WPEServiceConfig -CanaryStamps $stamps
 
         $result = Invoke-WPEResolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        # canaryStamps should be only Canary-cloud: ea-01
-        $result.templateParameters['CanaryStamps'] | Should -Be 'ea-01'
-        # canaryProdStamps should be only Public-cloud: ecy-01,ccy-01
-        $result.templateParameters['CanarystampsProd'] | Should -Be 'ecy-01,ccy-01'
+        # canaryStamps should be only Canary-cloud: ea-01 (ps-array format from Format-ByParamName)
+        $result.templateParameters['CanaryStamps'] | Should -Be '@("ea-01")'
+        # canaryProdStamps should be only Public-cloud: ecy-01,ccy-01 (ps-array format)
+        $result.templateParameters['CanarystampsProd'] | Should -Be '@("ecy-01","ccy-01")'
         # canaryProdRegions should be the Public-cloud stamp regions
         $result.templateParameters['CanaryProdRegions'] | Should -Match 'centraluseuap'
         $result.templateParameters['CanaryProdRegions'] | Should -Match 'eastus2euap'
@@ -279,7 +279,7 @@ Describe 'L-06: canaryProdStamps and canaryProdRegions tokens' {
         $cfg = New-WPEServiceConfig -CanaryStamps $stamps
 
         $result = Invoke-WPEResolver -Catalog $catalog -ServiceConfig $cfg -Scope canary
-        $result.templateParameters['CanarystampsProd'] | Should -Be ''
+        $result.templateParameters['CanarystampsProd'] | Should -Be '@()'
     }
 }
 

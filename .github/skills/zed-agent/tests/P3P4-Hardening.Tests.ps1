@@ -544,6 +544,116 @@ Describe 'P4 — Test-ParameterPayload finding classes' {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+Describe 'P4 — wildcard narrowing is a shape break, graded by model confidence' {
+
+    BeforeAll {
+        # A single stamps-style parameter learned as `*`. Narrowing is supposed to be
+        # expressed through the matching exclude parameter, never by replacing `*`
+        # with an enumeration — so wildcard -> list is a genuine break, not a variant.
+        $script:WildDecl = @( [pscustomobject]@{ name = 'Terrastamps'; type = 'string'; default = '*' } )
+
+        function New-WildModel {
+            param([string]$Stability, [object]$LowConfidence)
+            $e = [ordered]@{ shape = 'wildcard'; container = $null; lastValue = '*'; selectedValue = '*'; selectedFromRunId = 11 }
+            if ($PSBoundParameters.ContainsKey('Stability'))     { $e['stability']     = $Stability }
+            if ($PSBoundParameters.ContainsKey('LowConfidence')) { $e['lowConfidence'] = $LowConfidence }
+            [pscustomobject]@{ Terrastamps = [pscustomobject]$e }
+        }
+    }
+
+    It "REJECTS an enumerated list where the model learned a constant wildcard" {
+        $m = New-WildModel -Stability 'constant'
+        $r = Test-ParameterPayload -Payload @{ Terrastamps = '@("trr-01","trr-02")' } -DeclaredParameters $script:WildDecl -Model $m
+        $r.ok | Should -BeFalse
+        $f = @($r.findings | Where-Object { $_.parameter -eq 'Terrastamps' -and $_.code -eq 'SHAPE_MISMATCH' })
+        @($f).Count        | Should -Be 1
+        $f[0].severity     | Should -Be 'error'
+        $f[0].expected     | Should -Match 'wildcard'
+        $f[0].actual       | Should -Match 'list'
+    }
+
+    It "DOWNGRADES the same break to a non-blocking warning when the model is lowConfidence" {
+        $m = New-WildModel -LowConfidence $true
+        $r = Test-ParameterPayload -Payload @{ Terrastamps = '@("trr-01","trr-02")' } -DeclaredParameters $script:WildDecl -Model $m
+        $r.ok | Should -BeTrue
+        $f = @($r.findings | Where-Object { $_.parameter -eq 'Terrastamps' -and $_.code -eq 'SHAPE_MISMATCH' })
+        @($f).Count    | Should -Be 1
+        $f[0].severity | Should -Be 'warning'
+        $f[0].detail   | Should -Match 'lowConfidence'
+    }
+
+    It "DOWNGRADES the break when the learned form is volatile rather than constant" {
+        $m = New-WildModel -Stability 'volatile'
+        $r = Test-ParameterPayload -Payload @{ Terrastamps = '@("trr-01")' } -DeclaredParameters $script:WildDecl -Model $m
+        $r.ok | Should -BeTrue
+        (@($r.findings | Where-Object { $_.code -eq 'SHAPE_MISMATCH' })[0]).severity | Should -Be 'warning'
+    }
+
+    It "still BLOCKS when stability wins over lowConfidence — a constant form is evidence enough" {
+        $m = New-WildModel -Stability 'constant' -LowConfidence $true
+        $r = Test-ParameterPayload -Payload @{ Terrastamps = '@("trr-01")' } -DeclaredParameters $script:WildDecl -Model $m
+        $r.ok | Should -BeFalse
+        (@($r.findings | Where-Object { $_.code -eq 'SHAPE_MISMATCH' })[0]).severity | Should -Be 'error'
+    }
+
+    It "passes a wildcard payload against a wildcard model with no findings at all" {
+        $m = New-WildModel -Stability 'constant'
+        $r = Test-ParameterPayload -Payload @{ Terrastamps = '*' } -DeclaredParameters $script:WildDecl -Model $m
+        $r.ok | Should -BeTrue
+        @($r.findings).Count | Should -Be 0
+    }
+
+    It "REJECTS a wildcard payload where the model learned a constant scalar — that is the largest scope expansion" {
+        $decl = @( [pscustomobject]@{ name = 'TerraSdpType'; type = 'string'; default = 'Standard' } )
+        $m = [pscustomobject]@{ TerraSdpType = [pscustomobject]@{ shape = 'scalar'; stability = 'constant'; lastValue = 'Standard'; selectedValue = 'Standard' } }
+        $r = Test-ParameterPayload -Payload @{ TerraSdpType = '*' } -DeclaredParameters $decl -Model $m
+        $r.ok | Should -BeFalse
+        (@($r.findings | Where-Object { $_.code -eq 'SHAPE_MISMATCH' })[0]).severity | Should -Be 'error'
+    }
+
+    It 'keeps `empty` permissive so a partition switched off via <P>Script=False is not a break' {
+        # An off partition legitimately collapses every one of its parameters to an
+        # empty container, whatever form the model learned for them.
+        $decl = @(
+            [pscustomobject]@{ name = 'Terrastamps';        type = 'string'; default = '@()' }
+            [pscustomobject]@{ name = 'TerraRegions';       type = 'string'; default = 'regions()' }
+            [pscustomobject]@{ name = 'TerraExcludestamps'; type = 'string'; default = '@()' }
+        )
+        $m = [pscustomobject]@{
+            Terrastamps        = [pscustomobject]@{ shape = 'empty'; container = '@()';     stability = 'constant'; lastValue = '@()' }
+            TerraRegions       = [pscustomobject]@{ shape = 'empty'; container = 'regions'; stability = 'constant'; lastValue = 'regions()' }
+            TerraExcludestamps = [pscustomobject]@{ shape = 'empty'; container = '@()';     stability = 'constant'; lastValue = '@()' }
+        }
+        foreach ($v in @('*', '@("trr-01","trr-02")', 'regions(terrawest)', 'regions(*)', 'Standard', '@()')) {
+            $r = Test-ParameterPayload -Payload @{
+                Terrastamps = $v; TerraRegions = $v; TerraExcludestamps = $v
+            } -DeclaredParameters $decl -Model $m
+            @($r.findings | Where-Object { $_.code -eq 'SHAPE_MISMATCH' -and $_.detail -match 'incompatible' }) |
+                Should -BeNullOrEmpty -Because "'$v' against a learned empty must not read as a shape break"
+        }
+    }
+
+    It "marks every non-shape finding class as a blocking error" {
+        $decl = @(
+            [pscustomobject]@{ name = 'Terrastamps';  type = 'string'; default = '@()' }
+            [pscustomobject]@{ name = 'TerraRegions'; type = 'string'; default = 'regions()' }
+        )
+        $m = [pscustomobject]@{
+            TerraRegions = [pscustomobject]@{ shape = 'regionsList'; container = 'regions'
+                                              stability = 'constant'; lowConfidence = $true
+                                              selectedValue = 'regions(terrawest,terraeast)'; selectedFromRunId = 11 }
+        }
+        $r = Test-ParameterPayload -Payload @{ TerraRegions = 'regions(terrawest)'; Ghost = 'x' } -DeclaredParameters $decl -Model $m
+        $r.ok | Should -BeFalse
+        foreach ($code in 'MISSING_DECLARED_PARAMETER', 'UNDECLARED_PARAMETER', 'REGION_SET_SHRINK') {
+            $f = @($r.findings | Where-Object { $_.code -eq $code })
+            $f            | Should -Not -BeNullOrEmpty -Because "$code must be raised"
+            $f[0].severity | Should -Be 'error'
+        }
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 Describe 'P4 — Assert-ParameterPayload gate script' {
 
     BeforeAll {
@@ -599,6 +709,30 @@ Describe 'P4 — Assert-ParameterPayload gate script' {
         $p = @{ Terrastamps = '@("trr-01")'; TerraRegions = 'regions(terrawest)' }
         $r = & $script:AssertPath -Payload $p -PipelineKey 'SYNTH-PROD' -Scope production -PipelineCatalogPath $script:GateCatalog -WarnOnly -WarningAction SilentlyContinue
         $r.ok | Should -BeFalse
+    }
+
+    It "THROWS on a wildcard narrowed to an enumerated list when the model calls that form constant" {
+        $decl = @( [pscustomobject]@{ name = 'Terrastamps'; type = 'string'; default = '*' } )
+        $mdl  = [pscustomobject]@{ Terrastamps = [pscustomobject]@{ shape = 'wildcard'; stability = 'constant'; lastValue = '*'; selectedValue = '*' } }
+        { & $script:AssertPath -Payload @{ Terrastamps = '@("trr-01","trr-02")' } -PipelineKey 'SYNTH-PROD' -Scope production `
+                               -DeclaredParameters $decl -Model $mdl } |
+            Should -Throw -ExpectedMessage '*SHAPE_MISMATCH*'
+    }
+
+    It "WARNS instead of throwing on the same narrowing when the model is lowConfidence, and keeps the finding" {
+        $decl = @( [pscustomobject]@{ name = 'Terrastamps'; type = 'string'; default = '*' } )
+        $mdl  = [pscustomobject]@{ Terrastamps = [pscustomobject]@{ shape = 'wildcard'; lowConfidence = $true; lastValue = '*'; selectedValue = '*' } }
+        $warn = @()
+        $r = & $script:AssertPath -Payload @{ Terrastamps = '@("trr-01","trr-02")' } -PipelineKey 'SYNTH-PROD' -Scope production `
+                                  -DeclaredParameters $decl -Model $mdl -WarningVariable warn -WarningAction SilentlyContinue
+        $r.ok      | Should -BeTrue
+        $r.checked | Should -BeTrue
+        $r.reason  | Should -Match 'warning'
+        # The warning is never silently dropped: it is both printed and returned.
+        (@($warn) -join "`n") | Should -Match 'PARAMETER_PAYLOAD_WARNINGS'
+        $f = @($r.findings | Where-Object { $_.code -eq 'SHAPE_MISMATCH' })
+        @($f).Count    | Should -Be 1
+        $f[0].severity | Should -Be 'warning'
     }
 
     It "degrades gracefully to NO_VALIDATION_SOURCE when the pipeline has neither YAML nor model" {

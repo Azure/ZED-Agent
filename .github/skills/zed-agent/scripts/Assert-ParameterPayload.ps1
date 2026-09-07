@@ -21,6 +21,11 @@
     All findings are reported together - one throw listing every problem beats
     a fix-one-rerun-discover-the-next loop.
 
+    Findings carry a severity. A SHAPE_MISMATCH against a learned form the model
+    is NOT confident in (stability other than 'constant', or lowConfidence) is
+    surfaced via Write-Warning and left in `findings` without blocking - one
+    release is not enough evidence to veto a run. Everything else blocks.
+
     The gate degrades honestly rather than silently: a pipeline with no YAML
     introspection and no learned model has nothing to check against, and that is
     surfaced as a warning naming the pipeline, not passed off as a clean bill.
@@ -53,7 +58,8 @@
     Report findings without throwing. For reporting paths that must not abort.
 
 .OUTPUTS
-    PSCustomObject: ok, findings[], pipelineKey, checked (bool), reason.
+    PSCustomObject: ok, findings[] (each with a severity), pipelineKey,
+    checked (bool), reason.
 #>
 [CmdletBinding()]
 param(
@@ -127,20 +133,39 @@ $result = Test-ParameterPayload -Payload $Payload `
                                 -Model $Model `
                                 -AllowMissingDeclared:$AllowMissingDeclared
 
+# A shape break against a model that is not confident in that shape is real
+# evidence but not proof, so it is reported without vetoing the queue. It is
+# never dropped: it stays in `findings` and is printed.
+$warnings = @($result.findings | Where-Object { [string]$_.severity -eq 'warning' })
+$errors   = @($result.findings | Where-Object { [string]$_.severity -ne 'warning' })
+
+$format = {
+    param($f)
+    "  [$($f.code)/$(if ($f.severity) { $f.severity } else { 'error' })] $($f.parameter)`n      $($f.detail)`n      expected: $($f.expected)`n      actual:   $($f.actual)"
+}
+
 $out = [pscustomobject]@{
     ok          = $result.ok
     findings    = @($result.findings)
     pipelineKey = $PipelineKey
     checked     = $true
-    reason      = if ($result.ok) { 'payload agrees with declaration and learned model' } else { 'see findings' }
+    reason      = if (-not $result.ok) { 'see findings' }
+                  elseif ($warnings.Count -gt 0) { "payload accepted with $($warnings.Count) warning(s); see findings" }
+                  else { 'payload agrees with declaration and learned model' }
+}
+
+if ($warnings.Count -gt 0) {
+    Write-Warning ("PARAMETER_PAYLOAD_WARNINGS: pipeline '$PipelineKey' — $($warnings.Count) non-blocking finding(s); " +
+                   "the model is not confident enough in these forms to veto the run.`n" +
+                   (($warnings | ForEach-Object { & $format $_ }) -join "`n") + "`n" +
+                   "Operator action: if these are genuine, re-learn the model from more releases with New-ParameterModel.ps1 " +
+                   "so the next occurrence blocks instead of warning.")
 }
 
 if ($result.ok) { return $out }
 
-$lines = foreach ($f in $result.findings) {
-    "  [$($f.code)] $($f.parameter)`n      $($f.detail)`n      expected: $($f.expected)`n      actual:   $($f.actual)"
-}
-$msg = ("PARAMETER_PAYLOAD_REJECTED: pipeline '$PipelineKey' — $(@($result.findings).Count) finding(s); the run was NOT queued.`n" +
+$lines = @($errors | ForEach-Object { & $format $_ })
+$msg = ("PARAMETER_PAYLOAD_REJECTED: pipeline '$PipelineKey' — $(@($errors).Count) blocking finding(s); the run was NOT queued.`n" +
         ($lines -join "`n") + "`n" +
         "Operator action: correct pipeline-catalog.json -> $Scope.$PipelineKey (or re-learn the model from the " +
         "latest real release with New-ParameterModel.ps1), then re-run. Nothing was posted to ADO.")

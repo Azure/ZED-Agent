@@ -825,8 +825,27 @@ function Test-ParameterPayload {
         Enum membership is checked as part of SHAPE_MISMATCH when the YAML
         declares `values`, since an out-of-enum value fails validation too.
 
+        Findings carry a `severity`. Drift off a LEARNED shape is judged against
+        how well the model actually knows that shape:
+
+          stability = 'constant'   every observation agreed on the form, so drift
+                                   off it is a real break -> 'error'
+          not constant, or the
+          model self-reports
+          lowConfidence = $true    one release is not enough evidence to call a
+                                   form fixed -> 'warning' (reported, not fatal)
+          neither field present    a bare {shape} model supplied by a caller is
+                                   taken at face value -> 'error'
+
+        Every other finding class is unconditionally an 'error': an undeclared
+        parameter is rejected by ADO outright, a missing one silently swaps in a
+        YAML default, an out-of-enum value fails validation, and a shrunken
+        region set skips regions - none of those depend on model confidence.
+
     .OUTPUTS
-        PSCustomObject: ok, findings[] { code, parameter, detail, expected, actual }.
+        PSCustomObject: ok, findings[] { code, parameter, severity, detail,
+        expected, actual }. `ok` is computed from error-severity findings ONLY,
+        so a warning is surfaced to the caller without failing the payload.
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Payload,
@@ -851,7 +870,7 @@ function Test-ParameterPayload {
             if (-not $Payload.ContainsKey($name)) {
                 if ($AllowMissingDeclared) { continue }
                 $findings.Add([pscustomobject]@{
-                    code = 'MISSING_DECLARED_PARAMETER'; parameter = $name
+                    code = 'MISSING_DECLARED_PARAMETER'; parameter = $name; severity = 'error'
                     detail = "Pipeline declares '$name' but the payload omits it."
                     expected = 'present'; actual = '<absent>'
                 }) | Out-Null
@@ -860,7 +879,7 @@ function Test-ParameterPayload {
         foreach ($name in @($Payload.Keys)) {
             if (-not $declared.Contains($name)) {
                 $findings.Add([pscustomobject]@{
-                    code = 'UNDECLARED_PARAMETER'; parameter = $name
+                    code = 'UNDECLARED_PARAMETER'; parameter = $name; severity = 'error'
                     detail = "Payload carries '$name' which the pipeline YAML does not declare - ADO will reject the queue."
                     expected = '<not sent>'; actual = [string]$Payload[$name]
                 }) | Out-Null
@@ -878,7 +897,7 @@ function Test-ParameterPayload {
             $vals = @($declared[$name].values | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
             if ($vals.Count -gt 0 -and ($vals -notcontains $actual)) {
                 $findings.Add([pscustomobject]@{
-                    code = 'SHAPE_MISMATCH'; parameter = $name
+                    code = 'SHAPE_MISMATCH'; parameter = $name; severity = 'error'
                     detail = "Value is not one of the enum values the pipeline declares for '$name'."
                     expected = ($vals -join ' | '); actual = $actual
                 }) | Out-Null
@@ -895,21 +914,47 @@ function Test-ParameterPayload {
 
         # `empty` and its populated sibling are the same form with nothing in it;
         # a partition legitimately switched off must not read as a shape break.
+        #
+        # Direction matters: the key is the form the MODEL learned, the values are
+        # the forms a payload may legitimately arrive in. `wildcard` deliberately
+        # does NOT admit `list` — a parameter learned as `*` that arrives as an
+        # enumerated set is a silent scope NARROWING, exactly the class of defect
+        # this gate exists to catch (narrowing belongs in the matching exclude
+        # parameter, not in the wildcard one). `scalar` deliberately does NOT admit
+        # `wildcard` for the mirror reason: `*` is the largest possible scope, and
+        # no reference release has ever turned a scalar into one.
         $compatible = @{
             'list'            = @('list','empty')
             'empty'           = @('list','empty','regionsList','regionsWildcard','wildcard','scalar')
             'regionsList'     = @('regionsList','regionsWildcard','empty')
             'regionsWildcard' = @('regionsList','regionsWildcard','empty')
-            'wildcard'        = @('wildcard','list','empty','scalar')
+            'wildcard'        = @('wildcard','empty','scalar')
             'map'             = @('map')
-            'scalar'          = @('scalar','wildcard','empty')
+            'scalar'          = @('scalar','empty')
         }
         $allowed = if ($compatible.ContainsKey([string]$m.shape)) { $compatible[[string]$m.shape] } else { @([string]$m.shape) }
 
         if ($allowed -notcontains $actualShape.shape) {
+            # How hard this bites depends on how well the model knows the form.
+            # `stability = 'constant'` means every observation agreed, so drift is
+            # a genuine break and must stop the queue. A model that does not
+            # assert constancy, or that flags itself low-confidence, has not
+            # established the form yet - report it, but do not fail a release on
+            # one release's worth of evidence. A model carrying neither field is a
+            # bare {shape} declaration from a caller and is taken at face value.
+            $stability = if ($m.PSObject.Properties['stability']) { [string]$m.stability } else { $null }
+            $lowConf   = [bool]($m.PSObject.Properties['lowConfidence'] -and $m.lowConfidence)
+            $severity  = if ($stability -eq 'constant')   { 'error' }
+                         elseif ($lowConf -or $stability) { 'warning' }
+                         else                             { 'error' }
+
             $findings.Add([pscustomobject]@{
-                code = 'SHAPE_MISMATCH'; parameter = $name
-                detail = "Value form '$($actualShape.shape)' is incompatible with the learned form '$($m.shape)'."
+                code = 'SHAPE_MISMATCH'; parameter = $name; severity = $severity
+                detail = ("Value form '$($actualShape.shape)' is incompatible with the learned form '$($m.shape)'." +
+                          $(if ($severity -eq 'warning') {
+                                " Reported as a warning: the model is not confident this form is fixed" +
+                                "$(if ($stability) { " (stability=$stability)" })$(if ($lowConf) { ' (lowConfidence)' })."
+                            }))
                 expected = "$($m.shape)$(if ($m.container) { " in $($m.container)(...)" })"
                 actual   = "$($actualShape.shape) -> $actual"
             }) | Out-Null
@@ -918,7 +963,7 @@ function Test-ParameterPayload {
 
         if ($m.container -and $actualShape.container -and $m.container -ne $actualShape.container) {
             $findings.Add([pscustomobject]@{
-                code = 'SHAPE_MISMATCH'; parameter = $name
+                code = 'SHAPE_MISMATCH'; parameter = $name; severity = 'error'
                 detail = "Container token differs from the learned form for '$name'."
                 expected = $m.container; actual = $actualShape.container
             }) | Out-Null
@@ -940,7 +985,7 @@ function Test-ParameterPayload {
         if (@($refEl.elements).Count -gt @($actEl.elements).Count) {
             $lost = @($refEl.elements | Where-Object { $actEl.elements -notcontains $_ })
             $findings.Add([pscustomobject]@{
-                code = 'REGION_SET_SHRINK'; parameter = $name
+                code = 'REGION_SET_SHRINK'; parameter = $name; severity = 'error'
                 detail = ("'$name' carries $(@($actEl.elements).Count) entries but the newest trustworthy run used " +
                           "$(@($refEl.elements).Count). Dropped: $($lost -join ', ')")
                 expected = "$(@($refEl.elements).Count) entries (run $($m.selectedFromRunId))"
@@ -949,8 +994,12 @@ function Test-ParameterPayload {
         }
     }
 
+    # A warning is still a finding - it is returned, counted and printable. It
+    # simply does not veto the payload, so `ok` looks at error severity only.
+    $blocking = @($findings | Where-Object { [string]$_.severity -ne 'warning' })
+
     return [pscustomobject]@{
-        ok       = (@($findings).Count -eq 0)
+        ok       = (@($blocking).Count -eq 0)
         findings = @($findings.ToArray())
     }
 }

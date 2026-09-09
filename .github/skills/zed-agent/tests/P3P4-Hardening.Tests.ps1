@@ -603,6 +603,24 @@ Describe 'P4 — wildcard narrowing is a shape break, graded by model confidence
         @($r.findings).Count | Should -Be 0
     }
 
+    It "REJECTS a single stamp where the model learned a constant wildcard — collapsing `*` to one stamp is the widest narrowing of all" {
+        $m = New-WildModel -Stability 'constant'
+        $r = Test-ParameterPayload -Payload @{ Terrastamps = 'trr-01' } -DeclaredParameters $script:WildDecl -Model $m
+        $r.ok | Should -BeFalse
+        $f = @($r.findings | Where-Object { $_.parameter -eq 'Terrastamps' -and $_.code -eq 'SHAPE_MISMATCH' })
+        @($f).Count        | Should -Be 1
+        $f[0].severity     | Should -Be 'error'
+        $f[0].expected     | Should -Match 'wildcard'
+        $f[0].actual       | Should -Match 'scalar'
+    }
+
+    It "DOWNGRADES the wildcard -> scalar break to a warning when the model is lowConfidence" {
+        $m = New-WildModel -LowConfidence $true
+        $r = Test-ParameterPayload -Payload @{ Terrastamps = 'trr-01' } -DeclaredParameters $script:WildDecl -Model $m
+        $r.ok | Should -BeTrue
+        (@($r.findings | Where-Object { $_.code -eq 'SHAPE_MISMATCH' })[0]).severity | Should -Be 'warning'
+    }
+
     It "REJECTS a wildcard payload where the model learned a constant scalar — that is the largest scope expansion" {
         $decl = @( [pscustomobject]@{ name = 'TerraSdpType'; type = 'string'; default = 'Standard' } )
         $m = [pscustomobject]@{ TerraSdpType = [pscustomobject]@{ shape = 'scalar'; stability = 'constant'; lastValue = 'Standard'; selectedValue = 'Standard' } }

@@ -920,15 +920,18 @@ function Test-ParameterPayload {
         # does NOT admit `list` — a parameter learned as `*` that arrives as an
         # enumerated set is a silent scope NARROWING, exactly the class of defect
         # this gate exists to catch (narrowing belongs in the matching exclude
-        # parameter, not in the wildcard one). `scalar` deliberately does NOT admit
-        # `wildcard` for the mirror reason: `*` is the largest possible scope, and
-        # no reference release has ever turned a scalar into one.
+        # parameter, not in the wildcard one). For the same reason `wildcard` does
+        # NOT admit `scalar`: collapsing `*` to a single stamp is the same silent
+        # narrowing as collapsing it to a list, only wider in blast radius (one
+        # stamp deployed instead of every stamp). `scalar` deliberately does NOT
+        # admit `wildcard` for the mirror reason: `*` is the largest possible
+        # scope, and no reference release has ever turned a scalar into one.
         $compatible = @{
             'list'            = @('list','empty')
             'empty'           = @('list','empty','regionsList','regionsWildcard','wildcard','scalar')
             'regionsList'     = @('regionsList','regionsWildcard','empty')
             'regionsWildcard' = @('regionsList','regionsWildcard','empty')
-            'wildcard'        = @('wildcard','empty','scalar')
+            'wildcard'        = @('wildcard','empty')
             'map'             = @('map')
             'scalar'          = @('scalar','empty')
         }

@@ -94,7 +94,36 @@ if (-not $adoToken) {
     throw "Failed to acquire ADO API token. Run 'az login --tenant microsoft.com' and retry."
 }
 $headers = @{ Authorization = "Bearer $adoToken" }
-$orgBase = "https://dev.azure.com/$Organization/$Project/_apis"
+function Get-AdoBaseCandidates {
+    param([string]$Org, [string]$Proj)
+    # Known org quirk: msazure/One can 404 on dev.azure.com for some build APIs
+    # while visualstudio.com succeeds with the same token, so try that host first
+    # for this org/project pair and keep dev.azure.com as the fallback.
+    if ($Org -ieq 'msazure' -and $Proj -ieq 'One') {
+        return @("https://msazure.visualstudio.com/$Proj", "https://dev.azure.com/$Org/$Proj")
+    }
+    return @("https://dev.azure.com/$Org/$Proj", "https://$Org.visualstudio.com/$Proj")
+}
+
+$adoBases    = Get-AdoBaseCandidates -Org $Organization -Proj $Project
+$browserBase = $adoBases[0]
+
+function Invoke-AdoJsonGet {
+    # Walks the candidate hosts in order and returns the first successful JSON
+    # body. Only throws once every host has failed, reporting the last error.
+    param([string]$RelativeApiPath)
+    $lastErr = $null
+    foreach ($base in $adoBases) {
+        $uri = "$base/_apis/$RelativeApiPath"
+        try {
+            return (Invoke-RestMethod -Uri $uri -Headers $headers -ErrorAction Stop)
+        } catch {
+            $lastErr = $_.Exception.Message
+            continue
+        }
+    }
+    throw "ADO GET failed for '$RelativeApiPath' on all hosts ($($adoBases -join ', ')): $lastErr"
+}
 
 # -- Self-authored exclusion set --
 $excluded = @()
@@ -116,15 +145,13 @@ function Resolve-DefinitionId {
     # The Pipelines run endpoint requires the pipeline id up front, so an
     # owner-pasted build id has to be resolved through the Build API first.
     param([int]$BuildId)
-    $uri = "$orgBase/build/builds/${BuildId}?api-version=7.1"
-    $build = Invoke-RestMethod -Uri $uri -Headers $headers -ErrorAction Stop
+    $build = Invoke-AdoJsonGet -RelativeApiPath "build/builds/${BuildId}?api-version=7.1"
     return [int]$build.definition.id
 }
 
 function Get-RunRecord {
     param([int]$DefinitionId, [int]$RunId)
-    $detailUri = "$orgBase/pipelines/$DefinitionId/runs/${RunId}?api-version=7.1-preview.1"
-    $detail = Invoke-RestMethod -Uri $detailUri -Headers $headers -ErrorAction Stop
+    $detail = Invoke-AdoJsonGet -RelativeApiPath "pipelines/$DefinitionId/runs/${RunId}?api-version=7.1-preview.1"
     $tp = [ordered]@{}
     if ($detail.templateParameters) {
         foreach ($p in $detail.templateParameters.PSObject.Properties) { $tp[$p.Name] = $p.Value }
@@ -134,7 +161,7 @@ function Get-RunRecord {
     return [PSCustomObject]@{
         runId              = $RunId
         definitionId       = $DefinitionId
-        runUrl             = "https://dev.azure.com/$Organization/$Project/_build/results?buildId=$RunId"
+        runUrl             = "$browserBase/_build/results?buildId=$RunId"
         finishedAt         = $detail.finishedDate
         sourceBranch       = $branch
         releaseGroup       = $group
@@ -172,9 +199,8 @@ if ($PSCmdlet.ParameterSetName -eq 'ByRunIds') {
 }
 
 # -- Discovery mode: list the pipeline's recent runs --
-$listUri = "$orgBase/pipelines/$PipelineId/runs?api-version=7.1-preview.1"
 try {
-    $list = Invoke-RestMethod -Uri $listUri -Headers $headers -ErrorAction Stop
+    $list = Invoke-AdoJsonGet -RelativeApiPath "pipelines/$PipelineId/runs?api-version=7.1-preview.1"
 } catch {
     throw "ADO pipeline $PipelineId run list failed: $($_.Exception.Message)"
 }

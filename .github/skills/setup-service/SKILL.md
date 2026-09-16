@@ -342,7 +342,7 @@ The introspector is pure analysis — no network, no auth, no side effects. It r
 - **`cloudsDetected`** — list of cloud names the YAML actually targets. Cross-checked against `ev2CloudCoverage.<key>` in Phase 4.13 (deferred — `ev2CloudCoverage` is not collected yet).
 - **`stampParamShape`** + **`flatDefaults` / `perCloudDefaults`** — declared `stamps` / `Excludestamps` / `Regions` / `ExcludeRegions` defaults, either flat or per-cloud-prefixed.
 - **`ev2.{taskVersion, stageMapName, endpointProviderType, approvalServiceEnvironment, serviceRootPath, rolloutSpecPath, select, datacenterType}`** — the `vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@N` task input block.
-- **`sdsHint.{fileName, repoPath}`** — extracted from inline PowerShell `-SdsFiles <name>` plus the nearest `$hsp_source = "$(Pipeline.Workspace)/s/dep_specs/<path>"`. Consumed by Phase 4.5.
+- **`sdsHint.{fileName, repoPath}`** — extracted from inline PowerShell `-SdsFiles <name>` plus the nearest quoted literal containing a `dep_specs/<path>` subtree (any variable name, `/` or `\` separators — not just `$hsp_source`). `repoPath` is the directory only. Consumed by Phase 4.5.
 - **`selfRepo.{name, baseBranch, alias}`** — the source-tree repo declared under `resources.repositories[]` (type git, not under `OneBranch.Pipelines/`). Consumed by Phase 4.5 for the SDS path.
 
 Persist verbatim to `pipeline-catalog.json → pipelines.<key>.yamlIntrospection`. The merged `parameters:` block (per-parameter `name`, `type`, `default`, `values`, plus `_resolvedFrom` provenance) is persisted under `pipelines.<key>.yamlIntrospection.parameters` and consumed by Phase 4.10's merge.

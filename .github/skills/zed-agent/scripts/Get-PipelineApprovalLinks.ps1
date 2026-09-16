@@ -25,11 +25,27 @@ function Get-PipelineApprovalLinks {
         [hashtable[]]$Builds,
         [string]$AccessToken,
         [string]$Organization = 'msazure',
-        [string]$Project = 'One'
+        [string]$Project = 'One',
+        [string]$AdoApiHost
     )
 
     $results = @()
-    $adoBase = "https://dev.azure.com/$Organization/$Project"
+
+    function Get-AdoBaseCandidates {
+        param([string]$Org,[string]$Proj,[string]$HostOverride)
+        if ($HostOverride) {
+            if ($HostOverride -match '^https?://') { return @("$HostOverride/$Proj") }
+            if ($HostOverride -match 'visualstudio\.com$') { return @("https://$HostOverride/$Proj") }
+            return @("https://dev.azure.com/$Org/$Proj")
+        }
+        if ($Org -ieq 'msazure' -and $Proj -ieq 'One') {
+            return @("https://msazure.visualstudio.com/$Proj", "https://dev.azure.com/$Org/$Proj")
+        }
+        return @("https://dev.azure.com/$Org/$Proj", "https://$Org.visualstudio.com/$Proj")
+    }
+
+    $adoBases = Get-AdoBaseCandidates -Org $Organization -Proj $Project -HostOverride $AdoApiHost
+    $adoBase = $adoBases[0]
 
     # Acquire token once if not provided
     if (-not $AccessToken) {
@@ -40,6 +56,39 @@ function Get-PipelineApprovalLinks {
     }
 
     $headers = if ($AccessToken) { @{ Authorization = "Bearer $AccessToken" } } else { $null }
+
+    function Invoke-AdoJsonGet {
+        param([string]$RelativeApiPath)
+        $lastErr = $null
+        foreach ($base in $adoBases) {
+            $uri = "$base/_apis/$RelativeApiPath"
+            try {
+                $resp = Invoke-WebRequest -Uri $uri -Headers $headers -UseBasicParsing -ErrorAction Stop
+                if ($resp.Content) { return ($resp.Content | ConvertFrom-Json) }
+                throw "Empty response body from $uri"
+            } catch {
+                $lastErr = $_.Exception.Message
+                continue
+            }
+        }
+        throw "ADO GET failed for '$RelativeApiPath' on all hosts: $lastErr"
+    }
+
+    function Invoke-AdoTextGet {
+        param([string]$RelativeApiPath)
+        $lastErr = $null
+        foreach ($base in $adoBases) {
+            $uri = "$base/_apis/$RelativeApiPath"
+            try {
+                $resp = Invoke-WebRequest -Uri $uri -Headers $headers -UseBasicParsing -ErrorAction Stop
+                return [string]$resp.Content
+            } catch {
+                $lastErr = $_.Exception.Message
+                continue
+            }
+        }
+        throw "ADO GET text failed for '$RelativeApiPath' on all hosts: $lastErr"
+    }
 
     foreach ($build in $Builds) {
         $buildId = $build.buildId
@@ -62,8 +111,7 @@ function Get-PipelineApprovalLinks {
         # Step 1: Get build timeline — the source of truth for stage/job/checkpoint structure
         $timelineRecords = @()
         try {
-            $timelineUrl = "$adoBase/_apis/build/builds/$buildId/timeline?api-version=7.1"
-            $timeline = Invoke-RestMethod -Uri $timelineUrl -Headers $headers -ErrorAction Stop
+            $timeline = Invoke-AdoJsonGet -RelativeApiPath "build/builds/$buildId/timeline?api-version=7.1"
             $timelineRecords = @($timeline.records)
         } catch {
             $entry.error = "Timeline API failed: $($_.Exception.Message)"
@@ -143,8 +191,7 @@ function Get-PipelineApprovalLinks {
             $stageId = $logToStageId[$logId]
             $se = if ($stageId -and $stageEntries.ContainsKey($stageId)) { $stageEntries[$stageId] } else { $null }
             try {
-                $logUrl = "$adoBase/_apis/build/builds/$buildId/logs/$($logId)?api-version=7.1"
-                $logContent = Invoke-RestMethod -Uri $logUrl -Headers $headers -ErrorAction Stop
+                $logContent = Invoke-AdoTextGet -RelativeApiPath "build/builds/$buildId/logs/$($logId)?api-version=7.1"
 
                 # Approval URLs — assign directly to the owning stage
                 $approvalMatches = [regex]::Matches($logContent, 'https://approval\.azengsys\.com/approvalRequest\?id=[A-Fa-f0-9]+')

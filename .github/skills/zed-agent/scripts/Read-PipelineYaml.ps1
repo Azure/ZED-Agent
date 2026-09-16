@@ -36,6 +36,13 @@
     Fully-qualified ref for the preview call (e.g. refs/heads/develop).
     Defaults to refs/heads/<resolved base branch>.
 
+.PARAMETER LocalRepoRoot
+    Optional absolute path to a local clone of the root pipeline repo. When set,
+    Get-YamlItem tries the local file first (Join-Path $LocalRepoRoot $Path) and
+    only falls back to the ADO Git Items API if the file is not on disk. Useful
+    when the wizard runs on a machine that already has the repo cloned — bypasses
+    404s caused by ADO repo-id/name mismatches.
+
 .PARAMETER AllowEmptyParameters
     Escape hatch for pipelines that genuinely declare no parameters. Without
     it, an empty parameter surface is a hard error — writing `null` and
@@ -64,6 +71,7 @@ param(
     [Parameter(Mandatory = $true)][int]$PipelineId,
     [string]$CatalogPath,
     [string]$DefaultBaseBranch,
+    [string]$LocalRepoRoot,
     [switch]$UsePreviewApi,
     [string]$PreviewRef,
     [switch]$AllowEmptyParameters
@@ -112,6 +120,19 @@ function Get-RepoOrgProject {
 
 function Get-YamlItem {
     param([string]$RepoName, [string]$BranchName, [string]$Path)
+    # Local-clone fast path: when the caller passed -LocalRepoRoot and the file is
+    # on disk, return its content without an ADO round-trip. The sha is synthesized
+    # from the file hash and prefixed 'local:' so downstream provenance records stay
+    # stable while remaining distinguishable from a real ADO objectId.
+    if ($LocalRepoRoot -and (Test-Path -LiteralPath $LocalRepoRoot)) {
+        $relPath   = $Path.TrimStart('/', '\')
+        $localFile = Join-Path $LocalRepoRoot $relPath
+        if (Test-Path -LiteralPath $localFile) {
+            $content = Get-Content -LiteralPath $localFile -Raw
+            $sha     = (Get-FileHash -LiteralPath $localFile -Algorithm SHA1).Hash.ToLowerInvariant()
+            return [PSCustomObject]@{ content = $content; sha = "local:$sha" }
+        }
+    }
     $op = Get-RepoOrgProject -RepoName $RepoName
     # ADO Git items API — pull raw file content at the given branch.
     $uri = "https://dev.azure.com/$($op.Organization)/$($op.Project)/_apis/git/repositories/$RepoName/items" +

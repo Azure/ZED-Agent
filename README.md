@@ -1,164 +1,298 @@
 # ZED-Agent — Zero Effort Deployment
 
-ZED-Agent is a hybrid AI + PowerShell automation that drives a service team's
-**monthly production release** end-to-end: branch cut, build wait, commit
-collection, canary deployment, BVT validation, rollout, SafeFly + R2D filings,
-notifications, and merge-back. The release owner gives short slash-style
-acknowledgements (`ack`, `gate on/off`) — ZED handles the orchestration, the
-file plumbing, the email/Teams notifications, and the audit trail.
+ZED drives your service's **monthly production release** end-to-end: branch cut, build
+wait, commit collection, canary deployment, BVT validation, production rollout, SafeFly
++ R2D filings, Teams/email notifications, and merge-back. You give short
+acknowledgements (`ack`, `gate on/off`) — ZED does the orchestration, the file plumbing,
+the notifications, and the audit trail.
 
-It is **service-agnostic**. Every service-specific value lives in two committed
-JSON files in the *target* repo (`service-config.json` + `pipeline-catalog.json`)
-— this source repo ships only the **schemas** and the installer that writes
-empty skeletons. No hard-coded service names, paths, or pipeline IDs anywhere
-in the agent or its scripts.
+ZED is **service-agnostic**. Every service-specific value lives in two committed JSON
+files in *your* repo (`service-config.json` + `pipeline-catalog.json`). This repo ships
+only the schemas, the scripts, and an installer that writes empty skeletons. There are no
+hard-coded service names, paths, or pipeline IDs anywhere in the agent.
 
-## What's in this repo
+**Onboarding takes about 60–90 minutes**, most of it spent in the `setup-service` wizard
+answering questions about your pipelines. Do it once per repo.
 
-```
-.github/
-├── agents/
-│   └── ZedAgent.agent.md          # The agent prompt (entry point for Copilot Chat)
-└── skills/
-    └── zed-agent/
-        ├── SKILL.md               # Skill overview + variable reference
-        ├── service-config.schema.json   # JSON Schema (drives VS Code IntelliSense in target repos)
-        ├── pipeline-catalog.schema.json # JSON Schema for pipeline catalog
-        ├── queries/               # KQL queries (BVT failure detection)
-        ├── scripts/               # 21 production PowerShell scripts
-        │   ├── Install-Zed.ps1    # Generates empty configs from schema + copies skill into a target repo
-        │   ├── New-EmptyFromSchema.ps1 # Walks a JSON Schema and emits an empty skeleton honouring `default`
-        │   ├── EV2/               # Edge CDP + Playwright EV2 portal scrape
-        │   └── SafeFly/           # SafeFly request submission
-        ├── templates/             # Email + Teams notification templates
-        └── tests/                 # Pester tests
-```
+---
 
-No `service-config.json` or `pipeline-catalog.json` lives here — the installer
-generates empty skeletons from the schema files at install time.
+## Before you start
 
-## Installing ZED into a target service repo
+You need all of these on your machine. ZED runs on **Windows only** — it drives Outlook,
+the Teams desktop client, and Microsoft Edge through local automation interfaces.
 
-### 1. Clone this repo locally
+| Requirement | Check with | Notes |
+|---|---|---|
+| **PowerShell 7+** | `pwsh --version` | Some scripts run under 5.1, but 7 is required overall |
+| **Git** | `git --version` | |
+| **Azure CLI**, logged in | `az account show` | `az login --tenant microsoft.com` |
+| **GitHub CLI**, logged in | `gh auth status` | |
+| **Node.js + npm** | `node --version` | For the EV2 portal scrape |
+| **ImportExcel** module | `Get-Module -ListAvailable ImportExcel` | `Install-Module ImportExcel -Scope CurrentUser` |
+| **Outlook desktop** | — | Release emails are sent through it |
+| **Teams desktop** | — | Notifications go through the local client |
+| **Microsoft Edge** | — | Used to read EV2 rollout status for gov clouds |
+
+You also need, for your service:
+
+- An Azure DevOps **monthly release pipeline** and **EV2** for production rollout.
+- **Permission to queue** those pipelines.
+- Your **SafeFly** franchise/change-type/form IDs and your **EV2 service group** name.
+  ZED will not guess these — see [Step 3](#step-3--configure-zed-for-your-service).
+
+---
+
+## Step 1 — Clone ZED and install its dependencies
 
 ```powershell
-git clone https://github.com/gwazire-microsoft/ZED-Agent.git D:\ZED-Agent
+git clone https://github.com/gwazire_microsoft/ZED-Agent.git D:\ZED-Agent
+cd D:\ZED-Agent
+
+# One-time: installs playwright-core for the EV2 portal scrape.
+# (No browser download — ZED attaches to your running Edge via CDP.)
+cd .github\skills\zed-agent\scripts\EV2
+npm install
 cd D:\ZED-Agent
 ```
 
-### 2. Install Node dependencies (one-time, for EV2 portal scrape)
-
-```powershell
-cd .github\skills\zed-agent\scripts\EV2
-npm install
-cd ..\..\..\..\..
-```
-
-This installs `playwright-core` locally. (The Playwright browser itself is not
-needed — ZED talks to a running Microsoft Edge instance via CDP.)
-
-### 3. Run the installer against your target repo
+## Step 2 — Install ZED into your service repo
 
 ```powershell
 pwsh -File .github\skills\zed-agent\scripts\Install-Zed.ps1 `
     -TargetRepoPath D:\repos\Mgmt-RecoverySvcs-MyService
 ```
 
-The installer:
+Add `-WhatIf` first if you want to preview the file list without writing anything.
 
-- Copies `ZedAgent.agent.md` into `<target>/.github/agents/`
-- Copies the entire `zed-agent/` skill (scripts, schemas, queries, templates) into `<target>/.github/skills/`
-- Writes **empty** `service-config.json` and `pipeline-catalog.json` into the target, generated from the schema files at install time (defaults baked in via the `default` keyword)
-- Skips `node_modules/` and runtime artifacts
+This copies into your repo:
 
-Pass `-Force` to overwrite existing ZED files in the target.
+- `.github/agents/ZedAgent.agent.md` — the agent entry point
+- `.github/skills/zed-agent/` — scripts, schemas, queries, templates
+- `.github/skills/setup-service/`, `setup/`, `test-preflight/`, `teams-chat/` — the
+  supporting skills
+- **Empty** `service-config.json` and `pipeline-catalog.json`, generated from the schemas
 
-### 4. Configure for the target service
+It skips `node_modules/`, `logs/`, and `.zed-agent/` runtime artifacts. The `zed-forge`
+skill stays here in the source repo — it is a ZED development tool, not part of a release.
 
-Inside the target repo, populate the two empty JSON files. You have three options
-(mix them however you like):
+> **Re-installing:** `-Force` overwrites existing ZED files. It also **rewrites your two
+> config files back to empty skeletons** — back them up first. See
+> [Updating ZED](#updating-zed-later).
 
-- **Pre-fill in VS Code** — open `service-config.json` and start typing. The
-  `$schema` reference gives autocomplete + inline validation. `pipeline-catalog.json`
-  has a removable `_examples` block showing the expected entry shape.
-- **Run the wizard** — open Copilot Chat in the target repo and say
-  `@ZedAgent setup-service`. The agent reads what you've already typed,
-  **skips every field that's already filled**, and only prompts for what's still empty.
-- **Validate at any time** — `@ZedAgent setup-service validate` runs
-  `Load-ServiceConfig.ps1 -Strict` and reports missing or invalid fields.
+## Step 3 — Configure ZED for your service
 
-When `validate` passes, force-add and commit (most service repos gitignore `.github/`):
+Open **Copilot Chat in your service repo** (not in ZED-Agent) and run the wizard:
+
+```
+setup-service
+```
+
+It reads whatever you have already filled in, **skips every field that is already set**,
+and prompts only for what is missing. It saves after every answer, so you can stop and
+resume at any point:
+
+```
+setup-service group 4.3      # jump straight to one group
+setup-service validate       # check what is still missing, no prompts
+```
+
+Groups run 1 → 10 (with 4.1–4.13 covering pipelines in detail). Expect the pipeline
+groups to take the longest — that is where ZED learns your parameter shapes from prior
+runs.
+
+You can also type directly into `.github/skills/zed-agent/service-config.json` in VS
+Code; the `$schema` reference gives you autocomplete and inline validation. Mix the two
+approaches however you like.
+
+**Two things ZED deliberately will not guess** — the wizard will ask, and `validate`
+fails until they are set:
+
+- `safefly.serviceGroupName` — your EV2 service group (e.g. `Backup (MAB)`). Filing an
+  R2D against the wrong service group is worse than failing, so ZED refuses to infer it.
+- `safefly.graphQlEndpoint` plus `franchiseId`, `changeTypeId`, `formId` — SafeFly's V1
+  write API is permanently gone (HTTP 410), so ZED requires the V2 GraphQL configuration.
+
+Repeat until clean:
+
+```
+setup-service validate
+```
+
+## Step 4 — Check your machine is ready
+
+```
+test-preflight
+```
+
+This reports three categories:
+
+| Category | Meaning |
+|---|---|
+| **env** | Azure CLI, Git, PowerShell 7, ImportExcel, EV2 token, Teams CDP, skill scripts. **Must be green** — nothing works otherwise. |
+| **config** | Your two JSON files. Red on a fresh clone; `setup-service` is the fix. |
+| **release** | Per-release artifacts. Expected red until you run `setup`. Not a blocker yet. |
+
+`test-preflight check` is the read-only variant. The default will offer to auto-remediate
+what it can.
+
+## Step 5 — Commit ZED into your repo
+
+Most service repos gitignore `.github/`, so force-add:
 
 ```powershell
-git add -f .github/agents/ZedAgent.agent.md .github/skills/zed-agent/
+git add -f .github/agents/ZedAgent.agent.md .github/skills/
 git commit -m "feat(zed): onboard ZED Agent"
 ```
 
-### 5. Run a release
+Commit the two config files too — they are your service's source of truth, and ZED reads
+them on every run.
 
-In Copilot Chat in the target repo:
+## Step 6 — Run your first release
+
+In Copilot Chat in your service repo:
 
 ```
-@ZedAgent setup        # per-release: prompts for release ID, owner, target month
-@ZedAgent              # the agent walks the 16-step pipeline
+setup        # per-release: release ID, owner, target month
 ```
 
-See `.github/agents/ZedAgent.agent.md` (in this repo or after install) for the
-full pipeline definition and per-step ack vocabulary.
+Then hand over to the agent and let it walk the 16 steps, acknowledging as it goes. Useful
+variants:
 
-## What's per-repo (one-time) vs per-release
+```
+setup check           # read-only readiness status
+setup skip 3,7        # re-enter the skip prompt for specific steps
+```
 
-| Scope | Command | Output | Committed? |
+The full step definitions and the per-step ack vocabulary live in
+`.github/agents/ZedAgent.agent.md`.
+
+---
+
+## Command reference
+
+Run these from Copilot Chat **in your service repo**, in this order the first time:
+
+| Command | When | What it does |
+|---|---|---|
+| `test-preflight` | Any time | Checks machine + config readiness |
+| `setup-service` | Once per repo | Fills `service-config.json` + `pipeline-catalog.json` |
+| `setup-service validate` | Any time | Strict check, no prompts |
+| `setup` | Once per release | Creates `.zed-agent/releases/<id>/` and `state.json` |
+
+## Per-repo vs per-release
+
+| Scope | Command | Output | Commit it? |
 |---|---|---|---|
-| Per repo (one-time) | `@ZedAgent setup-service` | `service-config.json`, `pipeline-catalog.json` | Yes — committed to the target repo |
-| Per release | `@ZedAgent setup` | `.zed-agent/state.json` | No — local only, gitignored |
+| Per repo (one-time) | `setup-service` | `service-config.json`, `pipeline-catalog.json` | **Yes** |
+| Per release | `setup` | `.zed-agent/state.json` | No — local only, gitignored |
+
+## Updating ZED later
+
+New fixes land on `main` here. To pull them into your service repo:
+
+```powershell
+# 1. Back up your configs — -Force overwrites them with empty skeletons
+copy D:\repos\MyService\.github\skills\zed-agent\service-config.json    $env:TEMP\
+copy D:\repos\MyService\.github\skills\zed-agent\pipeline-catalog.json  $env:TEMP\
+
+# 2. Update and reinstall
+cd D:\ZED-Agent; git pull
+pwsh -File .github\skills\zed-agent\scripts\Install-Zed.ps1 `
+    -TargetRepoPath D:\repos\MyService -Force
+
+# 3. Restore your configs, then review the diff before committing
+copy $env:TEMP\service-config.json    D:\repos\MyService\.github\skills\zed-agent\
+copy $env:TEMP\pipeline-catalog.json  D:\repos\MyService\.github\skills\zed-agent\
+```
+
+Then re-run `setup-service validate` to confirm nothing regressed.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `setup-service validate` keeps failing | Run `setup-service group <N>` for the group it names, rather than restarting the whole wizard |
+| ADO calls return 404 on `dev.azure.com` | Known `msazure/One` quirk — ZED automatically retries against `visualstudio.com` |
+| YAML fetch 404s despite the repo existing | ADO repo-id/name mismatch. Pass `-LocalRepoRoot <path-to-clone>` to `Read-PipelineYaml.ps1` to read from disk instead |
+| SafeFly filing rejected with HTTP 410 | V1 API is retired — set the `safefly.graphQlEndpoint` V2 fields |
+| EV2 status blank for Fairfax/Mooncake | Edge CDP is not up; `test-preflight` reports and can fix this |
+| Teams messages not sending | Teams desktop must be running before ZED starts |
+
+---
+
+## What's in this repo
+
+```
+.github/
+├── agents/
+│   ├── ZedAgent.agent.md       # Release agent — entry point in your repo
+│   └── ZedForge.agent.md       # Meta-agent that improves ZED (stays here)
+└── skills/
+    ├── zed-agent/              # Core skill
+    │   ├── SKILL.md
+    │   ├── service-config.schema.json    # Drives VS Code IntelliSense
+    │   ├── pipeline-catalog.schema.json
+    │   ├── scripts/            # ~74 PowerShell scripts
+    │   │   ├── Install-Zed.ps1
+    │   │   ├── lib/            # Shared modules (parameter model, loaders)
+    │   │   ├── EV2/            # Edge CDP + Playwright EV2 portal scrape
+    │   │   └── SafeFly/        # SafeFly V2 request submission
+    │   ├── queries/            # KQL: BVT failures, deployment units, stamp inventory
+    │   ├── reference/          # Step behaviour specs
+    │   ├── templates/          # Email + Teams templates
+    │   ├── fixtures/           # Test fixtures
+    │   └── tests/              # Pester tests
+    ├── setup-service/          # One-time onboarding wizard  ─┐
+    ├── setup/                  # Per-release initialization   ├─ installed into your repo
+    ├── test-preflight/         # Readiness checks             │
+    ├── teams-chat/             # Teams messaging             ─┘
+    └── zed-forge/              # ZED's own dev loop (source-repo only)
+```
+
+No `service-config.json` or `pipeline-catalog.json` lives here — the installer generates
+empty skeletons from the schemas, and real values belong in your repo.
 
 ## Compatibility
 
-- **Repos**: any service repo that already has a monthly release pipeline on
-  Azure DevOps and uses EV2 for production rollout.
-- **OS**: Windows (the agent uses Outlook COM, Teams desktop client CDP, and
-  Microsoft Edge CDP — all Windows-only integrations).
-- **Shell**: PowerShell 7+ (`pwsh`). Some scripts run under Windows PowerShell 5.1, but 7 is recommended.
-- **Tools required on the release owner's machine**: `git`, `gh`, `az`, Outlook desktop, Microsoft Teams desktop, Microsoft Edge.
+- **Repos**: any service repo with a monthly Azure DevOps release pipeline that uses EV2
+  for production rollout.
+- **OS**: Windows only (Outlook COM, Teams CDP, Edge CDP).
+- **Shell**: PowerShell 7+ (`pwsh`).
 
-## Development
+## Contributing to ZED
 
-This repo is the upstream source of truth. To improve the agent:
+This repo is the upstream source of truth.
 
-1. Make changes here, run the Pester tests under `.github/skills/zed-agent/tests/`.
+1. Make your change here and run the tests:
+   ```powershell
+   Invoke-Pester -Path .github\skills\zed-agent\tests
+   ```
 2. Push to `main`.
-3. In each consuming service repo, re-run `Install-Zed.ps1 -Force` and review the diff before committing.
+3. In each consuming repo, re-run `Install-Zed.ps1 -Force` and review the diff before
+   committing.
 
-The two configuration files in this repo are intentionally empty — never push
-service-specific data here.
+Keep it service-agnostic: no service names, pipeline IDs, region lists, or paths in
+scripts or skills. Everything service-specific belongs in the two JSON files. The two
+config files in this repo stay empty — never push service data here.
 
-## ZedForge — self-improving development agent
+### ZedForge — self-improving development agent
 
-`ZedForge` (`.github/agents/ZedForge.agent.md` + `.github/skills/zed-forge/`) is a **meta-agent**
-that hardens ZED through an autonomous **fix → validate → harvest** loop. Each iteration it:
+`ZedForge` (`.github/agents/ZedForge.agent.md` + `.github/skills/zed-forge/`) hardens ZED
+through an autonomous **fix → validate → harvest** loop:
 
-1. Implements the pending **learnings** (`.github/skills/zed-forge/learnings/learnings.md`) as
-   edits to ZED.
-2. Seeds a target deployment repo (default `Q:\bdp3`) with the LATEST ZED + the pre-filled
-   `config-seed/` configs (`Seed-DeploymentRepo.ps1`).
-3. Runs the ZED **true test run** (fast, non-destructive: every pipeline is triggered then cancelled
-   within seconds, capturing the posted parameters to `test-run-capture.json`).
-4. Polls it (`Watch-ValidationRun.ps1`) and **verifies** the captured parameters + step outcomes
-   against the **requirements/end-state** (`requirements/success-criteria.json`,
-   `Test-RunRequirements.ps1`).
-5. Harvests new learnings from failures + the run's `lessons-learned.md`, and loops until a clean
-   run.
+1. Implements pending **learnings** (`zed-forge/learnings/learnings.md`) as edits to ZED.
+2. Seeds a target deployment repo with the latest ZED + pre-filled `config-seed/` configs.
+3. Runs a **true test run** — every pipeline triggered then cancelled within seconds,
+   capturing posted parameters to `test-run-capture.json`.
+4. Verifies captured parameters and step outcomes against
+   `requirements/success-criteria.json`.
+5. Harvests new learnings from failures and loops until clean.
 
-Two intake files, two meanings: **requirements** = the end state (never weakened); **learnings** =
-the backlog to implement. Run it from Copilot Chat in this repo: `@ZedForge start`.
-
-> **Ready to run**: all pipeline ids in
-> `.github/skills/zed-forge/config-seed/pipeline-catalog.json` are real (canary/production from the
-> golden reference runs; `officialBuild` = 282413). Verify `service-config.json` +
-> `success-criteria.json`, then `@ZedForge start`.
+Two intake files, two meanings: **requirements** = the end state (never weakened);
+**learnings** = the backlog to implement. Start it from Copilot Chat in this repo with
+`@ZedForge start`.
 
 ## License
 
-See `LICENSE` (add your preferred license; Microsoft-managed repos typically
-default to MIT or the org's standard internal license).
+No `LICENSE` file has been added yet — add your preferred license (Microsoft-managed
+repos typically default to MIT or the org's standard internal license).

@@ -35,6 +35,12 @@
       DirectiveEvaluation - Result of evaluating the directive condition
       Message        - Human-readable description
       Step4SideChannel - Result of Invoke-Step4SideChannel (if it ran)
+      PrivateStampSideChannel - Result of Invoke-PrivateStampUpgrade -Action Poll (if it ran);
+                       a non-empty .NotifyEvent means the session must send that email
+                       (see step-behaviors.md → Private stamp upgrade test)
+      ScheduleGuardSideChannel - Result of Invoke-ScheduleGuard -Action Sync (if it ran);
+                       every .NotifyEvents entry ("<event>:<pipelineKey>") is an email to send
+                       (see step-behaviors.md → Canary schedule guard)
       StatePaths     - Resolved state paths object
 #>
 [CmdletBinding()]
@@ -56,6 +62,8 @@ $verdict = [PSCustomObject]@{
     DirectiveEvaluation = $null
     Message             = 'No active release found'
     Step4SideChannel    = $null
+    PrivateStampSideChannel = $null
+    ScheduleGuardSideChannel = $null
     StatePaths          = $null
 }
 
@@ -139,6 +147,46 @@ try {
 } catch {
     # Side-channel is non-fatal
     $verdict.Step4SideChannel = [PSCustomObject]@{ Success = $false; Error = $_.Exception.Message }
+}
+
+# ── Step 3b: Private stamp upgrade side track (every wake-up, regardless of current step) ──
+try {
+    $psuScript = Join-Path $PSScriptRoot 'Invoke-PrivateStampUpgrade.ps1'
+    if ((Test-Path $psuScript) -and $state.PSObject.Properties['privateStampUpgrade'] -and $state.privateStampUpgrade -and
+        $state.privateStampUpgrade.status -match '^(inputs-ready|triggering-|deploying-|last-succeeded)') {
+        $verdict.PrivateStampSideChannel = & $psuScript -Action Poll `
+            -ReleaseId $activeRelease.ReleaseId `
+            -StateFile $activeRelease.StateFile `
+            -StateLock (Join-Path $paths.ScratchDir 'state.json.lock') `
+            -AuditFile $paths.AuditFile `
+            -ReleaseFile $paths.ReleaseFile
+        if ($verdict.PrivateStampSideChannel.Transition) {
+            $state = Get-Content $activeRelease.StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+    }
+} catch {
+    $verdict.PrivateStampSideChannel = [PSCustomObject]@{ Success = $false; Error = $_.Exception.Message }
+}
+
+# ── Step 3c: Canary schedule guard (pause/restore e.g. EA-CAN enableSchedule) ──
+try {
+    $sgScript = Join-Path $PSScriptRoot 'Invoke-ScheduleGuard.ps1'
+    $sgStep5 = ($state.steps | Where-Object { $_.number -eq 5 }).status
+    $sgActive = $state.PSObject.Properties['scheduleGuards'] -and $state.scheduleGuards -and
+        @($state.scheduleGuards.PSObject.Properties | Where-Object { $_.Value.status -match '^(disabled|disable-failed|restore-failed)$' }).Count -gt 0
+    if ((Test-Path $sgScript) -and ($sgStep5 -in @('in-progress', 'completed') -or $sgActive)) {
+        $verdict.ScheduleGuardSideChannel = & $sgScript -Action Sync `
+            -ReleaseId $activeRelease.ReleaseId `
+            -StateFile $activeRelease.StateFile `
+            -StateLock (Join-Path $paths.ScratchDir 'state.json.lock') `
+            -AuditFile $paths.AuditFile `
+            -ReleaseFile $paths.ReleaseFile
+        if (@($verdict.ScheduleGuardSideChannel.Results).Count -gt 0) {
+            $state = Get-Content $activeRelease.StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+    }
+} catch {
+    $verdict.ScheduleGuardSideChannel = [PSCustomObject]@{ Success = $false; Error = $_.Exception.Message }
 }
 
 # ── Step 4: Determine current step ──
@@ -225,6 +273,10 @@ switch ($currentStep.status) {
                     $eval.Details = "ADO build poll — requires API evaluation at: $($dir.target)"
                     # In cloud mode, the session should evaluate this
                     $eval.ConditionMet = $null  # Signal: needs evaluation
+                }
+                'poll-ado-pr' {
+                    $eval.Details = "RI/FI PR poll — requires API evaluation at: $($dir.target)"
+                    $eval.ConditionMet = $null
                 }
                 'poll-ado-pipelines' {
                     # Check if any targets already have completion status from prior polling

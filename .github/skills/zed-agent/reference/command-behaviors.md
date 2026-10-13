@@ -26,6 +26,9 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `status` | Show the 16-step pipeline dashboard with progress |
 | `skip` or `skip N` | Skip the current step (or step N) at runtime |
 | `modify skip 4,5` | Skip specific steps mid-release (also supports `reorder` and `reset`). For up-front skipping, the per-release `setup` command has an interactive skip prompt. |
+| `approve-ri` | Give the go-ahead after the RI PR merged (starts FI — only when `ado.integration` is enabled) |
+| `private-stamp` | Provide the private stamp upgrade test inputs (instance, port for last build, port for current build, last build branch, TeeWorkflowQueueName). Also `private-stamp retry`, `private-stamp skip <reason>`, `private-stamp status` |
+| `approve-private-stamp` | Sign off the private stamp BVT (releases the Step 13 join) |
 | `approve-bvt` | Approve BVT check results (unblocks step 6) |
 | `approve-rollback` | Approve post-rollback results (unblocks step 9) |
 | `approve-rollforward` | Approve post-roll-forward results (unblocks step 12) |
@@ -51,9 +54,11 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 ```
 Step 1:  run                  ← Sends reminder
 Step 2:  (automatic)          ← Cuts branch, queues build
+         └ ado.integration:   ← 2a RI PR (master→develop) → merged → approve-ri → 2b FI PR (develop→master) → merged → cut
 Step 3:  (automatic)          ← Watcher polls until build completes
 Step 4:  (automatic)          ← Collects commits, generates Excel, uploads to SharePoint
 Step 5:  (automatic)          ← Deploys canary (CANARY pipelines → EACan/ECY/CCY)
+         └ privateStampUpgrade: ← private-stamp (inputs) → last build (port 1) → current build (port 2) → owner BVT → approve-private-stamp  [parallel; Step 13 waits for it]
 Step 6:  (automatic)          ← BVT check runs, frontliners notified if failures
 Step 7:  (automatic)          ← Rollback (CANARY pipelines with previous bits)
 Step 8:  (automatic)          ← Post-rollback BVT check runs
@@ -99,6 +104,9 @@ When the release owner says `status`:
    - Show release ID, release owner name, current step
    - Show branch cut date ONLY — do NOT show canary target or production target dates
    - Show a table of all 16 steps with status icons, step name, and duration
+   - If `state.integration` exists, show it under Step 2 as sub-rows `2a RI`, `2b FI`, `2c Cut` with each status and PR link (e.g. `2a RI ✅ merged !123`, `2b FI ⏳ pr-open !124`)
+   - If `state.privateStampUpgrade` exists, show a side-track row `🧪 Private stamp upgrade` with its status, instance, ports, both run links/results, and the owner action it is waiting for (if any)
+   - If `state.scheduleGuards` exists, show one line per guarded canary pipeline, e.g. `⏸ BCM-EACAN enableSchedule=false (paused after run 185400001, resumes on approve-bvt)` / `▶ … restored`
    - Show progress (N/16 done)
    - Show watcher status (running/stopped, PID, what it's polling)
    - Show next expected action
@@ -226,6 +234,46 @@ When the release owner says `skip` or `skip N`:
 4. Advance `currentStep` to next pending step
 5. Log in audit with reason
 
+## approve-ri — Go-Ahead After Reverse Integration
+
+When the release owner says `approve-ri` or `approve ri` (only meaningful when `CONFIG[ado.integration.enabled]`):
+
+1. Verify Step 2 is `waiting-approval` **and** `state.integration.phase == "ri-go-ahead"`. Otherwise reply with the current integration phase (e.g. *"RI PR !123 is still open — I'll ask for the go-ahead once it merges."*) and change nothing.
+2. Record `state.integration.ri.goAheadAt` (UTC now) and `goAheadBy` (owner alias); set `phase = "fi"`
+3. Set Step 2 → `in-progress` (**not** `completed`) in the same `Update-ReleaseState` write
+4. Log `{ "event": "ri-go-ahead" }` in audit
+5. Resume execution loop → Step 2 sub-phase 2b (FI) per `step-behaviors.md → Step 2 — Integration sub-phases`
+
+`approve` and `approve-step 2` are accepted as aliases while `phase == "ri-go-ahead"`.
+
+## private-stamp — Private Stamp Upgrade Test Inputs and Control
+
+Only meaningful when `CONFIG[pipelines.privateStampUpgrade.enabled]`. Spec: `step-behaviors.md → Private stamp upgrade test`. Every variant calls `scripts/Invoke-PrivateStampUpgrade.ps1 -ReleaseId <id> -By <owner alias>`; if the result has a `NotifyEvent`, send that email. Never POST the private stamp pipeline directly.
+
+**`private-stamp`** (inputs). **Ask every release — never pre-fill from a previous release.**
+- One-line form (also used from email replies / headless): `private-stamp instance=<X> lastPort=<n> currentPort=<n> lastBuild=<branch> queue=<name>` — parse, do not prompt.
+- Interactive form (bare `private-stamp`): use `ask_user` **one question at a time**:
+  1. *"Which private stamp instance should I deploy to (e.g. A, B, C)?"*
+  2. *"Port for the LAST build deployment (WebRolePort; HTTP uses port + 1)?"*
+  3. *"Port for the CURRENT build deployment ({release.currentBranch})?"*
+  4. *"Which branch is the last deployment build (ArtifactBranch — its latest official build is deployed, e.g. releases/bcm2610 or master)?"*
+  5. *"TeeWorkflowQueueName for both deployments? (passed as ServiceOverrideSettings = @{\"BCMAppConfig->WorkflowQueueName\"=\"<name>\";})"*
+- Then run `-Action SetInputs -Instance -LastPort -CurrentPort -LastArtifactBranch -QueueName`. On a validation error, show the message and re-ask only the offending field(s). On success, reply with the resolved plan (instance, `port1 ← lastBuild`, `port2 ← release.currentBranch`, queue name) and the new status: `deploying-last` (run link) if Step 3 has completed, otherwise *"Inputs saved — I'll deploy as soon as the release build finishes."* Accepted while the track is `awaiting-input`, `inputs-ready` or `failed` (new inputs restart from the last-build leg), and also before Step 5 (inputs are kept until the build is ready).
+
+**`private-stamp retry`** — `-Action Retry`: re-queues only the failed leg with the same inputs.
+
+**`private-stamp skip <reason>`** — `-Action Skip -Reason <reason>` (ask for a reason if missing). Releases the Step 13 join; if Step 13 is `waiting`, resume the execution loop. The reason is recorded in audit and quoted in the R2D notes.
+
+**`private-stamp status`** — `-Action Get`; show status, inputs, both runs and the next owner action.
+
+## approve-private-stamp — Sign Off Private Stamp BVT
+
+When the release owner says `approve-private-stamp` or `approve private-stamp`:
+
+1. Run `Invoke-PrivateStampUpgrade.ps1 -Action SignOff -By <owner alias>`. If the track is not `awaiting-bvt`, report the current status and what it is waiting for; change nothing.
+2. Confirm: *"✅ Private stamp BVT signed off ({instance}: {lastBuild} on {port1}, {currentBranch} on {port2})."*
+3. If Step 13 is `waiting`, resume the execution loop (Step 13 re-runs its prerequisite checks).
+
 ## approve-bvt — Approve BVT Results
 
 When the release owner says `approve-bvt`:
@@ -233,8 +281,9 @@ When the release owner says `approve-bvt`:
 1. Verify step 6 (bvt-check) is in `waiting-approval`
 2. Record approval: `state.json → approvals.bvt`
 3. Set step 6 → `completed`, advance to step 7
-4. Resume execution loop
-5. Log in audit
+4. **Canary schedule guard**: run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason approve-bvt` and send an email per `NotifyEvents` entry (e.g. BCM-EACAN `enableSchedule` → `true`). See `step-behaviors.md → Canary schedule guard`.
+5. Resume execution loop
+6. Log in audit
 
 ## approve-rollback — Approve Post-Rollback Results
 
@@ -278,6 +327,8 @@ When the release owner says `ack retry` or `ack skip`:
 
 - **`ack retry`**: Reset the failed step to `pending`, re-enter execution loop
 - **`ack skip`**: Set the failed step to `skipped`, advance to next step
+
+**Step 2 integration exception** (`state.integration.phase` is `ri` or `fi`): `ack retry` re-runs only the current sub-phase and `ack skip` skips only that sub-phase (RI → FI, FI → cut) — Step 2 goes back to `in-progress` and the branch cut still runs. See `step-behaviors.md → Step 2 — Integration sub-phases → Failure / owner commands`.
 
 Log acknowledgment and action in audit.
 
@@ -420,10 +471,11 @@ When the release owner says `teardown`:
    # Reports: tasksRemoved (list of task names), processesKilled (list of PIDs)
    ```
    This removes the current release task AND sweeps any orphaned/stale tasks from crashed runs or old test-runs.
-2. Delete `.zed-agent/secrets.json`
-3. Send final email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: "Release {id} teardown complete" (no Teams per Rule 1)
-4. Log in audit
-5. Report teardown completion summary — include count of tasks removed and processes killed
+2. **Canary schedule guard**: run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason teardown` so no canary pipeline is left with its schedule paused by ZED (e.g. a release abandoned between Step 5 and Step 6). Report any `restore-failed` with the manual fix.
+3. Delete `.zed-agent/secrets.json`
+4. Send final email to release owner via `Resolve-NotificationRecipients -EventKey 'judgment'`: "Release {id} teardown complete" (no Teams per Rule 1)
+5. Log in audit
+6. Report teardown completion summary — include count of tasks removed and processes killed
 
 ## rebuild — Re-queue Build + Selective Canary Retrigger
 
@@ -434,6 +486,11 @@ When the release owner says `rebuild` (e.g. after late cherry-picks into the rel
    to retrigger** — only the pipelines whose service had missing commits need it; the others keep
    their existing canary results.
 3. Retrigger only the chosen canary pipelines (Step 5 logic) with the new build artifacts.
+   **Canary schedule guard**: for each chosen pipeline that has `scheduleGuard`, run
+   `Invoke-ScheduleGuard.ps1 -Action Restore -PipelineKey <key> -Reason rebuild` **before** queueing it
+   (halt the rebuild for that pipeline if the result is `restore-failed` — its run would be silently skipped),
+   and right after queueing run `-Action Rearm -PipelineKey <key> -RunId <newRunId>` so the schedule is paused
+   again once THAT run succeeds (no-op once Step 6 is signed off). Send an email per `NotifyEvents` entry.
 Rationale: a mid-release rebuild invalidates canary results for the affected service only; blindly
 re-running everything wastes ~1h/pipeline. Service-agnostic — pipeline keys come from the catalog.
 

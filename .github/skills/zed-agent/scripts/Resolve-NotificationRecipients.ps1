@@ -25,6 +25,11 @@
       step-<N>-failed            -> (<N>, failure)
       step-<N>-waiting-approval  -> (<N>, halt)
       reminder                   -> (1,  success)
+      ri-pr-raised               -> (2,  halt)     Step 2a RI PR opened, owner must merge
+      fi-pr-raised               -> (2,  halt)     Step 2b FI PR opened, owner must merge
+      private-stamp-input-needed -> (5,  halt)     upgrade test needs instance/ports/last build/queue name
+      private-stamp-bvt-ready    -> (5,  halt)     both private stamp legs deployed, owner runs BVT
+      private-stamp-failed       -> (5,  failure)  a private stamp leg failed to queue or deploy
       commit-request             -> (4,  success)
       create-r2d                 -> (13, success)
       ev2-stage-progress         -> (15, success)
@@ -87,6 +92,11 @@ $StepNames = @{
 # Legacy / semantic EventKey -> (step number, outcome) overrides.
 $LegacyMap = @{
     'reminder'               = @{ Step = 1;  Outcome = 'success' }
+    'ri-pr-raised'           = @{ Step = 2;  Outcome = 'halt'    }
+    'fi-pr-raised'           = @{ Step = 2;  Outcome = 'halt'    }
+    'private-stamp-input-needed' = @{ Step = 5; Outcome = 'halt'    }
+    'private-stamp-bvt-ready'    = @{ Step = 5; Outcome = 'halt'    }
+    'private-stamp-failed'       = @{ Step = 5; Outcome = 'failure' }
     'commit-request'         = @{ Step = 4;  Outcome = 'success' }
     'create-r2d'             = @{ Step = 13; Outcome = 'success' }
     'ev2-stage-progress'     = @{ Step = 15; Outcome = 'success' }

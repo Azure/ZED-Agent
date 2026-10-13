@@ -139,6 +139,11 @@ Ask for:
 - `ado.repository` — Repository name (e.g., "Mgmt-RecoverySvcs-BackupDataPlane")
 - `ado.branchPrefix` — Release branch prefix (e.g., "official/bdp-"). The agent appends YYMM.
 - `ado.baseBranch` — Branch to cut releases from (e.g., "develop", "main")
+- `ado.integration` — Ask: *"Before the branch cut, does your team merge master into develop (RI) and then develop back into master (FI) through PRs?"* Choices: `No` (default — write `{ "enabled": false }`) / `Yes`. On `Yes`, ask one at a time (show defaults; Enter accepts):
+  - `developBranch` (default `develop`) and `mainBranch` (default = `ado.baseBranch`). If they differ from `ado.baseBranch`, explain that the release branch is cut from `mainBranch` after FI, and set `ado.baseBranch = mainBranch`.
+  - `preservePaths` (default `[".config"]`) — *"paths where the PR target's version always wins (RI keeps develop's, FI keeps master's)"*.
+  - `requireGoAheadAfterRI` (default `true`) — halt for `approve-ri` after the RI PR merges.
+  - Persist `enabled: true`, `conflictStrategy: "newest-commit-per-file"`, and the default `riBranchTemplate` / `fiBranchTemplate` / `prPollIntervalSeconds` unless the owner overrides them. Behavior: `reference/step-behaviors.md → Step 2 → Integration sub-phases`.
 
 **Group 3 — Service Tree ID**
 Ask for:
@@ -187,7 +192,18 @@ Ask via `ask_user`, persisting after each answer:
 
    Persist to `canary.<key>.{name,id}`.
 
+   For each canary pipeline, also ask: *"Does `<name>` also deploy on its own (a schedule or ad-hoc runs) that could overwrite the release bits during canary BVT? If it has an on/off variable for that (e.g. `enableSchedule`), what is it called?"* — `No` (default, persist nothing) / the variable name. On a name: GET the definition and confirm the variable exists under Pipeline settings → Variables (not only in YAML) — if it doesn't, explain that ZED can only flip definition variables and persist nothing. Then persist `canary.<key>.scheduleGuard = { "variable": "<name>", "disabledValue": "false", "enabledValue": "true" }` (ask only if the owner says the values differ). Behavior: `step-behaviors.md → Canary schedule guard`.
+
 3. **Production pipeline count** — same pattern. Persist to `production.<key>.{name,id}`.
+
+4. **Private stamp upgrade test** (optional side track — `step-behaviors.md → Private stamp upgrade test`):
+   > *"Do you run an upgrade test on a private stamp during canary (deploy the last build and this release's build side by side, then BVT)?"* — `No` (default → persist `privateStampUpgrade: { "enabled": false }`) / `Yes`.
+
+   On `Yes`, ask one at a time and persist to `privateStampUpgrade`:
+   - pipeline `name` and `id` (e.g. BCM: `Mgmt-RecoverySvcs-IaaSCoord-BCM-SF-EaCan-PrivateStamp-BCM-Svc-Deployment`, `396863`).
+   - Read the pipeline YAML parameters (`Read-PipelineYaml.ps1`) and the last 20 runs, then **propose** — owner confirms or edits: `parameterNames` (instance / port / artifactBranch / serviceOverrides), fixed `templateParameters` (every other parameter, using the value most prior runs used), `portSpan` (2 if the port parameter says HTTP = port + 1), and `serviceOverrideSettingsTemplate` with the `{queueName}` token (BCM: `@{"BCMAppConfig->WorkflowQueueName"="{queueName}";}`).
+   - Persist `enabled: true`, `sourceBranch: "{currentBranch}"`.
+   - **Never** persist an instance, port, last-build branch or queue name — those are asked from the owner every release by the `private-stamp` command.
 
 Do **not** ask for `templateParameters`, `clusterType`, `clusterTypeMap`, or any cluster-routing concept yet — those are Phase 4.2 and Phase 4.10.
 

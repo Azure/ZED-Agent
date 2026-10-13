@@ -253,6 +253,10 @@ Callers pass an `EventKey` to `Resolve-NotificationRecipients.ps1`. The helper m
 | `step-<N>-failed`               | step `<N>`, outcome `failure`                                        |
 | `step-<N>-waiting-approval`     | step `<N>`, outcome `halt`                                           |
 | `reminder`                      | `1-send-reminder.success` (legacy alias)                             |
+| `ri-pr-raised`, `fi-pr-raised`  | `2-cut-branch.halt` (Step 2a/2b integration PR opened)               |
+| `private-stamp-input-needed`, `private-stamp-bvt-ready` | `5-deploy-canary.halt` (private stamp upgrade side track) |
+| `private-stamp-failed`          | `5-deploy-canary.failure` (private stamp leg failed)                 |
+| `schedule-guard-disabled`, `schedule-guard-preexisting`, `schedule-guard-restored`, `schedule-guard-failed` | unmapped → owner-only (canary schedule guard) |
 | `commit-request`                | `4-collect-commits.success` (legacy alias)                           |
 | `create-r2d`                    | `13-create-r2d.success` (legacy alias)                               |
 | `ev2-stage-progress`            | `15-production-rollout.success` (per-stage EV2 ticks)                |
@@ -440,7 +444,7 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 | # | Name | Display Name | Type |
 |---|------|-------------|------|
 | 1 | `send-reminder` | Send Branch Cut Reminder | Auto |
-| 2 | `cut-branch` | Cut Release Branch & Queue Build | Auto |
+| 2 | `cut-branch` | Cut Release Branch & Queue Build (preceded by 2a RI / 2b FI PRs when `CONFIG[ado.integration.enabled]`) | Auto (+ Async PR watch + `approve-ri` when integration enabled) |
 | 3 | `wait-build` | Wait for Build Completion | Async (watcher) |
 | 4 | `collect-commits` | Collect & Analyze Commit Details | Async (watcher) |
 | 5 | `deploy-canary` | Deploy Canary | Async (watcher) |
@@ -477,6 +481,10 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 
 **Parallelism note (Step 3 ∥ Step 4):** Steps 3 and 4 both depend only on Step 2, so they are eligible to run concurrently. Because `state.watcherDirective` is a single object (not an array), true parallel polling is implemented via the **co-located side-channel** pattern: when Step 2 completes, the agent runs Step 4's synchronous work inline (git log → commit classification → `commits.xlsx` → SharePoint upload → post commit-request) and sets `state.step4InlineCompleted = true` + `state.step4ExcelUrl = <sharing URL>`. The agent then arms Step 3's `poll-ado-build` watcher and EXITs. `Release-Watcher.ps1`'s main loop opportunistically polls the OneDrive Impact column on every tick (regardless of which step owns the primary directive), so Step 4 advances toward `completed` while Step 3's build is still running. **Step 13 is the only enforced join point** for Step 4 (matrix entry `13 → 12, 4`) — if Step 4 is still `in-progress` when Step 13 fires, Step 13 arms its own dedicated `poll-onedrive-file` directive and EXITs.
 
+**Private stamp upgrade side track (Step 5 ∥ Steps 5–12, joined at Step 13):** when `CONFIG[pipelines.privateStampUpgrade.enabled]`, Step 5 kicks off `state.privateStampUpgrade` (owner inputs → last build on port 1 → current build on port 2 → owner BVT sign-off). It is NOT a step and has no number: the watcher/cold-resume advance it as a co-located side-channel (`Invoke-PrivateStampUpgrade.ps1 -Action Poll`), and Step 13 refuses to create the R2D until it is `signed-off` or `skipped`. When the watcher invokes you with `private stamp upgrade <event> for release <id>`, send the email for `<event>` (per `step-behaviors.md → Private stamp upgrade test`) and EXIT — do **not** re-run the current main-loop step.
+
+**Canary schedule guard:** canary pipelines with `scheduleGuard` in the catalog (BCM-EACAN `enableSchedule`) are paused by ZED once ZED's own Step 5 run of them succeeds and resumed on `approve-bvt` (Step 6) — via `Invoke-ScheduleGuard.ps1` only, never by editing the pipeline any other way. ZED must never trigger a guarded pipeline while ZED has it disabled (Step 7 restores first and halts if it can't). When the watcher invokes you with `schedule guard <event> <key> for release <id>`, send that owner-only email (per `step-behaviors.md → Canary schedule guard`) and EXIT.
+
 # Step Execution Loop
 
 When invoked (by release owner or watcher), follow this loop:
@@ -504,7 +512,7 @@ When invoked (by release owner or watcher), follow this loop:
     e. **EXIT the conversation** — do NOT continue executing in-chat, do NOT manually poll
     The watcher handles all async polling and re-invokes the agent when the condition is met. Staying in-conversation and polling manually is a **violation** of the hybrid model — it breaks continuity if the chat session ends.
     **watcherDirective field names** (must match `Release-Watcher.ps1` exactly):
-    - `action`: directive type — `"poll-ado-build"`, `"poll-ado-pipelines"`, `"wait-timer"`, `"poll-onedrive-file"`, `"safefly-approval-poll"`, `"poll-ev2-rollout"`
+    - `action`: directive type — `"poll-ado-build"`, `"poll-ado-pipelines"`, `"poll-ado-pr"` (Step 2a/2b RI/FI PR: `completed` → onSuccess, `abandoned` → onFailure), `"wait-timer"`, `"poll-onedrive-file"`, `"safefly-approval-poll"`, `"poll-ev2-rollout"`
     - `target`: API URL to poll (for poll-ado-build/pipeline/onedrive)
     - `successCondition`: e.g. `"$.status == 'completed'"` — parsed by watcher for response field matching
     - `onSuccess`: prompt text passed to `copilot --agent=ZedAgent -p` when condition met
@@ -804,7 +812,7 @@ Rules:
 # Command Behaviors
 
 The full behavior of every command — `help`, `setup-service`, `setup`, `status`,
-`run`, `modify`, `skip`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
+`run`, `modify`, `skip`, `approve-ri`, `private-stamp`, `approve-private-stamp`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
 `approve-crb`, `ack`, `resume`, `stop`, `test`, `test-run`, `teardown`, `rebuild`,
 `new-stamp` — is specified in:
 
@@ -865,6 +873,6 @@ After completing each step, the agent checks whether an approval gate is active:
 - Runtime override (from `state.json → gateOverrides`, if any)
 - Effective gate status (override wins if present, else config value; step 14 always true)
 
-**`approve-step <N>`**: Verify step N is in `waiting-approval` due to a gate. Record approval in `state.json`. Set step → `completed`. Advance to next step. Log in `audit.jsonl`.
+**`approve-step <N>`**: Verify step N is in `waiting-approval` due to a gate. Record approval in `state.json`. Set step → `completed`. Advance to next step. Log in `audit.jsonl`. **Exception**: if N == 2 and `state.integration.phase == "ri-go-ahead"`, this is the RI go-ahead — behave exactly like `approve-ri` (Step 2 → `in-progress`, start FI), never mark Step 2 `completed`.
 
-**`approve`**: Find the first step in `waiting-approval` state. Apply same logic as `approve-step <N>` for that step.
+**`approve`**: Find the first step in `waiting-approval` state. Apply same logic as `approve-step <N>` for that step (including the Step 2 RI go-ahead exception).

@@ -141,6 +141,72 @@ while ($true) {
         $auditFileS4Err = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
         @{ ts = (Get-Date -Format 'o'); event = 'step4-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileS4Err -Encoding UTF8
     }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Private stamp upgrade side track (Step 5 ∥ … → joined at Step 13).
+    # Advances last → current → awaiting-bvt with pure REST; the agent is only
+    # invoked on a transition that needs an email (NotifyEvent). Non-fatal.
+    # ─────────────────────────────────────────────────────────────────────────
+    try {
+        if ($state.PSObject.Properties['privateStampUpgrade'] -and $state.privateStampUpgrade -and
+            $state.privateStampUpgrade.status -match '^(inputs-ready|triggering-|deploying-|last-succeeded)') {
+            $psuScript = Join-Path $PSScriptRoot 'Invoke-PrivateStampUpgrade.ps1'
+            if (Test-Path $psuScript) {
+                $psuArgs = @{
+                    Action    = 'Poll'
+                    ReleaseId = $ReleaseId
+                    StateFile = $stateFile
+                    StateLock = $stateLock
+                    AuditFile = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl")
+                    ReleaseFile = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json")
+                }
+                $tokenPsu = Get-AzToken "https://dev.azure.com"
+                if ($tokenPsu) { $psuArgs.AccessToken = $tokenPsu }
+                $psu = & $psuScript @psuArgs
+                if ($psu.NotifyEvent) {
+                    & copilot --agent=ZedAgent -p "private stamp upgrade $($psu.NotifyEvent) for release $ReleaseId" --allow-all --autopilot --no-ask-user -s
+                }
+            }
+        }
+    } catch {
+        $auditFilePsuErr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+        @{ ts = (Get-Date -Format 'o'); event = 'private-stamp-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFilePsuErr -Encoding UTF8
+    }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Canary schedule guard (e.g. BCM EA-CAN enableSchedule): pause the
+    # pipeline's own daily deployment once ZED's Step 5 run of it succeeds,
+    # restore it once Step 6 is signed off. Pure REST; the agent is only
+    # invoked to send emails. Non-fatal.
+    # ─────────────────────────────────────────────────────────────────────────
+    try {
+        $sgStep5 = ($state.steps | Where-Object { $_.number -eq 5 }).status
+        $sgActive = $state.PSObject.Properties['scheduleGuards'] -and $state.scheduleGuards -and
+            @($state.scheduleGuards.PSObject.Properties | Where-Object { $_.Value.status -match '^(disabled|disable-failed|restore-failed)$' }).Count -gt 0
+        if ($sgStep5 -in @('in-progress', 'completed') -or $sgActive) {
+            $sgScript = Join-Path $PSScriptRoot 'Invoke-ScheduleGuard.ps1'
+            if (Test-Path $sgScript) {
+                $sgArgs = @{
+                    Action      = 'Sync'
+                    ReleaseId   = $ReleaseId
+                    StateFile   = $stateFile
+                    StateLock   = $stateLock
+                    AuditFile   = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl")
+                    ReleaseFile = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json")
+                }
+                $tokenSg = Get-AzToken "https://dev.azure.com"
+                if ($tokenSg) { $sgArgs.AccessToken = $tokenSg }
+                $sg = & $sgScript @sgArgs
+                foreach ($ev in @($sg.NotifyEvents)) {
+                    $evName, $evKey = $ev -split ':', 2
+                    & copilot --agent=ZedAgent -p "schedule guard $evName $evKey for release $ReleaseId" --allow-all --autopilot --no-ask-user -s
+                }
+            }
+        }
+    } catch {
+        $auditFileSgErr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+        @{ ts = (Get-Date -Format 'o'); event = 'schedule-guard-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileSgErr -Encoding UTF8
+    }
     if (-not $dir -or $dir.action -eq 'none') { Start-Sleep -Seconds 30; continue }
 
     $conditionMet = $false
@@ -162,6 +228,40 @@ while ($true) {
                 }
                 & copilot --agent=ZedAgent -p "missed schedule for release $ReleaseId region $($dir.region) scheduled at $waitField delay ${delayMin} minutes" --allow-all --autopilot --no-ask-user -s
             }
+        }
+    } elseif ($dir.action -eq 'poll-ado-pr') {
+        # Step 2a/2b RI/FI PR: completed (merged) -> onSuccess; abandoned -> onFailure (stop polling).
+        try {
+            $token = Get-AzToken "https://dev.azure.com"
+            if (-not $token) {
+                if (-not $authFailNotified) { Write-AuthFailureAudit $ReleaseId $dir.action; $authFailNotified = $true }
+                Start-Sleep -Seconds 300; continue
+            }
+            $authFailNotified = $false
+            $pr = Invoke-RestMethod -Uri $dir.target -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 60 -ErrorAction Stop
+            $retryCount = 0
+            if ($pr.status -eq 'completed') {
+                $conditionMet = $true
+            } elseif ($pr.status -eq 'abandoned') {
+                $auditPr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+                @{ ts = (Get-Date -Format 'o'); event = 'integration-pr-abandoned'; pullRequestId = $pr.pullRequestId; target = $dir.target } |
+                    ConvertTo-Json -Compress | Add-Content $auditPr -Encoding UTF8
+                Invoke-WithStateLock -LockFile $stateLock -Action {
+                    $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $latest.watcherDirective = [pscustomobject]@{ action = 'none' }
+                    $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+                }
+                & copilot --agent=ZedAgent -p $dir.onFailure --allow-all --autopilot --no-ask-user -s
+                Start-Sleep -Seconds 30; continue
+            }
+        } catch {
+            $retryCount++
+            if ($retryCount -ge $maxRetries) {
+                & copilot --agent=ZedAgent -p $dir.onFailure --allow-all --autopilot --no-ask-user -s
+                break
+            }
+            $delay = [math]::Min($baseDelay * [math]::Pow(2, $retryCount - 1), 300)
+            Start-Sleep -Seconds $delay; continue
         }
     } elseif ($dir.action -eq 'poll-ado-pipelines') {
         # Multi-pipeline polling: check all targets + detect approval links

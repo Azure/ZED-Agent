@@ -110,6 +110,49 @@
       "then": { "required": ["clusterTypeMap"] }
     },
 
+    "privateStampUpgrade": {
+      "type": "object",
+      "description": "Optional private stamp upgrade test — a side track kicked off at Step 5 (parallel to canary) and joined at Step 13 (SafeFly R2D waits for the owner's sign-off). Two sequential runs of the private stamp pipeline on ONE owner-chosen instance: leg 'last' (owner-supplied last build branch, port 1) then leg 'current' (release.currentBranch, port 2), both with the same ServiceOverrideSettings built from the owner-supplied queue name. Inputs are asked from the owner every release (never cached). Script: scripts/Invoke-PrivateStampUpgrade.ps1.",
+      "additionalProperties": true,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "id": { "type": "integer", "description": "ADO pipeline definition id of the private stamp deployment pipeline." },
+        "name": { "type": "string" },
+        "sourceBranch": {
+          "type": "string",
+          "description": "Ref whose YAML is queued for BOTH legs. Token {currentBranch} = release.currentBranch.",
+          "default": "{currentBranch}"
+        },
+        "portSpan": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Consecutive ports one deployment occupies (e.g. 2 when HTTP = HTTPS port + 1). The two owner ports must be at least this far apart.",
+          "default": 1
+        },
+        "templateParameters": {
+          "type": "object",
+          "description": "Fixed templateParameters posted on both legs (values as strings). The four owner-driven parameters below are added on top.",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "parameterNames": {
+          "type": "object",
+          "description": "Pipeline parameter names that receive the owner inputs.",
+          "properties": {
+            "instance":         { "type": "string", "default": "PrivateInstance" },
+            "port":             { "type": "string", "default": "WebRolePort" },
+            "artifactBranch":   { "type": "string", "default": "ArtifactBranch" },
+            "serviceOverrides": { "type": "string", "default": "ServiceOverrideSettings" }
+          }
+        },
+        "serviceOverrideSettingsTemplate": {
+          "type": "string",
+          "description": "Value for the serviceOverrides parameter. Token {queueName} = owner-supplied TeeWorkflowQueueName.",
+          "default": "@{}"
+        }
+      }
+    },
+
     "_examples": {
       "type": "object",
       "description": "Optional reference shapes. Delete once real entries are populated.",
@@ -155,6 +198,17 @@
           "enum": ["short", "full"],
           "default": "short",
           "description": "Controls which stamp field Resolve-TemplateParams.ps1 uses for {{*Stamps}} tokens. 'short' (default) → stampId (e.g. 'ea-01'); 'full' → stampName (e.g. 'ea-can02-prot1'). Different pipeline YAMLs expect different formats — SFMC's ParseStampId expects short IDs."
+        },
+        "scheduleGuard": {
+          "type": "object",
+          "description": "Canary pipelines only. Pauses this pipeline's own scheduled/ad-hoc deployments while the release bits must stay on its stamps: once ZED's Step 5 run of this pipeline SUCCEEDS, ZED sets pipeline variable <variable> = <disabledValue> on the definition; when Step 6 BVT is signed off (or completed/skipped by any path, and always before ZED triggers this pipeline again) ZED sets it back to <enabledValue>. Only reverted if ZED changed it. Script: scripts/Invoke-ScheduleGuard.ps1.",
+          "required": ["variable"],
+          "additionalProperties": false,
+          "properties": {
+            "variable":      { "type": "string", "minLength": 1, "description": "Definition (Pipeline settings → Variables) variable name, e.g. 'enableSchedule'." },
+            "disabledValue": { "type": "string", "default": "false" },
+            "enabledValue":  { "type": "string", "default": "true" }
+          }
         },
         "sdpType": {
           "type": "string",

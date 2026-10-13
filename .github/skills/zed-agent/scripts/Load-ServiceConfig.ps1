@@ -161,5 +161,25 @@ if ($null -eq $cfg.PSObject.Properties['stepGates'] -or $null -eq $cfg.stepGates
     throw "Required config field is missing or null: 'stepGates'"
 }
 
+# --- Optional ado.integration (Step 2a RI / 2b FI) ---
+$integration = $cfg.ado.PSObject.Properties['integration']
+if ($integration -and $integration.Value -and $integration.Value.PSObject.Properties['enabled'] -and $integration.Value.enabled -eq $true) {
+    $int = $integration.Value
+    foreach ($f in @('developBranch', 'mainBranch')) {
+        if (-not $int.PSObject.Properties[$f] -or [string]::IsNullOrWhiteSpace([string]$int.$f)) {
+            throw "Required config field is missing or empty: 'ado.integration.$f' (required when ado.integration.enabled = true). Run 'setup-service group 2'."
+        }
+    }
+    if ($int.developBranch -eq $int.mainBranch) {
+        throw "ado.integration.developBranch and ado.integration.mainBranch must differ (both are '$($int.mainBranch)')."
+    }
+    if ($int.mainBranch -ne $cfg.ado.baseBranch) {
+        throw "ado.integration.mainBranch ('$($int.mainBranch)') must equal ado.baseBranch ('$($cfg.ado.baseBranch)') — the release branch is cut from the FI result."
+    }
+    if ($int.PSObject.Properties['conflictStrategy'] -and $int.conflictStrategy -and $int.conflictStrategy -ne 'newest-commit-per-file') {
+        throw "ado.integration.conflictStrategy '$($int.conflictStrategy)' is not supported. Expected 'newest-commit-per-file'."
+    }
+}
+
 # --- Return composed object ---
 return $cfg

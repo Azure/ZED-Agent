@@ -50,6 +50,8 @@
     "safeFlyUrl":        { "type": "string", "format": "uri" },
     "safeFlyStatus":     { "type": "string" },
     "mergeBackPrId":     { "type": ["integer", "string"] },
+    "riPrId":            { "type": ["integer", "string"], "description": "Step 2a Reverse Integration PR id (ado.integration only)." },
+    "fiPrId":            { "type": ["integer", "string"], "description": "Step 2b Forward Integration PR id (ado.integration only)." },
     "testMode":          { "type": "boolean" },
     "triggeredPipelines": {
       "type": "object",

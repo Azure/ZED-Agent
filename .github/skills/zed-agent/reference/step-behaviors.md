@@ -19,6 +19,7 @@
 ## Step 2: Cut Release Branch & Queue Build
 
 **Trigger**: Step 1 completed
+**Integration sub-phases**: When `CONFIG[ado.integration.enabled]` is `true`, Step 2 first runs **2a Reverse Integration (RI)** and **2b Forward Integration (FI)** — see "Step 2 — Integration sub-phases (2a RI / 2b FI)" below — and only then performs the Actions listed here (sub-phase **2c**). When the block is absent or `enabled` is `false`, Step 2 is exactly the Actions below.
 **⚠️ Test Mode Override**: When `testMode` is `true`, create the branch and resolve the officialBuild params as normal, but **trigger the build via `Invoke-TriggerAndCancel.ps1 -Step 2` (instant cancel + capture)** instead of arming the build watcher. Mark Step 2 `completed`, Step 3 `skipped`. See "Test Mode Overrides → Step 2".
 **Actions**:
 1. Create branch `{release.currentBranch}` from `origin/CONFIG[ado.baseBranch]` in ADO repo via ADO API. Always branch from origin, never local — local can be stale. (Branch name was already confirmed during `setup` — do NOT re-prompt here.)
@@ -41,6 +42,70 @@
 **State**: Step 2 → `completed`, Step 3 → `in-progress` (build watcher armed), Step 4 → `in-progress` (Excel-fill side-channel armed; or `completed` in test mode)
 **Watcher**: `{ action: "poll-ado-build", target: "<build API URL>", pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], successCondition: "$.status == 'completed'", onSuccess: "continue release {id}", onFailure: "release {id} build failed" }`
 **Failure**: Branch creation failure → `failed`, Teams notify, halt. (Step 4 inline failure does NOT block Step 2 from completing — see Action 5 above.)
+
+## Step 2 — Integration sub-phases (2a RI / 2b FI)
+
+Runs only when `CONFIG[ado.integration.enabled] == true` (e.g. BCM, which keeps a `develop` + `master` pair). It brings `mainBranch` and `developBranch` level **before** the release branch is cut, so the release is cut from a `mainBranch` that contains everything in `developBranch`.
+
+| Sub-phase | What | Wait | Resumed by |
+|-----------|------|------|------------|
+| **2a RI** | New branch from `developBranch`, merge `mainBranch` in, open PR → `developBranch` | PR merged, then owner go-ahead (if `requireGoAheadAfterRI`) | watcher `poll-ado-pr`, then `approve-ri` |
+| **2b FI** | New branch from `mainBranch`, merge `developBranch` in, open PR → `mainBranch` | PR merged | watcher `poll-ado-pr` |
+| **2c Cut** | Step 2 Actions 1–6 above (branch from `origin/CONFIG[ado.baseBranch]`, which equals `mainBranch`) | — | — |
+
+**Merge rules** (implemented by `scripts/Invoke-BranchIntegration.ps1` — never hand-resolve):
+- **Preserve paths** (`CONFIG[ado.integration.preservePaths]`, default `.config`): the **PR target's** version always wins — RI keeps `developBranch`'s, FI keeps `mainBranch`'s. Applies to conflicted files **and** to files the source changed cleanly (reverted; files the source added there are removed).
+- **Everything else** (`conflictStrategy: newest-commit-per-file`): for each conflicted file, the branch whose most recent commit touching that file is newer (committer time) wins. Only the conflicting hunks are taken from the winner; clean changes from both sides are kept. Binary / modify-delete / non-text-mergeable files take the winner's whole file (or its deletion) and are listed under **reviewFiles**. Ties keep the target.
+- The merge runs in a throw-away `git worktree` of the service repo clone (the ZED working directory); the owner's checkout is never touched.
+
+**State** — top-level `state.integration`, written with `Update-ReleaseState -Action update-step -StepNumber 2 -StepStatus <status> -StateProperties @{ integration = <obj> }` (single lock, single write):
+```json
+"integration": {
+  "phase": "ri | ri-go-ahead | fi | cut",
+  "ri": { "status": "pending | pr-open | merged | up-to-date | skipped | dry-run", "branch": "", "prId": null, "prUrl": "", "headSha": "", "report": ".zed-agent/releases/<id>/integration-ri.json", "conflictCount": 0, "reviewFiles": [], "mergedAt": null, "goAheadAt": null, "goAheadBy": null },
+  "fi": { "status": "pending | pr-open | merged | up-to-date | skipped | dry-run", "branch": "", "prId": null, "prUrl": "", "headSha": "", "report": ".zed-agent/releases/<id>/integration-fi.json", "conflictCount": 0, "reviewFiles": [], "mergedAt": null }
+}
+```
+On first entry to Step 2, if `state.integration` is absent, initialize it with `phase: "ri"` and both sub-objects `status: "pending"`. Every later entry dispatches on `state.integration.phase`. Also mirror the PR ids into `release.json` as `riPrId` / `fiPrId`.
+
+**Branch names**: expand `CONFIG[ado.integration.riBranchTemplate]` / `fiBranchTemplate` (defaults `zed/{releaseTag}-ri-master-to-develop`, `zed/{releaseTag}-fi-develop-to-master`). `{releaseId}` = `release.releaseId`; `{releaseTag}` = the leaf of `release.currentBranch` after the last `/` (e.g. `releases/bcm-2611` → `bcm-2611`).
+
+### 2a — Reverse Integration (`phase == "ri"`)
+1. If `ri.status == "pr-open"` and `ri.prId` is set (resume / cold start): do NOT re-merge. GET the PR; if `completed` go to step 7, if `abandoned` go to **Failure**, else re-arm the watcher (step 6) and EXIT.
+2. Run:
+   ```powershell
+   $res = & .github/skills/zed-agent/scripts/Invoke-BranchIntegration.ps1 -Direction RI `
+       -SourceBranch CONFIG[ado.integration.mainBranch] -TargetBranch CONFIG[ado.integration.developBranch] `
+       -IntegrationBranch <riBranch> -PreservePaths CONFIG[ado.integration.preservePaths] -Push `
+       -ReportPath ".zed-agent/releases/<id>/integration-ri.json" `
+       -CommitMessage "RI: Merge <mainBranch> into <developBranch> for <releaseTag>"
+   ```
+3. `$res.status == "up-to-date"` → `ri.status = "up-to-date"`, no PR, no go-ahead; send owner-only `judgment` email (*"RI not needed — `<developBranch>` already contains `<mainBranch>`"*), set `phase = "fi"`, continue to 2b in the same invocation.
+4. `$res.status` `merged` or `reused` → create the PR via ADO MCP (same tool family as Step 16): source `refs/heads/<riBranch>` → target `refs/heads/<developBranch>`, title `RI: <mainBranch> → <developBranch> | <releaseTag> (ZED)`, description = `$res.summaryMarkdown` (truncate to 4000 chars and append "full report: <report path>" if longer). For `reused`, first look for an **active** PR from `<riBranch>` into `<developBranch>` and reuse it. Never set auto-complete and never bypass branch policies — reviewers/policies are the repo's.
+5. Notify: email via `Resolve-NotificationRecipients -EventKey 'ri-pr-raised'` (default: current-owner-only; widen via `routing.2-cut-branch.halt`). Subject `🔀 RI PR raised — <mainBranch> → <developBranch> | <releaseId>`. Body: PR link, conflict count, the `reviewFiles` list (⚠ these need a human look), preserved `.config` files, and *"ZED will continue automatically once this PR is merged."*
+6. Write `ri.status = "pr-open"`, `prId`, `prUrl`, `headSha`, `conflictCount`, `reviewFiles` (Step 2 stays `in-progress`) and arm the watcher, then EXIT:
+   `{ action: "poll-ado-pr", target: "https://dev.azure.com/CONFIG[ado.organization]/CONFIG[ado.project]/_apis/git/repositories/CONFIG[ado.repository]/pullrequests/<prId>?api-version=7.1", pollIntervalSeconds: CONFIG[ado.integration.prPollIntervalSeconds] (default 900), onSuccess: "continue release {id} — RI PR <prId> merged", onFailure: "release {id} RI PR <prId> abandoned or unreachable" }`
+7. **On PR merged** (watcher `onSuccess`): confirm via GET that `status == "completed"`; set `ri.status = "merged"`, `ri.mergedAt = closedDate`, clear the directive (`action: "none"`).
+   - `CONFIG[ado.integration.requireGoAheadAfterRI] != false` → `phase = "ri-go-ahead"`, Step 2 → `waiting-approval`, emit the Rule 11 email `step-2-waiting-approval` with subject `⏸ Step 2 (RI merged) waiting for go-ahead — reply approve-ri to start FI | {releaseId}`, EXIT.
+   - otherwise → `phase = "fi"`, continue to 2b.
+
+### Go-ahead (`phase == "ri-go-ahead"`)
+Resumed only by `approve-ri` (also accepted: `approve`, `approve-step 2` while `phase == "ri-go-ahead"`). Record `ri.goAheadAt` / `ri.goAheadBy`, set `phase = "fi"`, Step 2 → `in-progress` (**not** `completed`), audit `{ "event": "ri-go-ahead" }`, continue to 2b.
+
+### 2b — Forward Integration (`phase == "fi"`)
+Identical to 2a with: `-Direction FI -SourceBranch <developBranch> -TargetBranch <mainBranch>`, `<fiBranch>`, report `integration-fi.json`, commit message `FI: Merge <developBranch> into <mainBranch> for <releaseTag>`, PR title `FI: <developBranch> → <mainBranch> | <releaseTag> (ZED)`, EventKey `fi-pr-raised`, watcher prompts `... FI PR <prId> ...`. Preserve paths keep `<mainBranch>`'s files. **On FI PR merged**: `fi.status = "merged"`, `phase = "cut"`, **no go-ahead** — continue straight to 2c in the same invocation.
+
+### 2c — Cut (`phase == "cut"`)
+Run Step 2 Actions 1–6. Action 1 branches from `origin/CONFIG[ado.baseBranch]` (== `mainBranch`), which now contains the FI merge — always fetch first. The `2-cut-branch` step gate applies after 2c exactly as today.
+
+### Failure / owner commands
+- `Invoke-BranchIntegration.ps1` throws (fetch/push failure, remote branch exists without the source, unresolved conflict) → Step 2 → `failed` with the error, Rule 11 `step-2-failed` email, halt.
+- PR **abandoned** (watcher `onFailure`) → Step 2 → `failed` (`"RI|FI PR <id> was abandoned"`).
+- `ack retry` → re-run the **current sub-phase** from its step 2 (the script re-uses the remote branch if it still contains the source; a new PR is opened if the old one was abandoned). Step 2 → `in-progress`.
+- `ack skip` while `phase` is `ri` / `fi` → mark **only that sub-phase** `skipped`, advance `phase` (ri → fi, fi → cut), Step 2 → `in-progress`; never skips the branch cut. Audit `{ "event": "integration-skipped", "phase": "..." }`.
+
+### Test mode (`release.testMode == true`)
+Run 2a and 2b back-to-back **without `-Push`**: the merge + resolution is computed and reported, then discarded — no branch, no PR, no watcher, no go-ahead. Set `ri.status` / `fi.status = "dry-run"` (or `up-to-date`), add an `integration` section to `test-run-capture.json` (`{ ri: { status, conflictCount, preservedFiles, reviewFiles }, fi: { ... } }`), include the two `summaryMarkdown` blocks in the owner-only test summary, and continue to 2c. The FI dry run is computed against today's `developBranch` (the RI merge has not landed), so it is indicative only.
 
 ## Step 3: Wait for Build Completion
 
@@ -128,6 +193,8 @@
 ## Step 5: Deploy Canary
 
 **Trigger**: Step 3 completed (build done). Step 4 (commit analysis) runs in parallel and is NOT a prerequisite for canary.
+**Private stamp side track**: When `CONFIG[pipelines.privateStampUpgrade.enabled]` is `true`, the **first** thing Step 5 does (before any canary work, every entry — it is idempotent) is `Invoke-PrivateStampUpgrade.ps1 -Action Init -ReleaseId <id>`; if it returns a `NotifyEvent`, send that email (see "Private stamp upgrade test" below). It never blocks or delays the canary actions that follow.
+**Canary schedule guard**: Canary pipelines with `scheduleGuard` (BCM-EACAN → `enableSchedule`) get their own scheduled/ad-hoc deployments paused as soon as **ZED's Step 5 run of that pipeline succeeds** — done by the watcher side-channel, and re-checked by the agent when Step 5 completes (`Invoke-ScheduleGuard.ps1 -Action Sync`). See "Canary schedule guard" below.
 **⚠️ Test Mode Override**: When `testMode` is `true`, resolve the trigger set + REAL params as normal, then call `Invoke-TriggerAndCancel.ps1 -Step 5` **once per resolved pipeline** (instant cancel + capture) instead of triggering + polling. Skip the EV2 approval-link scan. See "Test Mode Overrides → Step 5".
 **Actions**:
 1. Read `pipeline-catalog.json → canaryRouting` (default `{ mode: "static" }` if absent):
@@ -228,6 +295,64 @@
 **Completion**: All triggered pipelines succeed → send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-completed'`: "Canary deployment completed"
 **Failure**: Any pipeline fails → step `failed`, send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-failed'` (default: current-owner-only — owner widens via `routing.5-deploy-canary.failure`), halt for `ack`
 
+## Private stamp upgrade test (side track: Step 5 ∥ canary → joined at Step 13)
+
+Runs only when `CONFIG[pipelines.privateStampUpgrade.enabled] == true` (BCM). It deploys the **last** build and **this release's** build side by side on one private stamp instance using the private stamp pipeline (`CONFIG[pipelines.privateStampUpgrade.id]`), then waits for the release owner to run BVT on the private stamp. It runs in parallel with Steps 5–12 and never blocks them; **Step 13 is its only join point**.
+
+All transitions go through `scripts/Invoke-PrivateStampUpgrade.ps1` (never POST these runs by hand). State: `state.privateStampUpgrade` (status, inputs, runs.last, runs.current — see the script header).
+
+| Status | Meaning | Advanced by |
+|--------|---------|-------------|
+| `awaiting-input` | Owner asked for inputs | owner `private-stamp` |
+| `inputs-ready` | Inputs stored; waiting for Step 3's build | watcher Poll (starts leg *last* once Step 3 is `completed`) |
+| `deploying-last` | Leg *last* running (owner's last-build branch on **port 1**) | watcher Poll |
+| `deploying-current` | Leg *current* running (`release.currentBranch` on **port 2**) — queued only after *last* succeeded | watcher Poll |
+| `awaiting-bvt` | Both deployed; owner runs BVT on the private stamp | owner `approve-private-stamp` |
+| `signed-off` / `skipped` | Done — Step 13 may proceed | — |
+| `failed` | A leg failed to queue or deploy (`failedLeg`, `error`) | owner `private-stamp retry` / `private-stamp` (new inputs) / `private-stamp skip` |
+
+**Owner inputs** — asked **every release**, never re-used from a previous release. Collected by the `private-stamp` command (see `command-behaviors.md`): private stamp **instance** (e.g. `A`), **port 1** (last build), **port 2** (current build), **last build** = the `ArtifactBranch` whose latest official build is the previous deployment (e.g. `releases/bcm2610`), and the **TeeWorkflowQueueName**. The current build is always this release's branch (`release.currentBranch`) — the pipeline deploys the latest official build of `ArtifactBranch`, i.e. the Step 2/3 release build.
+
+**Payload** (both legs, same YAML ref `CONFIG[...privateStampUpgrade.sourceBranch]` → `refs/heads/<release.currentBranch>`): `CONFIG[...privateStampUpgrade.templateParameters]` verbatim plus `PrivateInstance = <instance>`, `WebRolePort = <port 1 | port 2>`, `ArtifactBranch = <last build | release.currentBranch>`, `ServiceOverrideSettings = @{"BCMAppConfig->WorkflowQueueName"="<queue>";}` (from `serviceOverrideSettingsTemplate`). The script validates: ports 1024–65534 and at least `portSpan` apart (BCM: 2 — HTTP is HTTPS + 1), queue name `[A-Za-z0-9._-]`, last build ≠ current release branch.
+
+**Notifications** — `Invoke-PrivateStampUpgrade.ps1` returns `NotifyEvent` exactly once per transition; the agent (or the watcher prompt `private stamp upgrade <event> for release <id>`) sends ONE email via `Resolve-NotificationRecipients -EventKey <event>` (default current-owner-only; widen via `routing.5-deploy-canary.halt|failure`):
+- `private-stamp-input-needed` — subject `🧪 Private stamp upgrade test — inputs needed | {releaseId}`. Body: what is needed (instance, port 1 for last build, port 2 for current build, last build branch, TeeWorkflowQueueName), the reply format (`private-stamp` in ZED chat — interactive — or one line `private-stamp instance=A lastPort=10060 currentPort=10062 lastBuild=releases/bcm2610 queue=<name>`), and that canary continues meanwhile but **Step 13 (R2D) waits** for this test.
+- `private-stamp-bvt-ready` — subject `🧪 Private stamp ready for BVT — instance {instance}, ports {port1}/{port2} | {releaseId}`. Body: both run links + results, the deployed branches/ports, and *"Run BVT on the private stamp, then reply `approve-private-stamp` (or `private-stamp skip <reason>`)."*
+- `private-stamp-failed` — subject `❌ Private stamp {leg} deployment failed | {releaseId}`. Body: `error`, run link, and the three options (`private-stamp retry`, `private-stamp` with new inputs, `private-stamp skip <reason>`).
+
+**Polling** — `Release-Watcher.ps1` and `Invoke-ColdResume.ps1` call `-Action Poll` on every tick while the status is `inputs-ready`, `triggering-*`, `deploying-*` or `last-succeeded`, independent of the primary `watcherDirective` (same co-located side-channel pattern as Step 4). The watcher only invokes the agent when `NotifyEvent` is set. A cold-resume verdict with `PrivateStampSideChannel.NotifyEvent` means the session must send that email.
+
+**Test mode** — `Init` creates the track as `skipped` (`skipReason: test-mode`): no owner input, no deployment, no wait. Step 13's join is satisfied.
+
+## Canary schedule guard (Step 5 success → Step 6 sign-off)
+
+Some canary pipelines also deploy on their own — BCM-EACAN (391732) runs `develop` daily at 17:30 UTC (11 PM IST) and teams queue ad-hoc `develop` runs — which would overwrite the release bits on the canary stamps while Step 6 BVT is evaluating them. Configure per canary pipeline in `pipeline-catalog.json`:
+
+```json
+"canary": { "BCM-EACAN": { ..., "scheduleGuard": { "variable": "enableSchedule", "disabledValue": "false", "enabledValue": "true" } } }
+```
+
+`<variable>` is a **definition variable** (Pipeline settings → Variables) that gates the pipeline's first stage (`condition: eq(variables['enableSchedule'], true)`). Because it gates **every** run, not only scheduled ones, a ZED-triggered run while it is `false` is silently skipped. Hence the invariant: **ZED never triggers a guarded pipeline while ZED has it disabled.**
+
+All changes go through `scripts/Invoke-ScheduleGuard.ps1` (read definition → change only that variable → PUT with revision retry). State: `state.scheduleGuards.<key>` = `{ status: disabled | restored | preexisting | disable-failed | restore-failed, originalValue, disabledByRunId, disabledAt, restoredAt, restoreReason, revision, error }`.
+
+| When | What | Who |
+|------|------|-----|
+| ZED's Step 5 run of `<key>` (a run id in `state.triggeredPipelines.5` for that definition) completes **succeeded** | `<variable>` := `disabledValue` (status `disabled`). If it already was `disabledValue` → `preexisting` (ZED will not touch it again). Failed/cancelled runs never disable — so test mode (runs cancelled at trigger) never disables either. | watcher / cold-resume `-Action Sync` every tick; agent `-Action Sync` when Step 5 completes |
+| Step 6 BVT signed off (`approve-bvt`) | `<variable>` := `enabledValue` (status `restored`) — only if ZED disabled it and it is still `disabledValue` | agent `-Action Restore -Reason approve-bvt` |
+| Step 6 `completed`/`skipped` by any other path (`approve-step 6`, `ack skip`, `skip 6`, gate) | same restore (safety net) | watcher `-Action Sync` |
+| Before Step 7 triggers | restore; halt Step 7 if it fails | agent `-Action Restore -Reason step-7-pre-trigger` |
+| `rebuild` re-queues a guarded pipeline before Step 6 sign-off | restore before queueing, then `-Action Rearm -RunId <new run>` → status `armed`: disabled again only when **that** run succeeds (never on the older Step 5 run, whose success would otherwise skip the new run's gated stage) | agent (`rebuild`), then watcher `Sync` |
+| `teardown` | restore anything still disabled | agent `-Action Restore -Reason teardown` |
+
+**Notifications** — every result in `.NotifyEvents` (`"<event>:<pipelineKey>"`) is ONE owner-only email (`Resolve-NotificationRecipients -EventKey <event>` → unmapped → current owner only); the watcher invokes the agent with `schedule guard <event> <key> for release <id>` for this:
+- `schedule-guard-disabled` — `⏸ {key} daily deployments paused ({variable}=false) | {releaseId}` — "Paused after Step 5 run {runId} succeeded, so the daily develop run and ad-hoc runs cannot replace the release bits before BVT sign-off. ZED sets it back to true on `approve-bvt`."
+- `schedule-guard-preexisting` — `ℹ {key} {variable} was already false | {releaseId}` — ZED did not change it and will not re-enable it.
+- `schedule-guard-restored` — `▶ {key} daily deployments resumed ({variable}=true) | {releaseId}` (include `note` if the value had been changed outside ZED).
+- `schedule-guard-failed` — `⚠ Could not set {key} {variable} | {releaseId}` — include the error, the pipeline link `https://dev.azure.com/CONFIG[ado.organization]/CONFIG[ado.project]/_build?definitionId={id}` → Edit → Variables, the exact value to set by hand, and (for a failed disable) the next scheduled run time. Disable failures are retried every watcher tick; the email is not repeated for the same error.
+
+Failures never fail Step 5 or Step 6; a failed **restore** halts Step 7 (see Step 7 pre-trigger).
+
 ## Step 6: BVT Check (Kusto-Based Failure Analysis)
 
 **Trigger**: Step 5 completed (canary deployed)
@@ -277,6 +402,7 @@
 ## Step 7: Rollback
 
 **Trigger**: Step 6 approved
+**Pre-trigger (canary schedule guard)**: before Action 2, run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason step-7-pre-trigger` (no-op unless ZED still has a guard disabled). If any result is `restore-failed`, set Step 7 → `failed` ("cannot roll back: <key> still has <variable>=<disabledValue>, its run would be silently skipped") and halt — never trigger a guarded pipeline while ZED has it disabled. See "Canary schedule guard".
 **Actions**:
 1. **Reuse Step 5's actually-triggered set** — do NOT re-query Kusto and do NOT recompute pipeline selection. Rollback MUST target exactly the same canary surface that was deployed to in Step 5, otherwise the rollback either (a) restores bits in regions that were never updated, or (b) misses regions that received the forward bits. Read from the Step 5 `cluster-type-routing` audit row (or equivalent `state.json → step5.triggeredPipelines`) the list of `{ key, params }` pairs that were actually triggered with their `templateParameters`. Use those verbatim. This applies to both `mode: "static"` and `mode: "cluster-type"` — Step 7 never re-runs the routing sub-procedure. If Step 5's triggered-set is missing from state/audit (e.g., manual intervention scrubbed it), halt with `failed` and ask the release owner to provide the list explicitly via `modify` before retrying.
 2. Trigger each of those CANARY pipelines, but with `ArtifactsBranch` overridden to `release.json → previousBranch` (the previous release branch containing known-good production bits), in **parallel**. Preserve every other parameter (including the stamp lists) exactly as Step 5 sent them.
@@ -348,7 +474,7 @@
 
 ## Step 13: Create SafeFly R2D Request
 
-**Trigger**: Step 12 approved AND Step 4 completed (commit data)
+**Trigger**: Step 12 approved AND Step 4 completed (commit data) AND — when `CONFIG[pipelines.privateStampUpgrade.enabled]` — the private stamp upgrade test is `signed-off` or `skipped`
 
 **Prerequisite check (Step 4 join point — see Step Dependency Matrix parallelism note):**
 
@@ -371,7 +497,15 @@ Before running any of the actions below, read `state.json` and verify `state.ste
 
 If `state.steps[4].status == "failed"`, halt Step 13 with `failed`, email owner with the chain of remediation attempts (per the Self-Healing rule), and wait for `ack`.
 
-If `state.steps[4].status == "completed"`, proceed with the actions below.
+If `state.steps[4].status == "completed"`, proceed with the private stamp join below.
+
+**Prerequisite check 2 (private stamp upgrade join — only when `CONFIG[pipelines.privateStampUpgrade.enabled]`):**
+
+Read `state.privateStampUpgrade.status` (missing track ⇒ run `Invoke-PrivateStampUpgrade.ps1 -Action Init` first and send its `NotifyEvent`, then treat as `awaiting-input`):
+- `signed-off` or `skipped` → proceed with the actions below.
+- anything else → do NOT create the R2D. Set `state.steps[13].status = "waiting"`, set `watcherDirective` to `{ "action": "none" }` (the watcher keeps polling the side track), log `step13-waiting-on-private-stamp` with the current status, send ONE Behavior Rule 11 email `⏸ Step 13 waiting on private stamp upgrade test ({status})` that repeats what the owner must do for that status (inputs / BVT sign-off / retry), and EXIT. Step 13 is re-entered by `approve-private-stamp` or `private-stamp skip` (both resume the execution loop).
+
+If both checks pass, proceed with the actions below.
 
 **Skill**: `.github/skills/zed-agent/scripts/SafeFly/New-SafeFlyRequest.ps1`
 **API Reference**: `.github/skills/zed-agent/scripts/SafeFly/SAFEFLY-API-REFERENCE.md` — full schema, all enums, valid values for every field (sourced from [SafeFly OpenAPI spec](https://www.safefly.azure.com/swagger/v1/swagger.json))

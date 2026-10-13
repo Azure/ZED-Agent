@@ -126,6 +126,60 @@
           "description": "Base branch from which release branches are cut.",
           "default": "develop",
           "minLength": 1
+        },
+        "integration": {
+          "type": "object",
+          "description": "Optional pre-branch-cut Reverse/Forward Integration (Step 2 sub-phases 2a/2b) for services that keep a develop + master pair. 2a RI: merge mainBranch into developBranch via PR, wait for merge, then wait for the release owner's `approve-ri`. 2b FI: merge developBranch into mainBranch via PR, wait for merge. 2c: the normal branch cut from ado.baseBranch. Absent or enabled=false keeps the stock Step 2.",
+          "additionalProperties": true,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "developBranch": {
+              "type": "string",
+              "description": "Integration/development branch (RI target, FI source).",
+              "default": "develop",
+              "minLength": 1
+            },
+            "mainBranch": {
+              "type": "string",
+              "description": "Release-source branch (RI source, FI target). Must equal ado.baseBranch so the release branch is cut from the FI result.",
+              "default": "master",
+              "minLength": 1
+            },
+            "preservePaths": {
+              "type": "array",
+              "description": "Repo-relative paths whose PR-TARGET version always wins (RI keeps develop's, FI keeps master's). Applies to conflicted and cleanly-merged files.",
+              "items": { "type": "string", "minLength": 1 },
+              "default": [".config"]
+            },
+            "conflictStrategy": {
+              "type": "string",
+              "description": "How conflicts outside preservePaths are resolved. 'newest-commit-per-file': the branch whose last commit touching the file is newer wins the conflicting hunks (ties keep the target).",
+              "enum": ["newest-commit-per-file"],
+              "default": "newest-commit-per-file"
+            },
+            "riBranchTemplate": {
+              "type": "string",
+              "description": "Name of the RI integration branch. Tokens: {releaseId} (e.g. 2026-11), {releaseTag} (leaf of release.currentBranch, e.g. bcm-2611).",
+              "default": "zed/{releaseTag}-ri-master-to-develop"
+            },
+            "fiBranchTemplate": {
+              "type": "string",
+              "description": "Name of the FI integration branch. Same tokens as riBranchTemplate.",
+              "default": "zed/{releaseTag}-fi-develop-to-master"
+            },
+            "requireGoAheadAfterRI": {
+              "type": "boolean",
+              "description": "After the RI PR merges, halt Step 2 in waiting-approval until the release owner sends `approve-ri`. FI then starts automatically.",
+              "default": true
+            },
+            "prPollIntervalSeconds": {
+              "type": "integer",
+              "description": "Watcher poll interval for the RI/FI PR status (poll-ado-pr).",
+              "minimum": 60,
+              "default": 900
+            }
+          }
         }
       }
     },

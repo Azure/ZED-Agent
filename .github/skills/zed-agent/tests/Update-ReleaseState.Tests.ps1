@@ -37,6 +37,19 @@ Describe 'Update-ReleaseState' {
         }
     }
 
+    Context 'Minimal step skeletons ({number,name,status} — e.g. BCM state.json)' {
+        It 'adds startedAt / completedAt when the step has none' {
+            $relDir = Join-Path $testRoot '.zed-agent/releases/2026-04'
+            @{ releaseId = '2026-04'; lastUpdated = '2026-04-01T10:00:00Z'; steps = @(@{ number = 4; name = 'collect-commits'; status = 'pending' }) } |
+                ConvertTo-Json -Depth 5 | Set-Content (Join-Path $relDir 'state.json') -Encoding UTF8
+            { Update-ReleaseState -ReleaseId '2026-04' -Action update-step -StepNumber 4 -StepStatus 'in-progress' } | Should -Not -Throw
+            { Update-ReleaseState -ReleaseId '2026-04' -Action update-step -StepNumber 4 -StepStatus 'completed' } | Should -Not -Throw
+            $s = (Update-ReleaseState -ReleaseId '2026-04' -Action read).steps | Where-Object number -eq 4
+            $s.status | Should -Be 'completed'
+            $s.startedAt | Should -Not -BeNullOrEmpty
+            $s.completedAt | Should -Not -BeNullOrEmpty
+        }
+    }
     Context 'Action: write' {
         It 'creates .bak before writing' {
             $relDir = Join-Path $testRoot '.zed-agent/releases/2026-04'

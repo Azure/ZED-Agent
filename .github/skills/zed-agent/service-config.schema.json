@@ -288,6 +288,47 @@
       "required": ["sheetNameTemplate", "sharePointFolder", "excludeAuthors"],
       "additionalProperties": true,
       "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["per-release", "tracker"],
+          "default": "per-release",
+          "description": "'per-release': Step 4 creates and uploads a new commits.xlsx every release (default). 'tracker': Step 4 adds one sheet per release to a single shared workbook (commitExcel.tracker) and edits it in place via the Graph Excel API — scripts/Invoke-CommitTracker.ps1."
+        },
+        "tracker": {
+          "type": "object",
+          "description": "Required when mode == 'tracker'. The shared workbook and its column layout.",
+          "required": ["url", "columns"],
+          "additionalProperties": true,
+          "properties": {
+            "url": { "type": "string", "minLength": 1, "description": "SharePoint sharing link (or URL) of the shared tracker workbook." },
+            "dateFormat": { "type": "string", "default": "dd-mm-yyyy", "description": "Excel number format of the date column." },
+            "headerStyle": {
+              "type": "object",
+              "description": "Header row styling for sheets ZED creates.",
+              "properties": {
+                "fill": { "type": "string" }, "fontColor": { "type": "string" },
+                "bold": { "type": "boolean" }, "wrapText": { "type": "boolean" }
+              }
+            },
+            "columns": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Columns in sheet order. Exactly one column must have source 'link' (or 'linkText') — it identifies each row (PR id / commit sha). Columns without a source are team-filled; 'required: true' ones must be non-empty on every row before Step 4 completes.",
+              "items": {
+                "type": "object",
+                "required": ["header"],
+                "additionalProperties": false,
+                "properties": {
+                  "header":   { "type": "string", "minLength": 1 },
+                  "source":   { "type": "string", "enum": ["date", "author", "link", "linkText", "description", "commitId"] },
+                  "required": { "type": "boolean", "default": false },
+                  "width":    { "type": "number", "minimum": 0, "description": "Column width (points) for sheets ZED creates." },
+                  "aliases":  { "type": "array", "items": { "type": "string" }, "description": "Other header spellings accepted when adopting an existing sheet (matching ignores spaces and case)." }
+                }
+              }
+            }
+          }
+        },
         "sheetNameTemplate": {
           "type": "string",
           "description": "Template for the Excel sheet tab name. Supports {{YYMM}} placeholder.",

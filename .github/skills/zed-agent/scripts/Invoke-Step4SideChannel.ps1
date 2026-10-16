@@ -41,7 +41,9 @@ param(
     [Parameter(Mandatory)][string]$StateFile,
     [Parameter(Mandatory)][string]$StateLock,
     [Parameter(Mandatory)][string]$AuditFile,
-    [string]$AccessToken
+    [string]$AccessToken,
+    # Tracker mode only: service-config.json to pass to Invoke-CommitTracker (default: the skill's).
+    [string]$ServiceConfigPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +77,24 @@ try {
         return $result
     }
 
+    # Tracker mode (commitExcel.mode == "tracker"): fill % comes from the release's sheet in the
+    # shared workbook via Graph's Excel API (required columns, not just Impact).
+    $tracker = if ($state.PSObject.Properties['step4Tracker']) { $state.step4Tracker } else { $null }
+    if ($tracker -and $tracker.sheetName) {
+        $tpArgs = @{ Action = 'Poll'; ReleaseId = $ReleaseId; SheetName = [string]$tracker.sheetName }
+        if ($tracker.driveId) { $tpArgs.DriveId = [string]$tracker.driveId }
+        if ($tracker.itemId) { $tpArgs.ItemId = [string]$tracker.itemId }
+        if ($AccessToken) { $tpArgs.AccessToken = $AccessToken }
+        if ($ServiceConfigPath) { $tpArgs.ServiceConfigPath = $ServiceConfigPath }
+        $tp = & (Join-Path $PSScriptRoot 'Invoke-CommitTracker.ps1') @tpArgs
+        if (-not $tp.Success) {
+            $result.Error = "Commit tracker poll failed: $($tp.Error)"
+            @{ ts = (Get-Date -Format 'o'); event = 'step4-side-channel-error'; error = $result.Error } |
+                ConvertTo-Json -Compress | Add-Content $AuditFile -Encoding UTF8
+            return $result
+        }
+        $total = $tp.TotalRows; $filled = $tp.Filled; $pct = $tp.Pct
+    } else {
     # Acquire token if not provided
     if (-not $AccessToken) {
         $AccessToken = az account get-access-token --resource 'https://graph.microsoft.com' --query accessToken -o tsv 2>$null
@@ -97,6 +117,7 @@ try {
     $filled = ($rows | Where-Object { $_.'Impact' -and $_.'Impact'.ToString().Trim() -ne '' }).Count
     $pct = if ($total -gt 0) { [math]::Round(($filled / $total) * 100) } else { 0 }
     Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
+    }
 
     $result.ImpactPct = $pct
 
@@ -117,7 +138,7 @@ try {
             $s4 = $latest.steps | Where-Object { $_.number -eq 4 }
             if ($s4 -and $s4.status -eq 'in-progress') {
                 $s4.status = 'completed'
-                $s4.completedAt = (Get-Date).ToUniversalTime().ToString('o')
+                Add-Member -InputObject $s4 -MemberType NoteProperty -Name completedAt -Value ((Get-Date).ToUniversalTime().ToString('o')) -Force
                 @{ ts = (Get-Date -Format 'o'); event = 'step4-completed-by-side-channel'; pct = $pct } |
                     ConvertTo-Json -Compress | Add-Content $AuditFile -Encoding UTF8
                 $result.StepCompleted = $true

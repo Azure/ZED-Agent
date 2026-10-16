@@ -374,6 +374,31 @@ while ($true) {
         }
     } elseif ($dir.action -eq 'poll-onedrive-file') {
         # GAP-3: Excel completion polling via Graph API + ImportExcel
+        # Tracker mode: the directive carries `tracker` = { sheetName, driveId, itemId } and the
+        # fill % of the release's sheet comes from Invoke-CommitTracker.ps1 (required columns).
+        if ($dir.PSObject.Properties['tracker'] -and $dir.tracker -and $dir.tracker.sheetName) {
+            try {
+                $tpArgs = @{ Action = 'Poll'; ReleaseId = $ReleaseId; SheetName = [string]$dir.tracker.sheetName }
+                if ($dir.tracker.driveId) { $tpArgs.DriveId = [string]$dir.tracker.driveId }
+                if ($dir.tracker.itemId) { $tpArgs.ItemId = [string]$dir.tracker.itemId }
+                $tokenTr = Get-AzToken "https://graph.microsoft.com"
+                if ($tokenTr) { $tpArgs.AccessToken = $tokenTr }
+                $tp = & (Join-Path $PSScriptRoot 'Invoke-CommitTracker.ps1') @tpArgs
+                if (-not $tp.Success) { throw $tp.Error }
+                $auditFile = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+                @{ ts = (Get-Date -Format 'o'); event = 'excel-poll'; mode = 'tracker'; sheet = $dir.tracker.sheetName; filled = $tp.Filled; total = $tp.TotalRows; pct = $tp.Pct } | ConvertTo-Json -Compress | Add-Content $auditFile -Encoding UTF8
+                $conditionMet = ($tp.Pct -ge 100)
+                $retryCount = 0
+            } catch {
+                $retryCount++
+                if ($retryCount -ge $maxRetries) {
+                    & copilot --agent=ZedAgent -p $dir.onFailure --allow-all --autopilot --no-ask-user -s
+                    break
+                }
+                $delay = [math]::Min($baseDelay * [math]::Pow(2, $retryCount - 1), 300)
+                Start-Sleep -Seconds $delay; continue
+            }
+        } else {
         try {
             $token = Get-AzToken "https://graph.microsoft.com"
             if (-not $token) {
@@ -403,6 +428,7 @@ while ($true) {
             }
             $delay = [math]::Min($baseDelay * [math]::Pow(2, $retryCount - 1), 300)
             Start-Sleep -Seconds $delay; continue
+        }
         }
     } elseif ($dir.action -eq 'safefly-approval-poll') {
         # GAP-4: SafeFly approval polling via dedicated auth resource

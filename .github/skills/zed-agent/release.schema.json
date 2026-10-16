@@ -45,6 +45,7 @@
     "buildId":           { "type": ["integer", "string"] },
     "buildNumber":       { "type": "string" },
     "commitExcelUrl":    { "type": "string", "format": "uri" },
+    "commitExcelSheet":  { "type": "string", "description": "Tracker mode: name of this release's sheet in the shared commit tracker workbook (e.g. 'BCM2611')." },
     "safeFlyId":         { "type": "string" },
     "safeFlyRequestNumber": { "type": ["string", "integer"] },
     "safeFlyUrl":        { "type": "string", "format": "uri" },
@@ -72,6 +73,11 @@
     "step4InlineCompleted": { "type": "boolean", "description": "True after Step 4 Phase A (inline) work is done." },
     "step4InlineCompletedAt": { "type": "string", "format": "date-time" },
     "step4ExcelUrl": { "type": "string", "format": "uri", "description": "OneDrive/SharePoint URL of the commit Excel file." },
+    "step4Tracker": {
+      "type": "object",
+      "description": "Tracker mode: where this release's commit sheet lives. Set by Step 4 from Invoke-CommitTracker -Action Publish; read by the Step 4 side-channel and the Step 13 barrier.",
+      "properties": { "sheetName": { "type": "string" }, "driveId": { "type": "string" }, "itemId": { "type": "string" } }
+    },
     "step4ExcelImpactPct": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage of Excel rows with Impact column filled." },
     "step4NudgeSentAt": { "type": "string", "format": "date-time", "description": "Timestamp of the 24h nudge message, used for dedup." }
   }

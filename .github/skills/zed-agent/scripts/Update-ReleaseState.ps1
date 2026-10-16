@@ -76,8 +76,9 @@ function Update-ReleaseState {
             if (-not $step) { throw "Step $StepNumber not found" }
             $step.status = $StepStatus
             $now = (Get-Date).ToUniversalTime().ToString('o')
-            if ($StepStatus -eq 'in-progress') { $step.startedAt = $now }
-            if ($StepStatus -in @('completed','failed','skipped') -or $StepStatus -like 'failed-*') { $step.completedAt = $now }
+            # Step skeletons may omit startedAt/completedAt (e.g. {number,name,status}); add them on demand.
+            if ($StepStatus -eq 'in-progress') { Add-Member -InputObject $step -MemberType NoteProperty -Name startedAt -Value $now -Force }
+            if ($StepStatus -in @('completed','failed','skipped') -or $StepStatus -like 'failed-*') { Add-Member -InputObject $step -MemberType NoteProperty -Name completedAt -Value $now -Force }
             if ($null -ne $StepPayload) {
                 $payloadProps = if ($StepPayload -is [hashtable]) { $StepPayload.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
                                 else { $StepPayload.PSObject.Properties | ForEach-Object { @{ Name = $_.Name; Value = $_.Value } } }

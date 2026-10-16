@@ -181,7 +181,19 @@ Run 2a and 2b back-to-back **without `-Push`**: the merge + resolution is comput
    - `excelUrl` — the SharePoint sharing URL stored in step 8 (`release.json → commitExcelUrl`)
 
    Before sending, verify the rendered body contains no `{{` substring; if any remain, fix the variable map and re-render rather than sending a broken message.
-**State**: Step 4 → `in-progress` after Phase A completes (during Step 2). Transitions to `completed` automatically when the watcher side-channel detects 100 % Impact fill.
+
+**Tracker mode (`CONFIG[commitExcel.mode] == "tracker"`, e.g. BCM)** — the team keeps ONE shared workbook (`CONFIG[commitExcel.tracker.url]`) with one sheet per release. Actions 1–5 are unchanged; **replace Actions 6–9** with:
+- 6T. Run `Invoke-CommitTracker.ps1 -Action Publish -ReleaseId <id> -CommitsJsonPath <commits.json> -ReleaseFile <release.json>`. It works on the sheet named `CONFIG[commitExcel.sheetNameTemplate]` (e.g. `BCM{{YYMM}}` → `BCM2611`):
+  - sheet missing → created at the end of the workbook with the configured header row, styling and column widths;
+  - sheet present (e.g. the team created it) → **adopted** if its row 1 has every configured column (matching ignores spaces/case; `aliases` accepted), otherwise Publish throws and writes nothing;
+  - then **appends** one row per commit not already on the sheet (matched by PR id / commit sha in the link column), sorted by date: `Date`, `Author`, `PR/Commit Link` (`=HYPERLINK(<PR url>, "Pull Request <id>: <title>")`, or `Commit <sha>: <subject>` for a direct push), `Description of Changes` (the Comments line from Action 4 — authors may rewrite it), and empty team-filled columns. `excludeAuthors` are dropped.
+  - It **never modifies an existing row or cell** and never re-uploads the file (edits go through the Graph Excel API in a workbook session), so co-authors' work in any sheet is safe. Re-running is a no-op; `rebuild` / late cherry-picks only add their new rows.
+- 7T. Store `release.json.commitExcelUrl = CONFIG[commitExcel.tracker.url]`, `release.json.commitExcelSheet = <sheetName>`, and `state.step4Tracker = { sheetName, driveId, itemId }` (from the Publish result); set `state.step4ExcelUrl` to the same URL (the side-channel gate and nudge use it).
+- 8T. Post `templates/commit-tracker-request-message.html` (route key `commit-request`) with `serviceName` (`CONFIG[service.displayName]`), `releaseId`, `sheetName`, `commitCount` (rows on the sheet = `TotalRows`), `contributorCount`, `prevBranch`, `currentBranch`, `excelUrl` (tracker URL) and `columnsToFill` (the `required: true` headers joined with `, `). Same no-`{{` check.
+- Completion (Phase B) = **every row with a link has all `required: true` columns filled** (BCM: Risk Assessment, Testing Done, IsChangeUnderConfig) — the side-channel calls `Invoke-CommitTracker.ps1 -Action Poll` instead of downloading the file; `state.step4ExcelImpactPct` holds that fill %. The 24 h nudge uses `templates/commit-nudge-message.html` with the tracker URL.
+- **Test mode**: Publish returns `skipped-test-mode` and writes nothing to the shared tracker — use the per-release flow above (Actions 6–8 with test-mode auto-fill, owner-only) so the test run still produces an Excel.
+- Failure (Graph 401/403/404, header mismatch, locked workbook after retries) → Step 4 `failed` with the error and the manual fallback: add sheet `<sheetName>` by hand, then `ack retry` (Publish adopts it).
+**State**: Step 4 → `in-progress` after Phase A completes (during Step 2). Transitions to `completed` automatically when the watcher side-channel detects 100 % Impact fill (tracker mode: 100 % of required columns).
 **⚠️ Test Mode Override**: When `testMode` is `true`, auto-fill the manual columns (Impact = "Low", Validations = "CanaryTesting", Rollback Friendly = "Yes") for all rows. Skip the side-channel poll — mark Step 4 as `completed` immediately after upload. No Teams commit-request message (test mode suppresses Teams). **When `commitCount` is 0 (no commits on the branch), skip Excel creation and upload; instead set `release.json.commitExcelUrl = 'test-run:no-commits'` as a placeholder so the verifier can confirm the field was written.**
 **Watcher (Phase B side-channel — no dedicated directive)**: `Release-Watcher.ps1` polls the uploaded Excel on SharePoint every `CONFIG[operational.watcherPollIntervalSeconds]` (default 1 hour) **as a side-channel inside whatever directive is currently active** (typically `poll-ado-build` during Step 3, then `poll-ado-pipelines` during Step 5). The watcher reads the Excel via Graph API + ImportExcel and counts how many rows have the **Impact** column filled (non-empty). Completion condition: **100 % of Impact cells are filled**.
 - On each poll: update `state.step4ExcelImpactPct`, log fill percentage to `audit.jsonl` as event `step4-side-channel-poll`
@@ -491,6 +503,7 @@ Before running any of the actions below, read `state.json` and verify `state.ste
      "onFailure": "release {id} step 4 excel poll failed at step 13 barrier"
    }
    ```
+   **Tracker mode**: add `"tracker": <state.step4Tracker>` (`{ sheetName, driveId, itemId }`) to the directive — the watcher then measures the release's sheet via `Invoke-CommitTracker.ps1 -Action Poll` (all `required: true` columns) instead of downloading the file.
 2. Set `state.steps[13].status = "waiting"` and log `step13-waiting-on-step4` to `audit.jsonl`.
 3. Send the release owner a Behavior Rule 11 step-transition email with subject `⏸ Step 13 waiting on Step 4 Excel completion`.
 4. EXIT (per Rule 10). The watcher re-invokes the agent when Step 4 reaches 100 %.
@@ -517,6 +530,7 @@ This step uses the SafeFly skill to create the R2D request. Most payload paramet
 1. **Derive DeploymentNature from the commit Excel** — the team may have rewritten the Comments column in their own words (removed tags, added free-text), so do NOT rely on exact `[NatureTag]` pattern matching. Instead, perform intelligent analysis:
 
    **a. Download the latest Excel** from SharePoint (the URL in `release.json.commitExcelUrl`). Read every row — all columns: CommitHash, Owner, Date, Title, **Comments**, Impact, Validations, Rollback Friendly.
+   **Tracker mode**: do NOT download the shared workbook — run `Invoke-CommitTracker.ps1 -Action Read -ReleaseId <id> -SheetName <release.json.commitExcelSheet>` and use its `Rows` (every column keyed by header, e.g. Date, Author, PR/Commit Link, **Description of Changes** (plays the role of Comments), Risk Assessment, Testing Done, IsChangeUnderConfig). Match rows to `commits.json` by the PR id in the link text. `IsChangeUnderConfig` = Yes is a strong signal for `Config change` / "behind config" in the Live-production-feature check below.
 
    **b. For each commit row, determine its nature** by analyzing ALL available signals holistically:
    - The **Title** (commit subject — often the strongest signal)

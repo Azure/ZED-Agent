@@ -181,5 +181,29 @@ if ($integration -and $integration.Value -and $integration.Value.PSObject.Proper
     }
 }
 
+# --- Optional commitExcel.mode == "tracker" (one sheet per release in a shared workbook) ---
+$ceProp = $cfg.PSObject.Properties['commitExcel']
+if ($ceProp -and $ceProp.Value -and $ceProp.Value.PSObject.Properties['mode'] -and $ceProp.Value.mode) {
+    $ce = $ceProp.Value
+    if (@('per-release', 'tracker') -notcontains [string]$ce.mode) {
+        throw "commitExcel.mode '$($ce.mode)' is not supported. Expected 'per-release' or 'tracker'."
+    }
+    if ($ce.mode -eq 'tracker') {
+        if (-not $ce.PSObject.Properties['tracker'] -or -not $ce.tracker) { throw "commitExcel.tracker is required when commitExcel.mode = 'tracker'. Run 'setup-service group 7'." }
+        if ([string]::IsNullOrWhiteSpace([string]$ce.tracker.url)) { throw "Required config field is empty: 'commitExcel.tracker.url'." }
+        $cols = @($ce.tracker.columns)
+        if ($cols.Count -eq 0) { throw "Required config field is empty: 'commitExcel.tracker.columns'." }
+        if (@($cols | Where-Object { $_.source -in @('link', 'linkText') }).Count -ne 1) {
+            throw "commitExcel.tracker.columns needs exactly one column with source 'link' (or 'linkText')."
+        }
+        if (@($cols | Where-Object { $_.PSObject.Properties['required'] -and $_.required -eq $true }).Count -eq 0) {
+            throw "commitExcel.tracker.columns has no 'required: true' column — Step 4 would complete immediately."
+        }
+        if ([string]$ce.sheetNameTemplate -notmatch '\{\{(YYMM|releaseId)\}\}') {
+            throw "commitExcel.sheetNameTemplate '$($ce.sheetNameTemplate)' must contain {{YYMM}} (or {{releaseId}}) so each release gets its own sheet."
+        }
+    }
+}
+
 # --- Return composed object ---
 return $cfg

@@ -191,8 +191,9 @@ EventLogAllClusters
 | Property | Value |
 |----------|-------|
 | **Sheet name template** | `CONFIG[commitExcel.sheetNameTemplate]` |
-| **Auto-filled columns** | CommitHash, Owner, Date, Title, Comments |
-| **Manual columns** | Impact (Low/Medium/High), Validations (UnitTest/CanaryTesting/BVTs etc), Rollback Friendly (Yes/No) |
+| **Mode** | `CONFIG[commitExcel.mode]` — `per-release` (default: new `commits.xlsx` uploaded every release) or `tracker` (one sheet per release appended to the shared workbook `CONFIG[commitExcel.tracker.url]` via `Invoke-CommitTracker.ps1` — columns from `CONFIG[commitExcel.tracker.columns]`; see `step-behaviors.md → Step 4 → Tracker mode`) |
+| **Auto-filled columns** | CommitHash, Owner, Date, Title, Comments (tracker mode: the `source` columns, e.g. Date, Author, PR/Commit Link, Description of Changes) |
+| **Manual columns** | Impact (Low/Medium/High), Validations (UnitTest/CanaryTesting/BVTs etc), Rollback Friendly (Yes/No) (tracker mode: the columns without `source`; `required: true` ones gate Step 4) |
 | **Exclude authors** | `OneBranch GitPushVersion Account` |
 | **SharePoint folder** | `CONFIG[commitExcel.sharePointFolder]` |
 

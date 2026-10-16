@@ -1026,8 +1026,14 @@ Ask for:
 
 **Group 7 — Commit Excel**
 Ask for:
-- `commitExcel.sheetNameTemplate` — Sheet name template (e.g., "Prot{{YYMM}}Commits"). `{{YYMM}}` is replaced at runtime.
+- `commitExcel.mode` — *"Does your team keep ONE shared commit workbook with a new sheet per release (e.g. BCM's 'BCM Release Commits Tracker.xlsx'), or should ZED create a new commit Excel file every release?"* — `New file every release` (default → `per-release`) / `One shared workbook, one sheet per release` (→ `tracker`).
+- `commitExcel.sheetNameTemplate` — Sheet name template (e.g., "Prot{{YYMM}}Commits"). `{{YYMM}}` is replaced at runtime. In tracker mode, propose the pattern of the workbook's most recent sheets (e.g. `BCM{{YYMM}}` when the last sheets are `BCM2609`, `BCM2610`).
 - `commitExcel.sharePointFolder` — SharePoint folder path (e.g., "/Shared Documents/Monthly Releases")
+- **Tracker mode only** (`commitExcel.tracker`), behavior in `step-behaviors.md → Step 4 → Tracker mode`:
+  - `url` — the workbook's SharePoint sharing link. Resolve it via Graph (`/shares/{u!base64url}/driveItem`, then `/workbook/worksheets`) and show the owner the workbook name and its last 5 sheet names to confirm.
+  - `columns` — **propose from the most recent sheet's header row** (row 1), owner confirms or edits. Suggest `source` by header text: `Date`→`date`, `Author`/`Owner`→`author`, a PR/commit link column→`link`, `Description`/`Comments`→`description`; every other column is team-filled — ask which of them must be filled before Step 4 completes (`required: true`; at least one). Copy each column's current width into `width`, and the header fill / font colour / bold / wrap into `headerStyle`. If older sheets spell a header differently, offer it as an `alias`.
+  - Add the build-bot author (e.g. `OneBranch GitPushVersion Account`) to `commitExcel.excludeAuthors` if recent commits show one.
+  - Verify access without changing the workbook: run `Invoke-CommitTracker.ps1 -Action Poll -SheetName <latest sheet>` (read-only) and show the fill % it reports. (Write access is first exercised by Step 4's Publish; a failure there halts Step 4 with the Graph error.)
 
 **Group 8 — SharePoint**
 Ask for:

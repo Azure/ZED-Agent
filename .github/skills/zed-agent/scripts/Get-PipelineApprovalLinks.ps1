@@ -50,7 +50,7 @@ function Get-PipelineApprovalLinks {
     # Acquire token once if not provided
     if (-not $AccessToken) {
         try {
-            $raw = az account get-access-token --resource "https://dev.azure.com" --query accessToken -o tsv --only-show-errors 2>$null
+            $raw = az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv --only-show-errors 2>$null
             if ($LASTEXITCODE -eq 0 -and $raw -match '^eyJ') { $AccessToken = $raw.Trim() }
         } catch { }
     }

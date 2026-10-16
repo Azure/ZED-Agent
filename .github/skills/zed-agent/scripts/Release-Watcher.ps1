@@ -22,6 +22,12 @@ function Get-AzToken([string]$Resource) {
     # Returns token string or $null on auth error (caller decides how to handle).
     # Wrapped in a Start-Job with a 30s timeout so a hung `az` subprocess can't
     # freeze the entire watcher loop (root cause of 2026-05 hibernation outage).
+    # ADO must be requested by its AAD app ID: `--resource https://dev.azure.com` fails with
+    # AADSTS500011 (resource principal not found) in the Microsoft tenant, which silently
+    # stalled every ADO poll in an auth-failure loop (release 2026-10, Step 2 FI PR watch).
+    if ($Resource -match '^https://(dev\.azure\.com|app\.vssps\.visualstudio\.com)/?$') {
+        $Resource = '499b84ac-1321-427f-aa17-267ca6975798'
+    }
     $job = Start-Job -ScriptBlock {
         param($r)
         $out = az account get-access-token --resource $r --query accessToken -o tsv 2>&1

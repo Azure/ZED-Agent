@@ -150,6 +150,21 @@
           "description": "Value for the serviceOverrides parameter. Token {queueName} = owner-supplied TeeWorkflowQueueName.",
           "default": "@{}"
         },
+        "artifact": {
+          "type": "object",
+          "description": "Optional: the private stamp pipeline's build resource. When set, both legs are PINNED to an exact build (the owner gives the last build as a build link/id; the current leg uses release.json → buildId): the build id is mapped to its version in the resource's feed and posted as resources.builds.<resourceAlias>.version, with ArtifactBranch = that build's branch. Without it, ArtifactBranch is a branch and the pipeline deploys its latest build.",
+          "required": ["resourceAlias", "feedBranchPrefix", "connectionId", "sourceId"],
+          "additionalProperties": false,
+          "properties": {
+            "resourceAlias":     { "type": "string", "description": "YAML resources.builds alias that carries the service bits (BCM: svc_build)." },
+            "type":              { "type": "string", "default": "CloudVaultArtifacts-v3" },
+            "connectionId":      { "type": "string", "description": "Service connection id of the resource (BCM: 'CloudVault API - cdpxofficialbuilds')." },
+            "connectionName":    { "type": "string" },
+            "sourceId":          { "type": "string", "description": "Resource 'source' from the YAML (CloudVault source id)." },
+            "feedBranchPrefix":  { "type": "string", "description": "Feed branch = prefix + git branch with / - . replaced by _ (must match the YAML's branch expression). BCM: Mgmt_RecoverySvcs_IaaSCoord_." },
+            "buildDefinitionId": { "type": "integer", "description": "Official build pipeline id; the last build must come from it (BCM: 223537)." }
+          }
+        },
         "bvtRelease": {
           "type": "object",
           "description": "Optional BVT run after BOTH legs (deployed in parallel) succeed: a release of this CLASSIC release definition is created with <vaultIdVariable> = the owner-supplied redirected vault ARM id and every artifact's latest version. The owner signs off after the <environmentName> stage finishes. Without it, the owner runs BVT by hand.",

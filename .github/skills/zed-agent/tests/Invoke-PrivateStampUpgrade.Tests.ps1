@@ -11,14 +11,14 @@ BeforeAll {
     $script:Vault = '/subscriptions/5288acd1-ba79-4377-9205-9f220331a44a/resourceGroups/rg-1/providers/Microsoft.RecoveryServices/vaults/bvt-vault'
 
     function New-Env {
-        param([string]$Step3 = 'completed', [bool]$TestMode = $false, [bool]$Enabled = $true, [bool]$Bvt = $true)
+        param([string]$Step3 = 'completed', [bool]$TestMode = $false, [bool]$Enabled = $true, [bool]$Bvt = $true, [bool]$Pinned = $false)
         $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $steps = 1..16 | ForEach-Object { [ordered]@{ number = $_; name = "s$_"; status = 'pending' } }
         $steps[0].status = 'completed'; $steps[1].status = 'completed'; $steps[2].status = $Step3
         [ordered]@{ releaseId = '2026-11'; steps = $steps; watcherDirective = $null; lastUpdated = $null } |
             ConvertTo-Json -Depth 6 | Set-Content (Join-Path $dir 'state.json') -Encoding UTF8
-        [ordered]@{ releaseId = '2026-11'; currentBranch = 'releases/bcm-2611'; previousBranch = 'releases/bcm-2610'; testMode = $TestMode; releaseOwner = @{ alias = 'o'; email = 'o@x.com' } } |
+        [ordered]@{ releaseId = '2026-11'; currentBranch = 'releases/bcm-2611'; previousBranch = 'releases/bcm-2610'; testMode = $TestMode; buildId = 950; releaseOwner = @{ alias = 'o'; email = 'o@x.com' } } |
             ConvertTo-Json -Depth 4 | Set-Content (Join-Path $dir 'release.json') -Encoding UTF8
         $psu = [ordered]@{
             enabled = $Enabled
@@ -29,6 +29,7 @@ BeforeAll {
             parameterNames = [ordered]@{ instance = 'PrivateInstance'; port = 'WebRolePort'; artifactBranch = 'ArtifactBranch'; serviceOverrides = 'ServiceOverrideSettings' }
             serviceOverrideSettingsTemplate = '@{"BCMAppConfig->WorkflowQueueName"="{queueName}";}'
         }
+        if ($Pinned) { $psu.artifact = [ordered]@{ resourceAlias = 'svc_build'; type = 'CloudVaultArtifacts-v3'; connectionId = 'conn-1'; connectionName = 'CloudVault API - cdpxofficialbuilds'; sourceId = 'fb10185a'; feedBranchPrefix = 'Mgmt_RecoverySvcs_IaaSCoord_'; buildDefinitionId = 223537 } }
         if ($Bvt) { $psu.bvtRelease = [ordered]@{ definitionId = 64863; environmentName = 'IaaSVM BVT Private Stamp'; vaultIdVariable = 'PrivateStampVaultId' } }
         [ordered]@{ privateStampUpgrade = $psu } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $dir 'pipeline-catalog.json') -Encoding UTF8
         return $dir
@@ -62,6 +63,19 @@ BeforeAll {
         $global:PsuQueueIds = [System.Collections.Generic.Queue[int]]::new([int[]]$Ids)
         Mock Invoke-RestMethod -ParameterFilter { $Method -eq 'POST' -and $Uri -like '*/pipelines/396863/runs*' } -MockWith { [pscustomobject]@{ id = $global:PsuQueueIds.Dequeue() } }
     }
+    function Mock-Pinning([hashtable]$Builds, [hashtable]$Feeds) {
+        # $Builds: id -> @{ def; result; branch; number }   $Feeds: feed -> @(buildIds published)
+        $global:PsuPinBuilds = $Builds; $global:PsuPinFeeds = $Feeds
+        Mock Invoke-RestMethod -ParameterFilter { $Method -ne 'POST' -and $Uri -match '/build/builds/(\d+)\?' -and $global:PsuPinBuilds.ContainsKey([int]$Matches[1]) } -MockWith {
+            $null = $Uri -match '/build/builds/(\d+)\?'; $id = [int]$Matches[1]; $b = $global:PsuPinBuilds[$id]
+            [pscustomobject]@{ id = $id; buildNumber = $b.number; status = 'completed'; result = $b.result; sourceBranch = "refs/heads/$($b.branch)"; definition = [pscustomobject]@{ id = $b.def; name = "def$($b.def)" } }
+        }
+        Mock Invoke-RestMethod -ParameterFilter { $Method -eq 'POST' -and $Uri -like '*vsrm*/Release/artifacts/versions*' } -MockWith {
+            $feed = (($Body | ConvertFrom-Json) | Select-Object -First 1).definitionReference.branch.id
+            $ids = if ($global:PsuPinFeeds.ContainsKey($feed)) { @($global:PsuPinFeeds[$feed]) } else { @() }
+            [pscustomobject]@{ artifactVersions = @([pscustomobject]@{ alias = 'svc_build'; errorMessage = $null; versions = @($ids | ForEach-Object { [pscustomobject]@{ id = "ver-$_"; name = "3_0_1_0_$_ ($feed)" } }) }) }
+        }
+    }
     function Mock-Builds([hashtable]$Results) {
         # $Results: runId -> 'inProgress' | result string
         $global:PsuBuildResults = $Results
@@ -91,7 +105,7 @@ BeforeAll {
     }
 }
 
-AfterAll { Remove-Variable -Name PsuQueueIds, PsuBuildResults, PsuBvtId, PsuBvtEnv -Scope Global -ErrorAction SilentlyContinue }
+AfterAll { Remove-Variable -Name PsuQueueIds, PsuBuildResults, PsuBvtId, PsuBvtEnv, PsuPinBuilds, PsuPinFeeds -Scope Global -ErrorAction SilentlyContinue }
 
 Describe 'Invoke-PrivateStampUpgrade' {
 
@@ -223,6 +237,88 @@ Describe 'Invoke-PrivateStampUpgrade' {
             $d = New-Env
             $null = Invoke-Psu $d 'Init'
             { Invoke-Psu $d 'SignOff' @{ By = 'owner' } } | Should -Throw '*once the BVT has run*'
+        }
+    }
+
+    Context 'Pinned builds (privateStampUpgrade.artifact)' {
+        BeforeEach {
+            $script:PinInputs = $GoodInputs.Clone(); $script:PinInputs.Remove('LastArtifactBranch')
+            $script:PinInputs.LastBuild = 'https://msazure.visualstudio.com/One/_build/results?buildId=900&view=results'
+            $script:StdBuilds = @{
+                900 = @{ def = 223537; result = 'succeeded'; branch = 'releases/bcm-2610'; number = '3.0.881.1' }
+                950 = @{ def = 223537; result = 'succeeded'; branch = 'releases/bcm-2611'; number = '3.0.890.0' }
+                901 = @{ def = 111111; result = 'succeeded'; branch = 'releases/bcm-2610'; number = 'x' }
+                902 = @{ def = 223537; result = 'failed'; branch = 'releases/bcm-2610'; number = '3.0.881.2' }
+                903 = @{ def = 223537; result = 'succeeded'; branch = 'develop'; number = '3.0.1.0' }
+            }
+            $script:StdFeeds = @{ 'Mgmt_RecoverySvcs_IaaSCoord_releases_bcm_2610' = @(899, 900, 905); 'Mgmt_RecoverySvcs_IaaSCoord_releases_bcm_2611' = @(950, 951); 'Mgmt_RecoverySvcs_IaaSCoord_develop' = @(1000) }
+        }
+
+        It 'resolves a build link to its exact artifact version and branch' {
+            Mock-Pinning $StdBuilds $StdFeeds
+            $d = New-Env -Pinned $true -Step3 'in-progress'
+            $null = Invoke-Psu $d 'SetInputs' $PinInputs
+            $t = Get-Track $d
+            $t.inputs.lastBuild.buildId | Should -Be 900
+            $t.inputs.lastBuild.versionId | Should -Be 'ver-900'
+            $t.inputs.lastBuild.feed | Should -Be 'Mgmt_RecoverySvcs_IaaSCoord_releases_bcm_2610'
+            $t.inputs.lastArtifactBranch | Should -Be 'releases/bcm-2610'
+        }
+
+        It 'rejects <case>' -ForEach @(
+            @{ case = 'a branch name';                    ref = 'releases/bcm-2610'; msg = '*must be a build link*' }
+            @{ case = 'a build of another pipeline';      ref = '901'; msg = '*not the official build*' }
+            @{ case = 'a failed build';                   ref = '902'; msg = '*completed successfully*' }
+            @{ case = 'a build missing from its feed';    ref = '903'; msg = '*is not among the 1 newest versions*' }
+            @{ case = "this release's own build";        ref = '950'; msg = "*this release's own build*" }
+            @{ case = 'an unknown build';                 ref = '424242'; msg = '*was not found*' }
+        ) {
+            Mock-Pinning $StdBuilds $StdFeeds
+            Mock Invoke-RestMethod -ParameterFilter { $Method -ne 'POST' -and $Uri -like '*/build/builds/424242?*' } -MockWith { throw '404' }
+            $d = New-Env -Pinned $true -Step3 'in-progress'
+            $null = Invoke-Psu $d 'Init'
+            $in = $PinInputs.Clone(); $in.LastBuild = $ref
+            { Invoke-Psu $d 'SetInputs' $in } | Should -Throw $msg
+            (Get-Track $d).status | Should -Be 'awaiting-input'
+        }
+
+        It 'pins the current leg to release.buildId and posts both pins' {
+            Mock-Pinning $StdBuilds $StdFeeds
+            Mock-Queue @(61, 62)
+            $d = New-Env -Pinned $true
+            $r = Invoke-Psu $d 'SetInputs' $PinInputs
+            $r.Status | Should -Be 'deploying'
+            $t = Get-Track $d
+            $t.inputs.currentBuild.buildId | Should -Be 950
+            $t.runs.last.pinnedBuildId | Should -Be 900
+            $t.runs.current.pinnedBuildId | Should -Be 950
+            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
+                if ($Method -ne 'POST' -or $Uri -notlike '*/pipelines/396863/runs*') { return $false }
+                $b = $Body | ConvertFrom-Json
+                $b.resources.builds.svc_build.version -eq 'ver-900' -and $b.templateParameters.ArtifactBranch -eq 'releases/bcm-2610' -and $b.templateParameters.WebRolePort -eq '10060'
+            }
+            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
+                if ($Method -ne 'POST' -or $Uri -notlike '*/pipelines/396863/runs*') { return $false }
+                $b = $Body | ConvertFrom-Json
+                $b.resources.builds.svc_build.version -eq 'ver-950' -and $b.templateParameters.ArtifactBranch -eq 'releases/bcm-2611' -and $b.templateParameters.WebRolePort -eq '10062'
+            }
+        }
+
+        It 'waits while the current build is not in the feed yet, then fails after 6 hours' {
+            $feeds = $StdFeeds.Clone(); $feeds['Mgmt_RecoverySvcs_IaaSCoord_releases_bcm_2611'] = @(949)
+            Mock-Pinning $StdBuilds $feeds
+            Mock Invoke-RestMethod -ParameterFilter { $Method -eq 'POST' -and $Uri -like '*/pipelines/*' } -MockWith { throw 'must not queue' }
+            $d = New-Env -Pinned $true
+            $r = Invoke-Psu $d 'SetInputs' $PinInputs
+            $r.Status | Should -Be 'inputs-ready'
+            (Get-Track $d).waitingFor | Should -Match 'build 950'
+            $p = Join-Path $d 'state.json'; $s = Get-Content $p -Raw | ConvertFrom-Json
+            $s.privateStampUpgrade.waitingSince = (Get-Date).ToUniversalTime().AddHours(-7).ToString('o')
+            $s | ConvertTo-Json -Depth 12 | Set-Content $p -Encoding UTF8
+            $r = Invoke-Psu $d 'Poll'
+            $r.Status | Should -Be 'failed'
+            $r.NotifyEvent | Should -Be 'private-stamp-failed'
+            (Get-Track $d).error | Should -Match 'did not appear'
         }
     }
 

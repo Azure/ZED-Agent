@@ -8,8 +8,15 @@
     Deploys two builds side by side to one private stamp instance using the private stamp
     pipeline (CONFIG[pipelines.privateStampUpgrade.id]) — both legs are queued AT THE SAME TIME:
 
-        leg "last"    : ArtifactBranch = <owner-supplied last build branch>, port = LastPort
-        leg "current" : ArtifactBranch = release.currentBranch (this release's build), port = CurrentPort
+        leg "last"    : the owner-supplied last build (build link / id), port = LastPort
+        leg "current" : this release's build (release.json → buildId, i.e. release.currentBranch), port = CurrentPort
+
+    With privateStampUpgrade.artifact configured (BCM), BOTH legs are PINNED to an exact build:
+    the build id is mapped to its version in the pipeline's build resource feed (e.g. svc_build,
+    CloudVault feed Mgmt_RecoverySvcs_IaaSCoord_<branch>) and posted as
+    resources.builds.<alias>.version, with ArtifactBranch = that build's branch — so newer builds
+    on the same branch are never picked up. Without it, ArtifactBranch = the given branch and the
+    pipeline deploys that branch's latest build.
 
     Both legs get the same ServiceOverrideSettings, built from
     privateStampUpgrade.serviceOverrideSettingsTemplate with {queueName} = the owner-supplied
@@ -23,8 +30,9 @@
     State lives in state.json → privateStampUpgrade:
         status : awaiting-input | inputs-ready | triggering | deploying | triggering-bvt |
                  bvt-running | awaiting-bvt | signed-off | skipped | failed
-        inputs : { instance, lastPort, currentPort, lastArtifactBranch, currentArtifactBranch,
-                   queueName, serviceOverrideSettings, vaultId, providedAt, providedBy }
+        inputs : { instance, lastPort, currentPort, lastArtifactBranch, lastBuild, currentArtifactBranch,
+                   currentBuild, queueName, serviceOverrideSettings, vaultId, providedAt, providedBy }
+                 lastBuild / currentBuild = { buildId, buildNumber, branch, url, feed, versionId, versionName }
         runs   : { last: {...}, current: {...}, bvt: {...} }
         failedLegs (subset of last, current, bvt), error, requestedAt, bvtOutcome,
         signedOffAt, signedOffBy, skippedAt, skippedBy, skipReason
@@ -57,6 +65,9 @@ param(
     [int]$LastPort,
     [int]$CurrentPort,
     [string]$LastArtifactBranch,
+    # Build link (…/_build/results?buildId=N) or build id of the LAST deployment's build. With
+    # privateStampUpgrade.artifact configured, the deployment is pinned to exactly that build.
+    [string]$LastBuild,
     [string]$QueueName,
     [string]$VaultId,
     [string]$By,
@@ -182,6 +193,70 @@ function Get-BvtConfig {
     return $null
 }
 
+# privateStampUpgrade.artifact: the pipeline's build resource (e.g. svc_build, CloudVault) — when
+# configured, both legs are pinned to an exact build version instead of "latest on the branch".
+function Get-ArtifactConfig {
+    $p = $script:Psu.PSObject.Properties['artifact']
+    if ($p -and $p.Value -and $p.Value.resourceAlias -and $p.Value.feedBranchPrefix) { return $p.Value }
+    return $null
+}
+
+function Get-BuildIdFromRef([string]$Ref) {
+    $r = ([string]$Ref).Trim()
+    if ($r -match '(?i)[?&]buildId=(\d+)') { return [long]$Matches[1] }
+    if ($r -match '^\d+$') { return [long]$r }
+    return $null
+}
+
+function Get-FeedBranch([string]$Branch) {
+    $b = ([string]$Branch) -replace '^refs/heads/', ''
+    return [string]((Get-ArtifactConfig).feedBranchPrefix) + ($b -replace '[/.-]', '_')
+}
+
+# Looks up the artifact version that came from ADO build $BuildId on $Branch's feed.
+# Returns @{ versionId; versionName; listed } or $null when not (yet) published / not among the listed versions.
+function Find-ArtifactVersion([string]$Branch, [long]$BuildId) {
+    $a = Get-ArtifactConfig
+    $feed = Get-FeedBranch $Branch
+    $src = [pscustomobject]@{
+        alias = [string]$a.resourceAlias; type = $(if ($a.type) { [string]$a.type } else { 'CloudVaultArtifacts-v3' })
+        definitionReference = [pscustomobject]@{
+            connection = [pscustomobject]@{ id = [string]$a.connectionId; name = [string]$a.connectionName }
+            definition = [pscustomobject]@{ id = [string]$a.sourceId; name = [string]$a.sourceId }
+            branch     = [pscustomobject]@{ id = $feed; name = $feed }
+        }
+    }
+    $headers = @{ Authorization = "Bearer $(Get-AdoToken)"; 'Content-Type' = 'application/json' }
+    $resp = Invoke-RestMethod -Uri "https://vsrm.dev.azure.com/$($script:Organization)/$($script:Project)/_apis/Release/artifacts/versions?api-version=7.1" -Method POST -Headers $headers -Body (ConvertTo-Json -Depth 6 @($src)) -ErrorAction Stop
+    $av = @($resp.artifactVersions)[0]
+    if ($av.errorMessage) { throw "Artifact feed '$feed': $($av.errorMessage)" }
+    $versions = @($av.versions)
+    $hit = @($versions | Where-Object { $_.name -match "_$BuildId(\s|$)" }) | Select-Object -First 1
+    if (-not $hit) { return [pscustomobject]@{ versionId = $null; versionName = $null; listed = $versions.Count; feed = $feed } }
+    return [pscustomobject]@{ versionId = [string]$hit.id; versionName = [string]$hit.name; listed = $versions.Count; feed = $feed }
+}
+
+# Validates an ADO build for deployment and pins it to its artifact version. Throws with an owner-readable message.
+function Resolve-PinnedBuild([long]$BuildId, [string]$Role) {
+    $a = Get-ArtifactConfig
+    $headers = @{ Authorization = "Bearer $(Get-AdoToken)" }
+    try { $b = Invoke-RestMethod -Uri "https://dev.azure.com/$($script:Organization)/$($script:Project)/_apis/build/builds/$($BuildId)?api-version=7.1" -Headers $headers -ErrorAction Stop }
+    catch { throw "The $Role build $BuildId was not found in $($script:Organization)/$($script:Project)." }
+    if ($a.buildDefinitionId -and [int]$b.definition.id -ne [int]$a.buildDefinitionId) {
+        throw "The $Role build $BuildId is from pipeline '$($b.definition.name)' ($($b.definition.id)), not the official build ($($a.buildDefinitionId))."
+    }
+    if ($b.status -ne 'completed' -or $b.result -notin @('succeeded', 'partiallySucceeded')) {
+        throw "The $Role build $BuildId ($($b.buildNumber)) has status '$($b.status)'/'$($b.result)' — it must have completed successfully."
+    }
+    $branch = ([string]$b.sourceBranch) -replace '^refs/heads/', ''
+    $v = Find-ArtifactVersion $branch $BuildId
+    return [pscustomobject]@{
+        buildId = $BuildId; buildNumber = [string]$b.buildNumber; branch = $branch
+        url = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_build/results?buildId=$BuildId"
+        feed = $v.feed; versionId = $v.versionId; versionName = $v.versionName; listedVersions = $v.listed
+    }
+}
+
 function New-TemplateParameters($Track, [string]$Leg) {
     $tp = [ordered]@{}
     if ($script:Psu.PSObject.Properties['templateParameters'] -and $script:Psu.templateParameters) {
@@ -189,11 +264,20 @@ function New-TemplateParameters($Track, [string]$Leg) {
     }
     $port = if ($Leg -eq 'last') { $Track.inputs.lastPort } else { $Track.inputs.currentPort }
     $artifact = if ($Leg -eq 'last') { $Track.inputs.lastArtifactBranch } else { $Track.inputs.currentArtifactBranch }
+    $pin = Get-LegPin $Track $Leg
+    if ($pin -and $pin.branch) { $artifact = $pin.branch }
     $tp[(Get-ParamName 'instance' 'PrivateInstance')] = [string]$Track.inputs.instance
     $tp[(Get-ParamName 'port' 'WebRolePort')] = [string]$port
     $tp[(Get-ParamName 'artifactBranch' 'ArtifactBranch')] = [string]$artifact
     $tp[(Get-ParamName 'serviceOverrides' 'ServiceOverrideSettings')] = [string]$Track.inputs.serviceOverrideSettings
     return $tp
+}
+
+function Get-LegPin($Track, [string]$Leg) {
+    if (-not $Track.inputs) { return $null }
+    $name = if ($Leg -eq 'last') { 'lastBuild' } else { 'currentBuild' }
+    if ($Track.inputs.PSObject.Properties[$name] -and $Track.inputs.$name -and $Track.inputs.$name.versionId) { return $Track.inputs.$name }
+    return $null
 }
 
 function Get-SourceRef($Track) {
@@ -231,14 +315,20 @@ function Start-Deployments([string]$FromStatus, [string[]]$Legs) {
         $tp = New-TemplateParameters $claimed $leg
         $tpObj = New-Object PSObject
         foreach ($k in $tp.Keys) { $tpObj | Add-Member -MemberType NoteProperty -Name $k -Value $tp[$k] }
+        $resources = [ordered]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $ref } } }
+        $pin = Get-LegPin $claimed $leg
+        if ($pin) {
+            $resources.builds = [pscustomobject]@{ ([string](Get-ArtifactConfig).resourceAlias) = [pscustomobject]@{ version = [string]$pin.versionId } }
+        }
         $body = [pscustomobject]@{
-            resources          = [pscustomobject]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $ref } } }
+            resources          = [pscustomobject]$resources
             templateParameters = $tpObj
         } | ConvertTo-Json -Depth 8
         $run = [ordered]@{
             leg = $leg; pipelineId = [int]$script:Psu.id; sourceBranch = $ref
             artifactBranch = $tp[(Get-ParamName 'artifactBranch' 'ArtifactBranch')]
             port = [int]$tp[(Get-ParamName 'port' 'WebRolePort')]
+            pinnedBuildId = $(if ($pin) { $pin.buildId } else { $null }); pinnedVersion = $(if ($pin) { $pin.versionName } else { $null })
             templateParameters = [pscustomobject]$tp
             runId = $null; url = $null; status = $null; result = $null; queuedAt = (Get-NowIso); finishedAt = $null
         }
@@ -376,8 +466,48 @@ function Invoke-Poll {
 
     switch -Regex ($track.status) {
         '^inputs-ready$' {
-            if ((Get-StepStatus $st 3) -eq 'completed') { return (Start-Deployments 'inputs-ready' $script:Legs) }
-            return $track
+            if ((Get-StepStatus $st 3) -ne 'completed') { return $track }
+            if ((Get-ArtifactConfig) -and -not (Get-LegPin $track 'current')) {
+                # Pin the current leg to exactly this release's build (release.json → buildId).
+                $failMsg = $null; $pin = $null
+                try {
+                    $rel = Get-Release
+                    if (-not $rel.PSObject.Properties['buildId'] -or -not $rel.buildId) { throw "release.json has no buildId — cannot pin the current build." }
+                    $pin = Resolve-PinnedBuild ([long]$rel.buildId) 'current release'
+                    $lp = Get-LegPin $track 'last'
+                    if ($lp -and [long]$lp.buildId -eq [long]$pin.buildId) { throw "The last build ($($lp.buildId)) is this release's own build — the upgrade test needs the PREVIOUS build." }
+                } catch { $failMsg = $_.Exception.Message }
+                if ($failMsg) {
+                    $t = Update-Track { param($cur, $s) if ($cur.status -ne 'inputs-ready') { return $null }; $n = Copy-Track $cur; Set-Failed $n @('current') $failMsg; return $n }
+                    $script:result.NotifyEvent = 'private-stamp-failed'; $script:result.Transition = 'inputs-ready -> failed (current build)'
+                    return $t
+                }
+                if (-not $pin.versionId) {
+                    # Built but not (yet) published to the artifact feed — wait, give up after 6 h.
+                    $since = if ($track.PSObject.Properties['waitingSince'] -and $track.waitingSince) { [datetime]$track.waitingSince } else { $null }
+                    if ($since -and ((Get-Date).ToUniversalTime() - $since.ToUniversalTime()).TotalHours -gt 6) {
+                        $msg = "Build $($pin.buildId) ($($pin.buildNumber)) did not appear in artifact feed '$($pin.feed)' within 6 hours."
+                        $t = Update-Track { param($cur, $s) if ($cur.status -ne 'inputs-ready') { return $null }; $n = Copy-Track $cur; Set-Failed $n @('current') $msg; return $n }
+                        $script:result.NotifyEvent = 'private-stamp-failed'; $script:result.Transition = 'inputs-ready -> failed (current build not published)'
+                        return $t
+                    }
+                    if (-not $since) {
+                        $track = Update-Track { param($cur, $s) $n = Copy-Track $cur; Set-Prop $n 'waitingSince' (Get-NowIso); Set-Prop $n 'waitingFor' "artifact version of build $($pin.buildId) in $($pin.feed)"; return $n }
+                    }
+                    return $track
+                }
+                $track = Update-Track {
+                    param($cur, $s)
+                    if ($cur.status -ne 'inputs-ready') { return $null }
+                    $n = Copy-Track $cur
+                    Set-Prop $n.inputs 'currentBuild' $pin
+                    Set-Prop $n.inputs 'currentArtifactBranch' $pin.branch
+                    Set-Prop $n 'waitingSince' $null; Set-Prop $n 'waitingFor' $null
+                    return $n
+                }
+                Write-Audit @{ event = 'private-stamp-current-pinned'; buildId = $pin.buildId; version = $pin.versionName }
+            }
+            return (Start-Deployments 'inputs-ready' $script:Legs)
         }
         '^(triggering|triggering-bvt|retrying)$' {
             $what = $Matches[1]
@@ -533,7 +663,23 @@ try {
                 $errors += "LastPort $LastPort and CurrentPort $CurrentPort overlap (each deployment uses $span consecutive port(s))."
             }
             if ($QueueName -notmatch '^[A-Za-z0-9._-]{1,128}$') { $errors += "TeeWorkflowQueueName '$QueueName' may only contain letters, digits, '.', '_' and '-'." }
-            if ($LastArtifactBranch -notmatch '^[A-Za-z0-9._/-]{1,200}$') { $errors += "Last build branch '$LastArtifactBranch' is not a valid branch name." }
+            $lastPin = $null
+            if (Get-ArtifactConfig) {
+                # Last build = a specific build (link or id), pinned to its exact artifact version.
+                $ref = if ($LastBuild) { $LastBuild } else { $LastArtifactBranch }
+                $lastId = Get-BuildIdFromRef $ref
+                if (-not $lastId) {
+                    $errors += "Last build '$ref' must be a build link (…/_build/results?buildId=<id>) or a build id — a branch name would deploy whatever its newest build is."
+                } else {
+                    try {
+                        $lastPin = Resolve-PinnedBuild $lastId 'last'
+                        if (-not $lastPin.versionId) {
+                            $errors += "Build $lastId ($($lastPin.buildNumber), $($lastPin.branch)) is not among the $($lastPin.listedVersions) newest versions of artifact feed '$($lastPin.feed)', so it cannot be deployed by the private stamp pipeline. Pick a newer build of that branch."
+                        }
+                    } catch { $errors += $_.Exception.Message }
+                }
+                if ($lastPin) { $LastArtifactBranch = $lastPin.branch }
+            } elseif ($LastArtifactBranch -notmatch '^[A-Za-z0-9._/-]{1,200}$') { $errors += "Last build branch '$LastArtifactBranch' is not a valid branch name." }
             $VaultId = ([string]$VaultId).Trim()
             if (Get-BvtConfig) {
                 if ($VaultId -notmatch $script:VaultIdPattern) {
@@ -545,7 +691,9 @@ try {
             $rel = Get-Release
             $currentBranch = [string]$rel.currentBranch
             if (-not $currentBranch) { $errors += "release.json has no currentBranch." }
-            if ($LastArtifactBranch -and $currentBranch -and $LastArtifactBranch -ieq $currentBranch) {
+            if ($lastPin -and $rel.PSObject.Properties['buildId'] -and $rel.buildId -and [long]$rel.buildId -eq [long]$lastPin.buildId) {
+                $errors += "Build $($lastPin.buildId) is this release's own build — the upgrade test needs the PREVIOUS build."
+            } elseif ($LastArtifactBranch -and $currentBranch -and $LastArtifactBranch -ieq $currentBranch) {
                 $errors += "Last build branch equals this release's branch ($currentBranch) — the upgrade test needs the PREVIOUS build."
             }
             if ($errors.Count -gt 0) { throw ("Invalid private stamp inputs:`n - " + ($errors -join "`n - ")) }
@@ -556,7 +704,9 @@ try {
                 lastPort                = $LastPort
                 currentPort             = $CurrentPort
                 lastArtifactBranch      = $LastArtifactBranch
+                lastBuild               = $lastPin
                 currentArtifactBranch   = $currentBranch
+                currentBuild            = $null
                 queueName               = $QueueName
                 serviceOverrideSettings = $tmpl.Replace('{queueName}', $QueueName)
                 vaultId                 = $(if ($VaultId) { $VaultId } else { $null })
@@ -578,7 +728,7 @@ try {
             if ($track.status -ne 'inputs-ready') {
                 throw "Private stamp inputs can't be changed while the track is '$($track.status)'. Use 'private-stamp retry' / 'private-stamp skip' instead."
             }
-            Write-Audit @{ event = 'private-stamp-inputs'; instance = $inputs.instance; lastPort = $LastPort; currentPort = $CurrentPort; lastArtifactBranch = $LastArtifactBranch; queueName = $QueueName; vaultId = $inputs.vaultId; by = $By }
+            Write-Audit @{ event = 'private-stamp-inputs'; instance = $inputs.instance; lastPort = $LastPort; currentPort = $CurrentPort; lastArtifactBranch = $LastArtifactBranch; lastBuildId = $(if ($lastPin) { $lastPin.buildId } else { $null }); lastVersion = $(if ($lastPin) { $lastPin.versionName } else { $null }); queueName = $QueueName; vaultId = $inputs.vaultId; by = $By }
             $result.Transition = 'inputs-ready'
             $track = Invoke-Poll
         }

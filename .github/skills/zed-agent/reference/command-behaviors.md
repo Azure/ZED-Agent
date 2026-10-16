@@ -27,7 +27,7 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `skip` or `skip N` | Skip the current step (or step N) at runtime |
 | `modify skip 4,5` | Skip specific steps mid-release (also supports `reorder` and `reset`). For up-front skipping, the per-release `setup` command has an interactive skip prompt. |
 | `approve-ri` | Give the go-ahead after the RI PR merged (starts FI — only when `ado.integration` is enabled) |
-| `private-stamp` | Provide the private stamp upgrade test inputs (instance, port for last build, port for current build, last build branch, TeeWorkflowQueueName). Also `private-stamp retry`, `private-stamp skip <reason>`, `private-stamp status` |
+| `private-stamp` | Provide the private stamp upgrade test inputs (instance, port for last build, port for current build, last build branch, TeeWorkflowQueueName, redirected vault ARM id for the BVT). Also `private-stamp retry`, `private-stamp skip <reason>`, `private-stamp status` |
 | `approve-private-stamp` | Sign off the private stamp BVT (releases the Step 13 join) |
 | `revert-bits base <sha>` / `revert-bits preserve <numbers\|all\|none>` | Revert bits (Step 7, after canary BVT sign-off): confirm the previous release commit / choose which changed settings to keep. Also `revert-bits status`, `revert-bits skip <reason>` |
 | `approve-revert` | Sign off the BVT on the revert build — Step 7 then rolls canary back with it |
@@ -60,7 +60,7 @@ Step 2:  (automatic)          ← Cuts branch, queues build
 Step 3:  (automatic)          ← Watcher polls until build completes
 Step 4:  (automatic)          ← Collects commits, generates Excel, uploads to SharePoint
 Step 5:  (automatic)          ← Deploys canary (CANARY pipelines → EACan/ECY/CCY)
-         └ privateStampUpgrade: ← private-stamp (inputs) → last build (port 1) → current build (port 2) → owner BVT → approve-private-stamp  [parallel; Step 13 waits for it]
+         └ privateStampUpgrade: ← private-stamp (inputs + vault) → last build (port 1) ∥ current build (port 2) → BVT release (PrivateStampVaultId) → approve-private-stamp  [parallel; Step 13 waits for it]
 Step 6:  (automatic)          ← BVT check runs, frontliners notified if failures
 Step 7:  (automatic)          ← Rollback (CANARY pipelines with previous bits)
          └ revertBits:        ← revert-bits preserve … → PR (owner merges) → revert build → owner BVT → approve-revert → rollback uses the revert build
@@ -255,27 +255,28 @@ When the release owner says `approve-ri` or `approve ri` (only meaningful when `
 Only meaningful when `CONFIG[pipelines.privateStampUpgrade.enabled]`. Spec: `step-behaviors.md → Private stamp upgrade test`. Every variant calls `scripts/Invoke-PrivateStampUpgrade.ps1 -ReleaseId <id> -By <owner alias>`; if the result has a `NotifyEvent`, send that email. Never POST the private stamp pipeline directly.
 
 **`private-stamp`** (inputs). **Ask every release — never pre-fill from a previous release.**
-- One-line form (also used from email replies / headless): `private-stamp instance=<X> lastPort=<n> currentPort=<n> lastBuild=<branch> queue=<name>` — parse, do not prompt.
+- One-line form (also used from email replies / headless): `private-stamp instance=<X> lastPort=<n> currentPort=<n> lastBuild=<branch> queue=<name> vault=<redirected vault ARM id>` — parse, do not prompt.
 - Interactive form (bare `private-stamp`): use `ask_user` **one question at a time**:
   1. *"Which private stamp instance should I deploy to (e.g. A, B, C)?"*
   2. *"Port for the LAST build deployment (WebRolePort; HTTP uses port + 1)?"*
   3. *"Port for the CURRENT build deployment ({release.currentBranch})?"*
   4. *"Which branch is the last deployment build (ArtifactBranch — its latest official build is deployed, e.g. releases/bcm2610 or master)?"*
   5. *"TeeWorkflowQueueName for both deployments? (passed as ServiceOverrideSettings = @{\"BCMAppConfig->WorkflowQueueName\"=\"<name>\";})"*
-- Then run `-Action SetInputs -Instance -LastPort -CurrentPort -LastArtifactBranch -QueueName`. On a validation error, show the message and re-ask only the offending field(s). On success, reply with the resolved plan (instance, `port1 ← lastBuild`, `port2 ← release.currentBranch`, queue name) and the new status: `deploying-last` (run link) if Step 3 has completed, otherwise *"Inputs saved — I'll deploy as soon as the release build finishes."* Accepted while the track is `awaiting-input`, `inputs-ready` or `failed` (new inputs restart from the last-build leg), and also before Step 5 (inputs are kept until the build is ready).
+  6. *(only when `privateStampUpgrade.bvtRelease` is configured)* *"ARM id of the vault redirected to one of these ports? The BVT runs against it (PrivateStampVaultId). Format: /subscriptions/<guid>/resourceGroups/<rg>/providers/Microsoft.RecoveryServices/vaults/<name>"*
+- Then run `-Action SetInputs -Instance -LastPort -CurrentPort -LastArtifactBranch -QueueName -VaultId`. On a validation error, show the message and re-ask only the offending field(s). On success, reply with the resolved plan (instance, `port1 ← lastBuild`, `port2 ← release.currentBranch` — **deployed in parallel**, queue name, vault for the BVT) and the new status: `deploying` (both run links) if Step 3 has completed, otherwise *"Inputs saved — I'll deploy both builds as soon as the release build finishes."* Accepted while the track is `awaiting-input`, `inputs-ready` or `failed` (new inputs restart both legs), and also before Step 5 (inputs are kept until the build is ready).
 
-**`private-stamp retry`** — `-Action Retry`: re-queues only the failed leg with the same inputs.
+**`private-stamp retry`** — `-Action Retry`: re-runs only what failed with the same inputs — the failed leg(s) (the succeeded leg is not redeployed; the BVT starts once both have succeeded) or, when only the BVT failed, a new BVT release.
 
 **`private-stamp skip <reason>`** — `-Action Skip -Reason <reason>` (ask for a reason if missing). Releases the Step 13 join; if Step 13 is `waiting`, resume the execution loop. The reason is recorded in audit and quoted in the R2D notes.
 
-**`private-stamp status`** — `-Action Get`; show status, inputs, both runs and the next owner action.
+**`private-stamp status`** — `-Action Get`; show status, inputs, both deployment runs, the BVT release (link, stage results) and the next owner action.
 
 ## approve-private-stamp — Sign Off Private Stamp BVT
 
 When the release owner says `approve-private-stamp` or `approve private-stamp`:
 
-1. Run `Invoke-PrivateStampUpgrade.ps1 -Action SignOff -By <owner alias>`. If the track is not `awaiting-bvt`, report the current status and what it is waiting for; change nothing.
-2. Confirm: *"✅ Private stamp BVT signed off ({instance}: {lastBuild} on {port1}, {currentBranch} on {port2})."*
+1. Run `Invoke-PrivateStampUpgrade.ps1 -Action SignOff -By <owner alias>`. Accepted when the track is `awaiting-bvt` (BVT finished succeeded/partiallySucceeded), or `failed` with only the BVT failed (owner override — confirm first: *"The BVT ended {bvtOutcome}. Sign off anyway?"*). Otherwise report the current status and what it is waiting for; change nothing.
+2. Confirm: *"✅ Private stamp upgrade test signed off ({instance}: {lastBuild} on {port1}, {currentBranch} on {port2}; BVT {bvtOutcome})."*
 3. If Step 13 is `waiting`, resume the execution loop (Step 13 re-runs its prerequisite checks).
 
 ## revert-bits — Revert Bits Selection and Control (Step 7 pre-phase)

@@ -6,42 +6,45 @@
 
 .DESCRIPTION
     Deploys two builds side by side to one private stamp instance using the private stamp
-    pipeline (CONFIG[pipelines.privateStampUpgrade.id]):
+    pipeline (CONFIG[pipelines.privateStampUpgrade.id]) — both legs are queued AT THE SAME TIME:
 
         leg "last"    : ArtifactBranch = <owner-supplied last build branch>, port = LastPort
         leg "current" : ArtifactBranch = release.currentBranch (this release's build), port = CurrentPort
 
-    Legs run sequentially: "current" is queued only after "last" succeeds. Both legs get the
-    same ServiceOverrideSettings, built from privateStampUpgrade.serviceOverrideSettingsTemplate
-    with {queueName} = the owner-supplied TeeWorkflowQueueName. When "current" succeeds, the
-    track waits for the owner's BVT sign-off (`approve-private-stamp`). Step 13 does not start
-    until the track is signed-off or skipped.
+    Both legs get the same ServiceOverrideSettings, built from
+    privateStampUpgrade.serviceOverrideSettingsTemplate with {queueName} = the owner-supplied
+    TeeWorkflowQueueName. When BOTH legs succeed and privateStampUpgrade.bvtRelease is configured,
+    ZED creates a release of the classic BVT release definition with
+    <bvtRelease.vaultIdVariable> (e.g. PrivateStampVaultId) = the owner-supplied redirected vault
+    ARM id, and the latest version of every artifact passed explicitly. When the BVT stage
+    (bvtRelease.environmentName) finishes, the track waits for the owner's sign-off
+    (`approve-private-stamp`). Step 13 does not start until the track is signed-off or skipped.
 
     State lives in state.json → privateStampUpgrade:
-        status : awaiting-input | inputs-ready | triggering-last | deploying-last |
-                 triggering-current | deploying-current | awaiting-bvt | signed-off |
-                 skipped | failed
+        status : awaiting-input | inputs-ready | triggering | deploying | triggering-bvt |
+                 bvt-running | awaiting-bvt | signed-off | skipped | failed
         inputs : { instance, lastPort, currentPort, lastArtifactBranch, currentArtifactBranch,
-                   queueName, serviceOverrideSettings, providedAt, providedBy }
-        runs   : { last: {...}, current: {...} }   (runId, url, status, result, queuedAt, finishedAt, port, artifactBranch)
-        failedLeg, error, requestedAt, signedOffAt, signedOffBy, skippedAt, skippedBy, skipReason
+                   queueName, serviceOverrideSettings, vaultId, providedAt, providedBy }
+        runs   : { last: {...}, current: {...}, bvt: {...} }
+        failedLegs (subset of last, current, bvt), error, requestedAt, bvtOutcome,
+        signedOffAt, signedOffBy, skippedAt, skippedBy, skipReason
 
     Actions:
         Init      Step 5 kick-off. Creates the track (awaiting-input) and returns
                   NotifyEvent 'private-stamp-input-needed'. No-op if it already exists.
                   In test mode the track is created as 'skipped' (no human input, no wait).
         SetInputs Owner's `private-stamp` command. Validates + stores the inputs, then behaves
-                  like Poll (queues leg "last" once Step 3 has completed).
-        Poll      Watcher / cold-resume side-channel, every tick. Starts leg "last" when inputs
-                  are ready and the build exists; advances "last" → "current" → awaiting-bvt;
-                  marks failures. Never throws — errors are returned in .Error.
-        Retry     Re-queues the failed leg.
-        SignOff   Owner's BVT sign-off (awaiting-bvt → signed-off).
+                  like Poll (queues both legs once Step 3 has completed).
+        Poll      Watcher / cold-resume side-channel, every tick: queues the legs, tracks them,
+                  starts the BVT release when both succeeded, tracks the BVT stage. Never
+                  throws — errors are returned in .Error.
+        Retry     Re-runs only what failed: the failed leg(s), or the BVT release.
+        SignOff   Owner's sign-off (awaiting-bvt, or failed with only the BVT failed → owner override).
         Skip      Owner skips the track (Step 13 join is released).
         Get       Returns the current track state.
 
-    A trigger is "claimed" under the state lock (status triggering-<leg>) before the POST, so
-    the watcher and an owner command can never double-queue the same leg.
+    Every trigger is "claimed" under the state lock (status triggering / triggering-bvt) before
+    the POST, so the watcher and an owner command can never double-queue.
 
 .OUTPUTS
     PSCustomObject: Success, Action, Status, Transition, NotifyEvent, Run, Error, Track
@@ -55,6 +58,7 @@ param(
     [int]$CurrentPort,
     [string]$LastArtifactBranch,
     [string]$QueueName,
+    [string]$VaultId,
     [string]$By,
     [string]$Reason,
     [string]$StateFile,
@@ -83,14 +87,17 @@ $result = [pscustomobject]@{
     Track       = $null
 }
 
+$script:Legs = @('last', 'current')
+$script:VaultIdPattern = '^/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+/providers/Microsoft\.RecoveryServices/vaults/[^/]+$'
+
+function Get-NowIso { (Get-Date).ToUniversalTime().ToString('o') }
+
 function Write-Audit([hashtable]$Entry) {
     try {
         $Entry.ts = (Get-NowIso)
         $Entry | ConvertTo-Json -Compress -Depth 6 | Add-Content -LiteralPath $script:AuditFile -Encoding UTF8
     } catch { <# audit is best-effort #> }
 }
-
-function Get-NowIso { (Get-Date).ToUniversalTime().ToString('o') }
 
 function Read-State { Get-Content -LiteralPath $script:StateFile -Raw -Encoding UTF8 | ConvertFrom-Json }
 
@@ -127,6 +134,16 @@ function Set-Prop($Obj, [string]$Name, $Value) {
     else { Add-Member -InputObject $Obj -MemberType NoteProperty -Name $Name -Value $Value -Force }
 }
 
+function Get-RunsObj($Track) {
+    if (-not $Track.PSObject.Properties['runs'] -or $null -eq $Track.runs) { Set-Prop $Track 'runs' ([pscustomobject]@{}) }
+    return $Track.runs
+}
+
+function Get-Run($Track, [string]$Leg) {
+    if ($Track.PSObject.Properties['runs'] -and $Track.runs -and $Track.runs.PSObject.Properties[$Leg]) { return $Track.runs.$Leg }
+    return $null
+}
+
 function Get-StepStatus($State, [int]$N) {
     $s = $State.steps | Where-Object { $_.number -eq $N } | Select-Object -First 1
     if ($s) { return [string]$s.status } else { return $null }
@@ -159,6 +176,12 @@ function Get-ParamName([string]$Key, [string]$Default) {
     return $Default
 }
 
+function Get-BvtConfig {
+    $p = $script:Psu.PSObject.Properties['bvtRelease']
+    if ($p -and $p.Value -and $p.Value.definitionId) { return $p.Value }
+    return $null
+}
+
 function New-TemplateParameters($Track, [string]$Leg) {
     $tp = [ordered]@{}
     if ($script:Psu.PSObject.Properties['templateParameters'] -and $script:Psu.templateParameters) {
@@ -180,82 +203,170 @@ function Get-SourceRef($Track) {
     return $b
 }
 
-# Claims the leg under lock, POSTs the run, records the outcome. Returns the run record.
-function Start-Leg([string]$Leg, [string]$FromStatus) {
+function Set-Failed($Track, [string[]]$FailedLegs, [string]$Message) {
+    Set-Prop $Track 'status' 'failed'
+    Set-Prop $Track 'failedLegs' @($FailedLegs)
+    Set-Prop $Track 'error' $Message
+    Set-Prop $Track 'claimedAt' $null
+}
+
+# Queues the given legs IN PARALLEL (one claim, then one POST per leg). Returns the persisted track.
+function Start-Deployments([string]$FromStatus, [string[]]$Legs) {
     $claimed = Update-Track {
         param($cur, $st)
         if ($null -eq $cur -or $cur.status -ne $FromStatus) { return $null }
         $t = Copy-Track $cur
-        Set-Prop $t 'status' "triggering-$Leg"
+        Set-Prop $t 'status' 'triggering'
         Set-Prop $t 'claimedAt' (Get-NowIso)
         Set-Prop $t 'error' $null
         return $t
     }
-    if ($null -eq $claimed -or $claimed.status -ne "triggering-$Leg") { return $null }
+    if ($null -eq $claimed -or $claimed.status -ne 'triggering') { return $null }
 
-    $tp = New-TemplateParameters $claimed $Leg
     $ref = Get-SourceRef $claimed
     $orgBase = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_apis"
-    $tpObj = New-Object PSObject
-    foreach ($k in $tp.Keys) { $tpObj | Add-Member -MemberType NoteProperty -Name $k -Value $tp[$k] }
-    $body = [pscustomobject]@{
-        resources          = [pscustomobject]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $ref } } }
-        templateParameters = $tpObj
-    } | ConvertTo-Json -Depth 8
-
-    $run = [ordered]@{
-        leg            = $Leg
-        pipelineId     = [int]$script:Psu.id
-        sourceBranch   = $ref
-        artifactBranch = $tp[(Get-ParamName 'artifactBranch' 'ArtifactBranch')]
-        port           = [int]$tp[(Get-ParamName 'port' 'WebRolePort')]
-        templateParameters = [pscustomobject]$tp
-        runId          = $null
-        url            = $null
-        status         = $null
-        result         = $null
-        queuedAt       = (Get-NowIso)
-        finishedAt     = $null
+    $newRuns = @{}
+    $queueErrors = @{}
+    foreach ($leg in $Legs) {
+        $tp = New-TemplateParameters $claimed $leg
+        $tpObj = New-Object PSObject
+        foreach ($k in $tp.Keys) { $tpObj | Add-Member -MemberType NoteProperty -Name $k -Value $tp[$k] }
+        $body = [pscustomobject]@{
+            resources          = [pscustomobject]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $ref } } }
+            templateParameters = $tpObj
+        } | ConvertTo-Json -Depth 8
+        $run = [ordered]@{
+            leg = $leg; pipelineId = [int]$script:Psu.id; sourceBranch = $ref
+            artifactBranch = $tp[(Get-ParamName 'artifactBranch' 'ArtifactBranch')]
+            port = [int]$tp[(Get-ParamName 'port' 'WebRolePort')]
+            templateParameters = [pscustomobject]$tp
+            runId = $null; url = $null; status = $null; result = $null; queuedAt = (Get-NowIso); finishedAt = $null
+        }
+        try {
+            $headers = @{ Authorization = "Bearer $(Get-AdoToken)"; 'Content-Type' = 'application/json' }
+            $resp = Invoke-RestMethod -Uri "$orgBase/pipelines/$($script:Psu.id)/runs?api-version=7.1" -Method POST -Headers $headers -Body $body -ErrorAction Stop
+            $run.runId = $resp.id
+            $run.url = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_build/results?buildId=$($resp.id)"
+            $run.status = 'inProgress'
+            Write-Audit @{ event = 'private-stamp-triggered'; leg = $leg; runId = $run.runId; port = $run.port; artifactBranch = $run.artifactBranch }
+        } catch {
+            $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { " | $($_.ErrorDetails.Message)" } else { '' }
+            $queueErrors[$leg] = "Failed to queue private stamp '$leg' run: $($_.Exception.Message)$detail"
+            $run.status = 'queue-failed'; $run.result = 'failed'; $run.finishedAt = (Get-NowIso)
+            Write-Audit @{ event = 'private-stamp-trigger-failed'; leg = $leg; error = $queueErrors[$leg] }
+        }
+        $newRuns[$leg] = [pscustomobject]$run
     }
+
+    $allFailed = $queueErrors.Count -eq $Legs.Count
+    $final = Update-Track {
+        param($cur, $st)
+        $t = Copy-Track $cur
+        $runs = Get-RunsObj $t
+        foreach ($leg in $newRuns.Keys) { Set-Prop $runs $leg $newRuns[$leg] }
+        if ($runs.PSObject.Properties['bvt']) { $runs.PSObject.Properties.Remove('bvt') }
+        if ($allFailed) { Set-Failed $t @($queueErrors.Keys) (($queueErrors.Values) -join ' ') }
+        else { Set-Prop $t 'status' 'deploying'; Set-Prop $t 'failedLegs' @(); Set-Prop $t 'claimedAt' $null }
+        return $t
+    }
+    if ($allFailed) {
+        $script:result.NotifyEvent = 'private-stamp-failed'
+        $script:result.Transition = "$FromStatus -> failed"
+    } else {
+        $script:result.Transition = "$FromStatus -> deploying ($($Legs -join ' + '))"
+    }
+    $script:result.Run = [pscustomobject]$newRuns
+    return $final
+}
+
+# Creates the BVT release (classic Release pipeline) with the vault id override. Returns the persisted track.
+function Start-Bvt([string]$FromStatus) {
+    $bvt = Get-BvtConfig
+    $claimed = Update-Track {
+        param($cur, $st)
+        if ($null -eq $cur -or $cur.status -ne $FromStatus) { return $null }
+        $t = Copy-Track $cur
+        Set-Prop $t 'status' 'triggering-bvt'
+        Set-Prop $t 'claimedAt' (Get-NowIso)
+        Set-Prop $t 'error' $null
+        return $t
+    }
+    if ($null -eq $claimed -or $claimed.status -ne 'triggering-bvt') { return $null }
+
+    $vsrm = "https://vsrm.dev.azure.com/$($script:Organization)/$($script:Project)/_apis/release"
+    $varName = if ($bvt.vaultIdVariable) { [string]$bvt.vaultIdVariable } else { 'PrivateStampVaultId' }
+    $run = [ordered]@{ leg = 'bvt'; definitionId = [int]$bvt.definitionId; releaseId = $null; name = $null; url = $null; status = $null; environmentStatus = $null; artifacts = @(); createdAt = (Get-NowIso); finishedAt = $null }
     $err = $null
     try {
         $headers = @{ Authorization = "Bearer $(Get-AdoToken)"; 'Content-Type' = 'application/json' }
-        $resp = Invoke-RestMethod -Uri "$orgBase/pipelines/$($script:Psu.id)/runs?api-version=7.1" -Method POST -Headers $headers -Body $body -ErrorAction Stop
-        $run.runId = $resp.id
-        $run.url = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_build/results?buildId=$($resp.id)"
-        $run.status = 'inProgress'
+        # Pass every artifact's default (latest) version explicitly — the portal does the same; an
+        # unresolved artifact would start the release without bits.
+        $versions = Invoke-RestMethod -Uri "$vsrm/artifacts/versions?releaseDefinitionId=$($bvt.definitionId)&api-version=7.1" -Headers $headers -ErrorAction Stop
+        $artifacts = @()
+        foreach ($av in @($versions.artifactVersions)) {
+            if ($av.errorMessage) { throw "BVT artifact '$($av.alias)': $($av.errorMessage)" }
+            if (-not $av.defaultVersion -or -not $av.defaultVersion.id) { throw "BVT artifact '$($av.alias)' has no version to deploy." }
+            $artifacts += [pscustomobject]@{ alias = $av.alias; instanceReference = [pscustomobject]@{ id = [string]$av.defaultVersion.id; name = [string]$av.defaultVersion.name } }
+        }
+        $vars = [ordered]@{}
+        if ($bvt.PSObject.Properties['variables'] -and $bvt.variables) {
+            foreach ($p in $bvt.variables.PSObject.Properties) { $vars[$p.Name] = [pscustomobject]@{ value = [string]$p.Value } }
+        }
+        $vars[$varName] = [pscustomobject]@{ value = [string]$claimed.inputs.vaultId }
+        $desc = "ZED private stamp upgrade BVT — release $ReleaseId, instance $($claimed.inputs.instance), ports $($claimed.inputs.lastPort)/$($claimed.inputs.currentPort)"
+        $body = [pscustomobject]@{ definitionId = [int]$bvt.definitionId; isDraft = $false; description = $desc; artifacts = $artifacts; variables = [pscustomobject]$vars } | ConvertTo-Json -Depth 8
+        $rel = Invoke-RestMethod -Uri "$vsrm/releases?api-version=7.1" -Method POST -Headers $headers -Body $body -ErrorAction Stop
+        $run.releaseId = $rel.id; $run.name = $rel.name; $run.status = [string]$rel.status
+        $run.url = if ($rel._links -and $rel._links.web -and $rel._links.web.href) { [string]$rel._links.web.href } else { "https://dev.azure.com/$($script:Organization)/$($script:Project)/_releaseProgress?_a=release-pipeline-progress&releaseId=$($rel.id)" }
+        $run.artifacts = @($artifacts | ForEach-Object { "$($_.alias)=$($_.instanceReference.name)" })
+        Write-Audit @{ event = 'private-stamp-bvt-triggered'; releaseId = $rel.id; name = $rel.name; vaultVariable = $varName; artifacts = $run.artifacts }
     } catch {
         $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { " | $($_.ErrorDetails.Message)" } else { '' }
-        $err = "Failed to queue private stamp '$Leg' run: $($_.Exception.Message)$detail"
+        $err = "Failed to start the BVT release (definition $($bvt.definitionId)): $($_.Exception.Message)$detail"
+        Write-Audit @{ event = 'private-stamp-bvt-trigger-failed'; error = $err }
     }
-
     $runObj = [pscustomobject]$run
     $final = Update-Track {
         param($cur, $st)
         $t = Copy-Track $cur
-        if (-not $t.PSObject.Properties['runs'] -or $null -eq $t.runs) { Set-Prop $t 'runs' ([pscustomobject]@{}) }
-        Set-Prop $t.runs $Leg $runObj
-        if ($err) {
-            Set-Prop $t 'status' 'failed'
-            Set-Prop $t 'failedLeg' $Leg
-            Set-Prop $t 'error' $err
-        } else {
-            Set-Prop $t 'status' "deploying-$Leg"
-        }
-        Set-Prop $t 'claimedAt' $null
+        Set-Prop (Get-RunsObj $t) 'bvt' $runObj
+        if ($err) { Set-Failed $t @('bvt') $err }
+        else { Set-Prop $t 'status' 'bvt-running'; Set-Prop $t 'failedLegs' @(); Set-Prop $t 'claimedAt' $null }
         return $t
     }
-
     if ($err) {
-        Write-Audit @{ event = 'private-stamp-trigger-failed'; leg = $Leg; error = $err }
         $script:result.NotifyEvent = 'private-stamp-failed'
-        $script:result.Transition = "$FromStatus -> failed"
+        $script:result.Transition = "$FromStatus -> failed (bvt)"
     } else {
-        Write-Audit @{ event = 'private-stamp-triggered'; leg = $Leg; runId = $run.runId; port = $run.port; artifactBranch = $run.artifactBranch }
-        $script:result.Transition = "$FromStatus -> deploying-$Leg"
+        $script:result.Transition = "$FromStatus -> bvt-running"
     }
     $script:result.Run = $runObj
     return $final
+}
+
+function Complete-Deployments($Track) {
+    # Both legs done (success or failure). Succeeded -> BVT release (or owner sign-off when no BVT configured).
+    $failed = @($script:Legs | Where-Object { (Get-Run $Track $_).result -ne 'succeeded' })
+    if ($failed.Count -gt 0) {
+        $msgs = @($failed | ForEach-Object { $r = Get-Run $Track $_; "Private stamp '$_' deployment $(if ($r.runId) { "run $($r.runId) " })finished with result '$($r.result)'." })
+        $t = Update-Track {
+            param($cur, $s)
+            if ($cur.status -ne 'deploying') { return $null }
+            $n = Copy-Track $cur; Set-Failed $n $failed ($msgs -join ' '); return $n
+        }
+        $script:result.NotifyEvent = 'private-stamp-failed'
+        $script:result.Transition = "deploying -> failed ($($failed -join ', '))"
+        return $t
+    }
+    if (Get-BvtConfig) { return (Start-Bvt 'deploying') }
+    $t = Update-Track {
+        param($cur, $s)
+        if ($cur.status -ne 'deploying') { return $null }
+        $n = Copy-Track $cur; Set-Prop $n 'status' 'awaiting-bvt'; Set-Prop $n 'bvtRequestedAt' (Get-NowIso); return $n
+    }
+    $script:result.NotifyEvent = 'private-stamp-bvt-ready'
+    $script:result.Transition = 'deploying -> awaiting-bvt'
+    return $t
 }
 
 function Invoke-Poll {
@@ -265,72 +376,84 @@ function Invoke-Poll {
 
     switch -Regex ($track.status) {
         '^inputs-ready$' {
-            if ((Get-StepStatus $st 3) -eq 'completed') { return (Start-Leg 'last' 'inputs-ready') }
+            if ((Get-StepStatus $st 3) -eq 'completed') { return (Start-Deployments 'inputs-ready' $script:Legs) }
             return $track
         }
-        '^triggering-(last|current)$' {
-            $leg = $Matches[1]
+        '^(triggering|triggering-bvt|retrying)$' {
+            $what = $Matches[1]
             $claimedAt = if ($track.PSObject.Properties['claimedAt'] -and $track.claimedAt) { [datetime]$track.claimedAt } else { $null }
             if ($claimedAt -and ((Get-Date).ToUniversalTime() - $claimedAt.ToUniversalTime()).TotalMinutes -gt $StaleClaimMinutes) {
-                $msg = "Queueing the '$leg' run was interrupted. Check pipeline $($script:Psu.id) for a run you did not expect, then use 'private-stamp retry'."
+                $legs = if ($what -eq 'triggering-bvt') { @('bvt') } elseif ($what -eq 'retrying' -and $track.PSObject.Properties['failedLegs'] -and @($track.failedLegs).Count) { @($track.failedLegs) } else { $script:Legs }
+                $where = if ($what -eq 'triggering-bvt') { "release definition $((Get-BvtConfig).definitionId)" } else { "pipeline $($script:Psu.id)" }
+                $msg = "Queueing was interrupted. Check $where for a run you did not expect, then use 'private-stamp retry'."
                 $t = Update-Track {
                     param($cur, $s)
-                    if ($cur.status -ne "triggering-$leg") { return $null }
-                    $n = Copy-Track $cur
-                    Set-Prop $n 'status' 'failed'; Set-Prop $n 'failedLeg' $leg; Set-Prop $n 'error' $msg; Set-Prop $n 'claimedAt' $null
-                    return $n
+                    if ($cur.status -ne $what) { return $null }
+                    $n = Copy-Track $cur; Set-Failed $n $legs $msg; return $n
                 }
-                Write-Audit @{ event = 'private-stamp-stale-claim'; leg = $leg }
+                Write-Audit @{ event = 'private-stamp-stale-claim'; status = $what }
                 $script:result.NotifyEvent = 'private-stamp-failed'
-                $script:result.Transition = "triggering-$leg -> failed"
+                $script:result.Transition = "$what -> failed"
                 return $t
             }
             return $track
         }
-        '^deploying-(last|current)$' {
-            $leg = $Matches[1]
-            $runId = $track.runs.$leg.runId
+        '^deploying$' {
+            $updates = @{}
+            foreach ($leg in $script:Legs) {
+                $r = Get-Run $track $leg
+                if (-not $r -or $r.status -ne 'inProgress' -or -not $r.runId) { continue }
+                $headers = @{ Authorization = "Bearer $(Get-AdoToken)" }
+                $b = Invoke-RestMethod -Uri "https://dev.azure.com/$($script:Organization)/$($script:Project)/_apis/build/builds/$($r.runId)?api-version=7.1" -Headers $headers -ErrorAction Stop
+                if ($b.status -ne 'completed') { continue }
+                $updates[$leg] = @{ result = [string]$b.result; finishedAt = $(if ($b.finishTime) { ([datetime]$b.finishTime).ToUniversalTime().ToString('o') } else { Get-NowIso }) }
+                Write-Audit @{ event = 'private-stamp-run-completed'; leg = $leg; runId = $r.runId; result = [string]$b.result }
+            }
+            if ($updates.Count -gt 0) {
+                $track = Update-Track {
+                    param($cur, $s)
+                    if ($cur.status -ne 'deploying') { return $null }
+                    $n = Copy-Track $cur
+                    foreach ($leg in $updates.Keys) {
+                        $n.runs.$leg.status = 'completed'; $n.runs.$leg.result = $updates[$leg].result; $n.runs.$leg.finishedAt = $updates[$leg].finishedAt
+                    }
+                    return $n
+                }
+            }
+            $pending = @($script:Legs | Where-Object { $r = Get-Run $track $_; -not $r -or $r.status -eq 'inProgress' })
+            if ($track.status -eq 'deploying' -and $pending.Count -eq 0) { return (Complete-Deployments $track) }
+            return $track
+        }
+        '^bvt-running$' {
+            $bvt = Get-BvtConfig
+            $r = Get-Run $track 'bvt'
             $headers = @{ Authorization = "Bearer $(Get-AdoToken)" }
-            $b = Invoke-RestMethod -Uri "https://dev.azure.com/$($script:Organization)/$($script:Project)/_apis/build/builds/$($runId)?api-version=7.1" -Headers $headers -ErrorAction Stop
-            if ($b.status -ne 'completed') { return $track }
-            $ok = ($b.result -eq 'succeeded')
-            $finishedAt = if ($b.finishTime) { ([datetime]$b.finishTime).ToUniversalTime().ToString('o') } else { Get-NowIso }
-            $bResult = [string]$b.result
-            $next = if (-not $ok) { 'failed' } elseif ($leg -eq 'last') { 'last-succeeded' } else { 'awaiting-bvt' }
+            $rel = Invoke-RestMethod -Uri "https://vsrm.dev.azure.com/$($script:Organization)/$($script:Project)/_apis/release/releases/$($r.releaseId)?api-version=7.1" -Headers $headers -ErrorAction Stop
+            $envName = if ($bvt.environmentName) { [string]$bvt.environmentName } else { $null }
+            $envs = @($rel.environments)
+            $target = if ($envName) { @($envs | Where-Object { $_.name -eq $envName })[0] } else { $envs | Sort-Object rank | Select-Object -Last 1 }
+            if (-not $target) { throw "BVT release $($r.releaseId) has no stage named '$envName'." }
+            $envStatus = [string]$target.status
+            $stopped = @($envs | Where-Object { $_.status -in @('rejected', 'canceled') }).Count -gt 0 -and $envStatus -in @('notStarted', 'undefined')
+            $done = $envStatus -in @('succeeded', 'partiallySucceeded', 'rejected', 'canceled') -or $rel.status -eq 'abandoned' -or $stopped
+            if (-not $done) { return $track }
+            $summary = ($envs | Sort-Object rank | ForEach-Object { "$($_.name)=$($_.status)" }) -join '; '
+            $passed = $envStatus -in @('succeeded', 'partiallySucceeded')
             $t = Update-Track {
                 param($cur, $s)
-                if ($cur.status -ne "deploying-$leg") { return $null }
+                if ($cur.status -ne 'bvt-running') { return $null }
                 $n = Copy-Track $cur
-                $n.runs.$leg.status = 'completed'
-                $n.runs.$leg.result = $bResult
-                $n.runs.$leg.finishedAt = $finishedAt
-                if ($next -eq 'failed') {
-                    Set-Prop $n 'status' 'failed'; Set-Prop $n 'failedLeg' $leg
-                    Set-Prop $n 'error' "Private stamp '$leg' deployment run $runId finished with result '$bResult'."
-                } elseif ($next -eq 'last-succeeded') {
-                    Set-Prop $n 'status' 'last-succeeded'
-                } else {
-                    Set-Prop $n 'status' 'awaiting-bvt'
-                    Set-Prop $n 'bvtRequestedAt' (Get-NowIso)
-                }
+                $n.runs.bvt.status = 'completed'; $n.runs.bvt.environmentStatus = $envStatus; $n.runs.bvt.finishedAt = (Get-NowIso)
+                Set-Prop $n.runs.bvt 'stages' $summary
+                Set-Prop $n 'bvtOutcome' $envStatus
+                if ($passed) { Set-Prop $n 'status' 'awaiting-bvt'; Set-Prop $n 'bvtRequestedAt' (Get-NowIso) }
+                else { Set-Failed $n @('bvt') "BVT release $($r.name) ended with '$envStatus' ($summary)." }
                 return $n
             }
-            Write-Audit @{ event = 'private-stamp-run-completed'; leg = $leg; runId = $runId; result = $bResult }
-            if ($next -eq 'failed') {
-                $script:result.NotifyEvent = 'private-stamp-failed'
-                $script:result.Transition = "deploying-$leg -> failed"
-                return $t
-            }
-            if ($next -eq 'awaiting-bvt') {
-                $script:result.NotifyEvent = 'private-stamp-bvt-ready'
-                $script:result.Transition = 'deploying-current -> awaiting-bvt'
-                return $t
-            }
-            return (Start-Leg 'current' 'last-succeeded')
-        }
-        '^last-succeeded$' {
-            # Leg "last" succeeded but queueing "current" did not complete in the same tick.
-            return (Start-Leg 'current' 'last-succeeded')
+            Write-Audit @{ event = 'private-stamp-bvt-completed'; releaseId = $r.releaseId; stage = $envStatus; stages = $summary }
+            $script:result.NotifyEvent = if ($passed) { 'private-stamp-bvt-ready' } else { 'private-stamp-failed' }
+            $script:result.Transition = "bvt-running -> $(if ($passed) { 'awaiting-bvt' } else { 'failed (bvt)' })"
+            return $t
         }
         default { return $track }
     }
@@ -411,6 +534,14 @@ try {
             }
             if ($QueueName -notmatch '^[A-Za-z0-9._-]{1,128}$') { $errors += "TeeWorkflowQueueName '$QueueName' may only contain letters, digits, '.', '_' and '-'." }
             if ($LastArtifactBranch -notmatch '^[A-Za-z0-9._/-]{1,200}$') { $errors += "Last build branch '$LastArtifactBranch' is not a valid branch name." }
+            $VaultId = ([string]$VaultId).Trim()
+            if (Get-BvtConfig) {
+                if ($VaultId -notmatch $script:VaultIdPattern) {
+                    $errors += "Redirected vault '$VaultId' must be a Recovery Services vault ARM id: /subscriptions/<guid>/resourceGroups/<rg>/providers/Microsoft.RecoveryServices/vaults/<name>."
+                }
+            } elseif ($VaultId -and $VaultId -notmatch $script:VaultIdPattern) {
+                $errors += "Redirected vault '$VaultId' is not a Recovery Services vault ARM id."
+            }
             $rel = Get-Release
             $currentBranch = [string]$rel.currentBranch
             if (-not $currentBranch) { $errors += "release.json has no currentBranch." }
@@ -428,10 +559,10 @@ try {
                 currentArtifactBranch   = $currentBranch
                 queueName               = $QueueName
                 serviceOverrideSettings = $tmpl.Replace('{queueName}', $QueueName)
+                vaultId                 = $(if ($VaultId) { $VaultId } else { $null })
                 providedAt              = (Get-NowIso)
                 providedBy              = $By
             }
-            $rejected = $null
             $track = Update-Track {
                 param($cur, $st)
                 $allowed = @('awaiting-input', 'inputs-ready', 'failed')
@@ -440,14 +571,14 @@ try {
                 Set-Prop $t 'status' 'inputs-ready'
                 Set-Prop $t 'inputs' $inputs
                 Set-Prop $t 'runs' ([pscustomobject]@{})
-                Set-Prop $t 'failedLeg' $null
+                Set-Prop $t 'failedLegs' @()
                 Set-Prop $t 'error' $null
                 return $t
             }
             if ($track.status -ne 'inputs-ready') {
                 throw "Private stamp inputs can't be changed while the track is '$($track.status)'. Use 'private-stamp retry' / 'private-stamp skip' instead."
             }
-            Write-Audit @{ event = 'private-stamp-inputs'; instance = $inputs.instance; lastPort = $LastPort; currentPort = $CurrentPort; lastArtifactBranch = $LastArtifactBranch; queueName = $QueueName; by = $By }
+            Write-Audit @{ event = 'private-stamp-inputs'; instance = $inputs.instance; lastPort = $LastPort; currentPort = $CurrentPort; lastArtifactBranch = $LastArtifactBranch; queueName = $QueueName; vaultId = $inputs.vaultId; by = $By }
             $result.Transition = 'inputs-ready'
             $track = Invoke-Poll
         }
@@ -455,38 +586,39 @@ try {
             $track = Invoke-Poll
         }
         'Retry' {
-            $st = Read-State
-            $cur = Get-Track $st
-            if ($null -eq $cur -or $cur.status -ne 'failed' -or -not $cur.failedLeg) {
+            $cur = Get-Track (Read-State)
+            $failedLegs = if ($cur -and $cur.PSObject.Properties['failedLegs']) { @($cur.failedLegs | Where-Object { $_ }) } else { @() }
+            if ($null -eq $cur -or $cur.status -ne 'failed' -or $failedLegs.Count -eq 0) {
                 throw "Nothing to retry — private stamp track is '$(if ($cur) { $cur.status } else { 'not started' })'."
             }
-            $leg = [string]$cur.failedLeg
-            $from = "retry-$leg"
+            $from = 'retrying'
             $null = Update-Track {
                 param($c, $s)
                 if ($c.status -ne 'failed') { return $null }
-                $t = Copy-Track $c
-                Set-Prop $t 'status' $from
-                return $t
+                $t = Copy-Track $c; Set-Prop $t 'status' $from; Set-Prop $t 'claimedAt' (Get-NowIso); return $t
             }
-            Write-Audit @{ event = 'private-stamp-retry'; leg = $leg; by = $By }
-            $track = Start-Leg $leg $from
+            Write-Audit @{ event = 'private-stamp-retry'; legs = $failedLegs; by = $By }
+            if ($failedLegs -contains 'bvt') { $track = Start-Bvt $from }
+            else { $track = Start-Deployments $from @($failedLegs | Where-Object { $script:Legs -contains $_ }) }
         }
         'SignOff' {
             $track = Update-Track {
                 param($cur, $st)
-                if ($null -eq $cur -or $cur.status -ne 'awaiting-bvt') { return $null }
+                if ($null -eq $cur) { return $null }
+                $onlyBvtFailed = $cur.status -eq 'failed' -and @($cur.failedLegs).Count -eq 1 -and @($cur.failedLegs)[0] -eq 'bvt' -and (Get-Run $cur 'bvt') -and (Get-Run $cur 'bvt').releaseId
+                if ($cur.status -ne 'awaiting-bvt' -and -not $onlyBvtFailed) { return $null }
                 $t = Copy-Track $cur
                 Set-Prop $t 'status' 'signed-off'
                 Set-Prop $t 'signedOffAt' (Get-NowIso)
                 Set-Prop $t 'signedOffBy' $By
+                if ($onlyBvtFailed) { Set-Prop $t 'signedOffDespiteBvt' $cur.bvtOutcome }
                 return $t
             }
             if ($null -eq $track -or $track.status -ne 'signed-off') {
-                throw "Private stamp BVT sign-off is only possible in 'awaiting-bvt' (current: '$(if ($track) { $track.status } else { 'not started' })')."
+                throw "Private stamp sign-off is only possible once the BVT has run (current: '$(if ($track) { $track.status } else { 'not started' })')."
             }
-            Write-Audit @{ event = 'private-stamp-signed-off'; by = $By }
-            $result.Transition = 'awaiting-bvt -> signed-off'
+            Write-Audit @{ event = 'private-stamp-signed-off'; by = $By; bvtOutcome = $track.bvtOutcome }
+            $result.Transition = 'signed-off'
         }
         'Skip' {
             $track = Update-Track {

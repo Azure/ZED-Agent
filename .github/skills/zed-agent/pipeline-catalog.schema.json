@@ -112,7 +112,7 @@
 
     "privateStampUpgrade": {
       "type": "object",
-      "description": "Optional private stamp upgrade test — a side track kicked off at Step 5 (parallel to canary) and joined at Step 13 (SafeFly R2D waits for the owner's sign-off). Two sequential runs of the private stamp pipeline on ONE owner-chosen instance: leg 'last' (owner-supplied last build branch, port 1) then leg 'current' (release.currentBranch, port 2), both with the same ServiceOverrideSettings built from the owner-supplied queue name. Inputs are asked from the owner every release (never cached). Script: scripts/Invoke-PrivateStampUpgrade.ps1.",
+      "description": "Optional private stamp upgrade test — a side track kicked off at Step 5 (parallel to canary) and joined at Step 13 (SafeFly R2D waits for the owner's sign-off). Two runs of the private stamp pipeline on ONE owner-chosen instance, queued in parallel: leg 'last' (owner-supplied last build branch, port 1) and leg 'current' (release.currentBranch, port 2), both with the same ServiceOverrideSettings built from the owner-supplied queue name; then the optional bvtRelease against the owner-supplied redirected vault. Inputs are asked from the owner every release (never cached). Script: scripts/Invoke-PrivateStampUpgrade.ps1.",
       "additionalProperties": true,
       "required": ["enabled"],
       "properties": {
@@ -149,6 +149,19 @@
           "type": "string",
           "description": "Value for the serviceOverrides parameter. Token {queueName} = owner-supplied TeeWorkflowQueueName.",
           "default": "@{}"
+        },
+        "bvtRelease": {
+          "type": "object",
+          "description": "Optional BVT run after BOTH legs (deployed in parallel) succeed: a release of this CLASSIC release definition is created with <vaultIdVariable> = the owner-supplied redirected vault ARM id and every artifact's latest version. The owner signs off after the <environmentName> stage finishes. Without it, the owner runs BVT by hand.",
+          "required": ["definitionId"],
+          "additionalProperties": false,
+          "properties": {
+            "definitionId":    { "type": "integer", "description": "Classic release definition id (BCM: 64863 IaaSVM-BVT-Private-Stamp)." },
+            "name":            { "type": "string" },
+            "environmentName": { "type": "string", "description": "Stage whose final status ends the BVT (BCM: 'IaaSVM BVT Private Stamp'). Default: the last stage by rank." },
+            "vaultIdVariable": { "type": "string", "default": "PrivateStampVaultId", "description": "Release variable (settable at release time) that receives the vault ARM id." },
+            "variables":       { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional fixed release-time variable overrides (must be settable at release time)." }
+          }
         }
       }
     },

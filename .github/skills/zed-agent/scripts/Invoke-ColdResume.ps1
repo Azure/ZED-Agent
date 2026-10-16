@@ -153,7 +153,7 @@ try {
 try {
     $psuScript = Join-Path $PSScriptRoot 'Invoke-PrivateStampUpgrade.ps1'
     if ((Test-Path $psuScript) -and $state.PSObject.Properties['privateStampUpgrade'] -and $state.privateStampUpgrade -and
-        $state.privateStampUpgrade.status -match '^(inputs-ready|triggering-|deploying-|last-succeeded)') {
+        $state.privateStampUpgrade.status -match '^(inputs-ready|triggering|deploying|bvt-running|retrying)') {
         $verdict.PrivateStampSideChannel = & $psuScript -Action Poll `
             -ReleaseId $activeRelease.ReleaseId `
             -StateFile $activeRelease.StateFile `

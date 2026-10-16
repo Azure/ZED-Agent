@@ -204,7 +204,8 @@ Ask via `ask_user`, persisting after each answer:
    - pipeline `name` and `id` (e.g. BCM: `Mgmt-RecoverySvcs-IaaSCoord-BCM-SF-EaCan-PrivateStamp-BCM-Svc-Deployment`, `396863`).
    - Read the pipeline YAML parameters (`Read-PipelineYaml.ps1`) and the last 20 runs, then **propose** — owner confirms or edits: `parameterNames` (instance / port / artifactBranch / serviceOverrides), fixed `templateParameters` (every other parameter, using the value most prior runs used), `portSpan` (2 if the port parameter says HTTP = port + 1), and `serviceOverrideSettingsTemplate` with the `{queueName}` token (BCM: `@{"BCMAppConfig->WorkflowQueueName"="{queueName}";}`).
    - Persist `enabled: true`, `sourceBranch: "{currentBranch}"`.
-   - **Never** persist an instance, port, last-build branch or queue name — those are asked from the owner every release by the `private-stamp` command.
+   - **BVT release** (`privateStampUpgrade.bvtRelease`, optional): *"After both deployments succeed, should ZED run a BVT release pipeline against a vault redirected to the private stamp? Paste the release definition URL or id, or 'no'."* On an id: GET `https://vsrm.dev.azure.com/<org>/<project>/_apis/release/definitions/<id>` and show its stages and release-time-settable variables (`allowOverride: true`); propose `environmentName` = the last stage by rank and `vaultIdVariable` = the settable variable whose name contains `VaultId` (BCM: 64863 `IaaSVM-BVT-Private-Stamp`, stage `IaaSVM BVT Private Stamp`, variable `PrivateStampVaultId`). Owner confirms. Persist `{ definitionId, name, environmentName, vaultIdVariable }`. The vault id itself is asked every release.
+   - **Never** persist an instance, port, last-build branch, queue name or vault id — those are asked from the owner every release by the `private-stamp` command.
 
 Do **not** ask for `templateParameters`, `clusterType`, `clusterTypeMap`, or any cluster-routing concept yet — those are Phase 4.2 and Phase 4.10.
 

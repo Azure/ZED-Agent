@@ -29,6 +29,8 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `approve-ri` | Give the go-ahead after the RI PR merged (starts FI — only when `ado.integration` is enabled) |
 | `private-stamp` | Provide the private stamp upgrade test inputs (instance, port for last build, port for current build, last build branch, TeeWorkflowQueueName). Also `private-stamp retry`, `private-stamp skip <reason>`, `private-stamp status` |
 | `approve-private-stamp` | Sign off the private stamp BVT (releases the Step 13 join) |
+| `revert-bits base <sha>` / `revert-bits preserve <numbers\|all\|none>` | Revert bits (Step 7, after canary BVT sign-off): confirm the previous release commit / choose which changed settings to keep. Also `revert-bits status`, `revert-bits skip <reason>` |
+| `approve-revert` | Sign off the BVT on the revert build — Step 7 then rolls canary back with it |
 | `approve-bvt` | Approve BVT check results (unblocks step 6) |
 | `approve-rollback` | Approve post-rollback results (unblocks step 9) |
 | `approve-rollforward` | Approve post-roll-forward results (unblocks step 12) |
@@ -61,6 +63,7 @@ Step 5:  (automatic)          ← Deploys canary (CANARY pipelines → EACan/ECY
          └ privateStampUpgrade: ← private-stamp (inputs) → last build (port 1) → current build (port 2) → owner BVT → approve-private-stamp  [parallel; Step 13 waits for it]
 Step 6:  (automatic)          ← BVT check runs, frontliners notified if failures
 Step 7:  (automatic)          ← Rollback (CANARY pipelines with previous bits)
+         └ revertBits:        ← revert-bits preserve … → PR (owner merges) → revert build → owner BVT → approve-revert → rollback uses the revert build
 Step 8:  (automatic)          ← Post-rollback BVT check runs
 Step 9:  approve-rollback     ← Release owner reviews post-rollback results, approves
 Step 10: (automatic)          ← Roll-forward (PROD pipelines → canary regions)
@@ -107,6 +110,7 @@ When the release owner says `status`:
    - If `state.integration` exists, show it under Step 2 as sub-rows `2a RI`, `2b FI`, `2c Cut` with each status and PR link (e.g. `2a RI ✅ merged !123`, `2b FI ⏳ pr-open !124`)
    - If `state.privateStampUpgrade` exists, show a side-track row `🧪 Private stamp upgrade` with its status, instance, ports, both run links/results, and the owner action it is waiting for (if any)
    - If `state.scheduleGuards` exists, show one line per guarded canary pipeline, e.g. `⏸ BCM-EACAN enableSchedule=false (paused after run 185400001, resumes on approve-bvt)` / `▶ … restored`
+   - If `state.revertBits` exists, show it under Step 7: `🔁 Revert bits <revertBranch>: <phase>` with the kept settings count, PR link, build number/link and the owner action it waits for
    - Show progress (N/16 done)
    - Show watcher status (running/stopped, PID, what it's polling)
    - Show next expected action
@@ -273,6 +277,25 @@ When the release owner says `approve-private-stamp` or `approve private-stamp`:
 1. Run `Invoke-PrivateStampUpgrade.ps1 -Action SignOff -By <owner alias>`. If the track is not `awaiting-bvt`, report the current status and what it is waiting for; change nothing.
 2. Confirm: *"✅ Private stamp BVT signed off ({instance}: {lastBuild} on {port1}, {currentBranch} on {port2})."*
 3. If Step 13 is `waiting`, resume the execution loop (Step 13 re-runs its prerequisite checks).
+
+## revert-bits — Revert Bits Selection and Control (Step 7 pre-phase)
+
+Only meaningful when `CONFIG[revertBits.enabled]`. Spec: `step-behaviors.md → Step 7 — Revert bits (7a–7d)`. All git work goes through `scripts/Invoke-RevertBits.ps1`.
+
+- **`revert-bits base <sha|branch>`** — accepted while `state.revertBits.phase == "needs-previous-commit"` (or `awaiting-selection`, to correct it). Resolve to a full sha (`git rev-parse`), store `state.revertBits.previousCommit`, re-run 7a (`-Action Plan -PreviousCommit <sha>`) and send the selection email. Warn if the commit is not an ancestor of the current release commit.
+- **`revert-bits preserve <list>`** — accepted while `phase == "awaiting-selection"`. `<list>` = setting numbers from the plan (`2,4,7`), `all`, or `none`; `CONFIG[revertBits.preserveAlways]` settings (BCM: `BCMAppConfig->BCMTeeWorkflowVersion`) are always included and need not be listed. Echo the resolved list (number, scope, setting, kept value) before running 7b; on an invalid number show the error and the valid range and change nothing.
+- **`revert-bits status`** — show `state.revertBits` (phase, commits, kept settings, PR, build) and the plan table.
+- **`revert-bits skip <reason>`** — any phase before `signed-off`: `phase = "skipped"`, `skippedReason`, Step 7 → `in-progress` and continue with Step 7 Action 1 using `release.previousBranch`. Ask for a reason if missing. An already-open PR or branch is left as is (mention it).
+
+## approve-revert — Sign Off the Revert Build
+
+When the release owner says `approve-revert` (or `approve revert`):
+
+1. Verify Step 7 is `waiting-approval` and `state.revertBits.phase == "awaiting-bvt"`; otherwise report the current revert-bits phase and what it waits for, change nothing.
+2. `phase = "signed-off"`, record `signedOffAt` / `signedOffBy`, Step 7 → `in-progress` (single `Update-ReleaseState` write); audit `{ "event": "revert-bits-signed-off", "build": "<buildNumber>" }`.
+3. Resume execution loop → Step 7 Action 1 (canary rollback with the revert build per Action 2).
+
+`approve` / `approve-step 7` are accepted as aliases while `phase == "awaiting-bvt"` — they never mark Step 7 `completed`.
 
 ## approve-bvt — Approve BVT Results
 

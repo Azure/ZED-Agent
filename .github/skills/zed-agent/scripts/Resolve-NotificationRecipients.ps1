@@ -30,6 +30,9 @@
       private-stamp-input-needed -> (5,  halt)     upgrade test needs instance/ports/last build/queue name
       private-stamp-bvt-ready    -> (5,  halt)     both private stamp legs deployed, owner runs BVT
       private-stamp-failed       -> (5,  failure)  a private stamp leg failed to queue or deploy
+      revert-bits-select         -> (7,  halt)     revert bits: owner picks the settings to keep
+      revert-bits-pr-raised      -> (7,  halt)     revert bits PR opened, owner must merge
+      revert-bits-bvt-ready      -> (7,  halt)     revert build ready, owner runs BVT
       commit-request             -> (4,  success)
       create-r2d                 -> (13, success)
       ev2-stage-progress         -> (15, success)
@@ -97,6 +100,9 @@ $LegacyMap = @{
     'private-stamp-input-needed' = @{ Step = 5; Outcome = 'halt'    }
     'private-stamp-bvt-ready'    = @{ Step = 5; Outcome = 'halt'    }
     'private-stamp-failed'       = @{ Step = 5; Outcome = 'failure' }
+    'revert-bits-select'         = @{ Step = 7; Outcome = 'halt'    }
+    'revert-bits-pr-raised'      = @{ Step = 7; Outcome = 'halt'    }
+    'revert-bits-bvt-ready'      = @{ Step = 7; Outcome = 'halt'    }
     'commit-request'         = @{ Step = 4;  Outcome = 'success' }
     'create-r2d'             = @{ Step = 13; Outcome = 'success' }
     'ev2-stage-progress'     = @{ Step = 15; Outcome = 'success' }

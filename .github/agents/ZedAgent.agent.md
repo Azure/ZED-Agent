@@ -257,6 +257,7 @@ Callers pass an `EventKey` to `Resolve-NotificationRecipients.ps1`. The helper m
 | `ri-pr-raised`, `fi-pr-raised`  | `2-cut-branch.halt` (Step 2a/2b integration PR opened)               |
 | `private-stamp-input-needed`, `private-stamp-bvt-ready` | `5-deploy-canary.halt` (private stamp upgrade side track) |
 | `private-stamp-failed`          | `5-deploy-canary.failure` (private stamp leg failed)                 |
+| `revert-bits-select`, `revert-bits-pr-raised`, `revert-bits-bvt-ready` | `7-rollback.halt` (revert bits pre-phase)          |
 | `schedule-guard-disabled`, `schedule-guard-preexisting`, `schedule-guard-restored`, `schedule-guard-failed` | unmapped → owner-only (canary schedule guard) |
 | `commit-request`                | `4-collect-commits.success` (legacy alias)                           |
 | `create-r2d`                    | `13-create-r2d.success` (legacy alias)                               |
@@ -450,7 +451,7 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 | 4 | `collect-commits` | Collect & Analyze Commit Details | Async (watcher) |
 | 5 | `deploy-canary` | Deploy Canary | Async (watcher) |
 | 6 | `bvt-check` | BVT Check | Async (timer + Kusto) + Approval |
-| 7 | `rollback` | Rollback | Async (watcher) |
+| 7 | `rollback` | Rollback (preceded by revert bits 7a–7d when `CONFIG[revertBits.enabled]`: settings selection → PR → revert build → owner BVT) | Async (watcher) (+ `revert-bits preserve` / `approve-revert` when revert bits enabled) |
 | 8 | `post-rollback-bvt` | Post-Rollback BVT | Async (timer + Kusto) |
 | 9 | `post-rollback-signoff` | Post-Rollback Sign-off | Approval |
 | 10 | `roll-forward` | Roll-Forward (PROD pipelines → canary regions) | Async (watcher) |
@@ -813,7 +814,7 @@ Rules:
 # Command Behaviors
 
 The full behavior of every command — `help`, `setup-service`, `setup`, `status`,
-`run`, `modify`, `skip`, `approve-ri`, `private-stamp`, `approve-private-stamp`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
+`run`, `modify`, `skip`, `approve-ri`, `private-stamp`, `approve-private-stamp`, `revert-bits`, `approve-revert`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
 `approve-crb`, `ack`, `resume`, `stop`, `test`, `test-run`, `teardown`, `rebuild`,
 `new-stamp` — is specified in:
 
@@ -874,6 +875,6 @@ After completing each step, the agent checks whether an approval gate is active:
 - Runtime override (from `state.json → gateOverrides`, if any)
 - Effective gate status (override wins if present, else config value; step 14 always true)
 
-**`approve-step <N>`**: Verify step N is in `waiting-approval` due to a gate. Record approval in `state.json`. Set step → `completed`. Advance to next step. Log in `audit.jsonl`. **Exception**: if N == 2 and `state.integration.phase == "ri-go-ahead"`, this is the RI go-ahead — behave exactly like `approve-ri` (Step 2 → `in-progress`, start FI), never mark Step 2 `completed`.
+**`approve-step <N>`**: Verify step N is in `waiting-approval` due to a gate. Record approval in `state.json`. Set step → `completed`. Advance to next step. Log in `audit.jsonl`. **Exception**: if N == 2 and `state.integration.phase == "ri-go-ahead"`, this is the RI go-ahead — behave exactly like `approve-ri` (Step 2 → `in-progress`, start FI), never mark Step 2 `completed`. Likewise if N == 7 and `state.revertBits.phase == "awaiting-bvt"` — behave exactly like `approve-revert` (Step 7 → `in-progress`, run the canary rollback), never mark Step 7 `completed`.
 
-**`approve`**: Find the first step in `waiting-approval` state. Apply same logic as `approve-step <N>` for that step (including the Step 2 RI go-ahead exception).
+**`approve`**: Find the first step in `waiting-approval` state. Apply same logic as `approve-step <N>` for that step (including the Step 2 RI go-ahead and Step 7 revert-build exceptions).

@@ -52,6 +52,9 @@
     "safeFlyStatus":     { "type": "string" },
     "mergeBackPrId":     { "type": ["integer", "string"] },
     "riPrId":            { "type": ["integer", "string"], "description": "Step 2a Reverse Integration PR id (ado.integration only)." },
+    "revertBranch":      { "type": "string", "description": "Revert bits branch for this release (revertBits only), e.g. 'releases/bcm2610revert'." },
+    "revertPrId":        { "type": ["integer", "string"], "description": "Revert bits PR id (work branch → revert branch)." },
+    "revertBuildId":     { "type": ["integer", "string"], "description": "Official build of the revert branch." },
     "fiPrId":            { "type": ["integer", "string"], "description": "Step 2b Forward Integration PR id (ado.integration only)." },
     "testMode":          { "type": "boolean" },
     "triggeredPipelines": {

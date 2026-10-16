@@ -181,6 +181,19 @@ if ($integration -and $integration.Value -and $integration.Value.PSObject.Proper
     }
 }
 
+# --- Optional revertBits (Step 7 pre-phase) ---
+$rbProp = $cfg.PSObject.Properties['revertBits']
+if ($rbProp -and $rbProp.Value -and $rbProp.Value.PSObject.Properties['enabled'] -and $rbProp.Value.enabled -eq $true) {
+    $rb = $rbProp.Value
+    if ([string]$rb.branchTemplate -notmatch '\{\{(YYMM|releaseId|releaseTag)\}\}') {
+        throw "revertBits.branchTemplate '$($rb.branchTemplate)' must contain {{YYMM}}, {{releaseId}} or {{releaseTag}} so each release gets its own revert branch."
+    }
+    if (@($rb.files | Where-Object { $_ }).Count -eq 0) { throw "Required config field is empty: 'revertBits.files'." }
+    if ($rb.PSObject.Properties['topicBranchTemplate'] -and $rb.topicBranchTemplate -and [string]$rb.topicBranchTemplate -eq [string]$rb.branchTemplate) {
+        throw "revertBits.topicBranchTemplate must differ from revertBits.branchTemplate (the kept settings reach the revert branch through a PR)."
+    }
+}
+
 # --- Optional commitExcel.mode == "tracker" (one sheet per release in a shared workbook) ---
 $ceProp = $cfg.PSObject.Properties['commitExcel']
 if ($ceProp -and $ceProp.Value -and $ceProp.Value.PSObject.Properties['mode'] -and $ceProp.Value.mode) {

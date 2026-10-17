@@ -181,6 +181,31 @@ if ($integration -and $integration.Value -and $integration.Value.PSObject.Proper
     }
 }
 
+# --- Optional ado.releaseMode = "deploy-base" (deploy the base branch itself, pinned builds) ---
+$rmProp = $cfg.ado.PSObject.Properties['releaseMode']
+if ($rmProp -and $rmProp.Value) {
+    if (@('cut-branch', 'deploy-base') -notcontains [string]$rmProp.Value) {
+        throw "ado.releaseMode '$($rmProp.Value)' is not supported. Expected 'cut-branch' or 'deploy-base'."
+    }
+    if ($rmProp.Value -eq 'deploy-base') {
+        $af = $catalog.PSObject.Properties['artifactFeed']
+        if (-not $af -or -not $af.Value -or -not $af.Value.feedBranchPrefix -or -not $af.Value.connectionId -or -not $af.Value.sourceId) {
+            throw "ado.releaseMode = 'deploy-base' needs pipeline-catalog.json → artifactFeed (connectionId, sourceId, feedBranchPrefix) — without it canary/production would deploy the newest build of the branch instead of the release build."
+        }
+        $unpinned = @()
+        foreach ($scope in @('canary', 'production')) {
+            if (-not $catalog.PSObject.Properties[$scope] -or -not $catalog.$scope) { continue }
+            foreach ($e in $catalog.$scope.PSObject.Properties) {
+                if ($e.Name -like '_*') { continue }
+                if (-not $e.Value.PSObject.Properties['buildResource'] -or -not $e.Value.buildResource) { $unpinned += "$scope.$($e.Name)" }
+            }
+        }
+        if ($unpinned.Count -gt 0) {
+            throw "ado.releaseMode = 'deploy-base' needs buildResource on every canary/production pipeline (missing: $($unpinned -join ', '))."
+        }
+    }
+}
+
 # --- Optional revertBits (Step 7 pre-phase) ---
 $rbProp = $cfg.PSObject.Properties['revertBits']
 if ($rbProp -and $rbProp.Value -and $rbProp.Value.PSObject.Properties['enabled'] -and $rbProp.Value.enabled -eq $true) {

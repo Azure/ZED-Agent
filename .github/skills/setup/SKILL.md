@@ -171,6 +171,12 @@ When the release owner says `setup`:
 11. **Release initialization**: Set up the release for the current month.
     a. Auto-detect release ID from current date (format: `YYYY-MM`, e.g., `2026-04`)
     b. You MUST ask the release owner for each of these values and STOP AND WAIT for their response before proceeding. Do NOT auto-fill, assume, or use defaults without the release owner explicitly confirming. If the release owner does not respond, do NOT continue — keep waiting.
+       **If `CONFIG[ado.releaseMode] == "deploy-base"`** (no release branch is cut — the base branch itself is deployed, e.g. BCM deploys master), ask instead, one question at a time with `ask_user`:
+       - **Deployment branch** — *"Which branch should this release deploy? (default: `CONFIG[ado.baseBranch]`)"* — choices `CONFIG[ado.baseBranch] (Recommended)` + freeform. Validate it exists on origin (`git ls-remote --heads origin <branch>`). → `currentBranch`.
+       - **Previous release** — run `scripts/Resolve-ReleaseBuild.ps1 -Action PreviousRelease` (the newest real rollout of the production pipelines and the build it deployed). Show it (*"Previous release = build {PreviousBuildNumber} ({PreviousBuildId}), commit {PreviousCommit:9} on {PreviousBranch}, deployed {DeployedAt} by prod run {ProdRunId}"*) plus the other `Candidates`, and ask the owner to confirm, pick another candidate, or paste a build link (resolve it with `-Action ResolveBuild -Build <link>`). → `previousBuildId`, `previousBuildNumber`, `previousCommit`. The commit range of this release starts there; the build is also Step 7's fallback rollback build and the suggested *last build* for the private stamp upgrade test.
+       - **Target build/deployment date** — same as the branch cut date below (it drives the Step 1 reminder).
+       Do NOT ask for a previous/current release branch name in this mode. The deploy commit is NOT chosen here — Step 2c takes the newest deployable commit of the deployment branch after FI.
+       **Otherwise (`cut-branch`, default):**
        - **Previous release branch name** — e.g., `{CONFIG[ado.branchPrefix]}2411`. Needed for `git log` commit range comparison.
        - **Current release branch name** — e.g., `{CONFIG[ado.branchPrefix]}2502_sbc`. The branch that will be cut for this release.
        - **Target branch cut date** — suggest 3rd of the month, but the release owner MUST confirm or provide a different date
@@ -183,13 +189,18 @@ When the release owner says `setup`:
          "releaseId": "{id}",
          "releaseOwner": { "alias": "<from az account user.name>", "email": "<alias>@microsoft.com", "name": "<from: az ad signed-in-user show --query displayName -o tsv>" },
          "dates": { "created": "<now>", "branchCut": "<release owner input>" },
-         "currentBranch": "<release owner input — e.g., {CONFIG[ado.branchPrefix]}2502_sbc>",
-         "previousBranch": "<release owner input — e.g., {CONFIG[ado.branchPrefix]}2411>",
+         "releaseMode": "<CONFIG[ado.releaseMode] or 'cut-branch'>",
+         "releaseTag": "<leaf of CONFIG[ado.branchPrefix] + YYMM — e.g. 'bcm-2611'>",
+         "currentBranch": "<cut-branch: release owner input — e.g., {CONFIG[ado.branchPrefix]}2502_sbc | deploy-base: the deployment branch, e.g. master>",
+         "previousBranch": "<cut-branch only: release owner input — e.g., {CONFIG[ado.branchPrefix]}2411>",
+         "previousCommit": "<deploy-base only>", "previousBuildId": "<deploy-base only>", "previousBuildNumber": "<deploy-base only>",
+         "currentCommit": null,
          "excludedRegions": ["<from CCOA detection in step 2 — e.g., eastus2, centralus>"],
          "buildId": null, "buildNumber": null, "r2dWorkItemId": null, "mergeBackPrId": null, "commitExcelUrl": null
        }
        ```
-    e. Write `state.json` with 16 steps all `pending`, status `not-started`
+       Every step keys on `release.json → releaseMode` (not on the live config), so a release keeps its mode even if the config changes mid-release.
+    e. Write `state.json` with 16 steps all `pending`, status `not-started`. **deploy-base**: write Step 16 (`merge-back`) as `skipped` with `skipReason: "deploy-base — the release is the deployment branch itself, nothing to merge back"`.
     f. **Optional step skipping (per-release)**: Ask the release owner whether any steps should be skipped for THIS release only. Use `ask_user` with two choices: `Run all 16 steps (recommended)` and `Skip some steps`.
        - If they pick **Run all 16 steps** → continue to sub-step g. No state changes.
        - If they pick **Skip some steps**:

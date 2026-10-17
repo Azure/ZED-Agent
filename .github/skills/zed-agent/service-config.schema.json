@@ -127,6 +127,12 @@
           "default": "develop",
           "minLength": 1
         },
+        "releaseMode": {
+          "type": "string",
+          "enum": ["cut-branch", "deploy-base"],
+          "default": "cut-branch",
+          "description": "'cut-branch' (default): Step 2 cuts <branchPrefix><YYMM> from baseBranch and the release deploys that branch. 'deploy-base' (e.g. BCM): no release branch — the release deploys the base branch itself (owner confirms the deployment branch at setup, default baseBranch). The release is the build of the newest deployable commit of that branch (Step 2), the previous release is the build the last production rollout deployed, and EVERY canary/production/rollback run is pinned to its exact build (requires pipeline-catalog artifactFeed + buildResource). Step 16 (merge-back) is skipped. Script: scripts/Resolve-ReleaseBuild.ps1."
+        },
         "integration": {
           "type": "object",
           "description": "Optional pre-branch-cut Reverse/Forward Integration (Step 2 sub-phases 2a/2b) for services that keep a develop + master pair. 2a RI: merge mainBranch into developBranch via PR, wait for merge, then wait for the release owner's `approve-ri`. 2b FI: merge developBranch into mainBranch via PR, wait for merge. 2c: the normal branch cut from ado.baseBranch. Absent or enabled=false keeps the stock Step 2.",

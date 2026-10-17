@@ -383,7 +383,10 @@ function Test-PreFlight {
                 $rel = Get-Content $relJsonPath -Raw | ConvertFrom-Json
                 $relIssues = @()
                 if (-not $rel.currentBranch) { $relIssues += "currentBranch not set" }
-                if (-not $rel.previousBranch) { $relIssues += "previousBranch not set" }
+                if ($rel.PSObject.Properties['releaseMode'] -and $rel.releaseMode -eq 'deploy-base') {
+                    if (-not $rel.previousCommit) { $relIssues += "previousCommit not set (deploy-base)" }
+                    if (-not $rel.previousBuildId) { $relIssues += "previousBuildId not set (deploy-base)" }
+                } elseif (-not $rel.previousBranch) { $relIssues += "previousBranch not set" }
                 if (-not $rel.dates.branchCut) { $relIssues += "branchCut date not set" }
                 if (-not $rel.releaseOwner.alias) { $relIssues += "release owner alias not set" }
                 if ($relIssues.Count -gt 0) {

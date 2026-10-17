@@ -259,8 +259,8 @@ Only meaningful when `CONFIG[pipelines.privateStampUpgrade.enabled]`. Spec: `ste
 - Interactive form (bare `private-stamp`): use `ask_user` **one question at a time**:
   1. *"Which private stamp instance should I deploy to (e.g. A, B, C)?"*
   2. *"Port for the LAST build deployment (WebRolePort; HTTP uses port + 1)?"*
-  3. *"Port for the CURRENT build deployment ({release.currentBranch})?"*
-  4. *"Link to the LAST deployment's official build (…/_build/results?buildId=…) — I'll deploy exactly that build, even if its branch has newer ones."* (without `privateStampUpgrade.artifact`: *"Which branch is the last deployment build? Its latest build is deployed."*)
+  3. *"Port for the CURRENT build deployment ({release.currentBranch}, build {release.buildNumber} once Step 2 has run)?"*
+  4. *"Link to the LAST deployment's official build (…/_build/results?buildId=…) — I'll deploy exactly that build, even if its branch has newer ones."* — in deploy-base releases offer `release.previousBuildId` (the previous production build) as the default choice. (without `privateStampUpgrade.artifact`: *"Which branch is the last deployment build? Its latest build is deployed."*)
   5. *"TeeWorkflowQueueName for both deployments? (passed as ServiceOverrideSettings = @{\"BCMAppConfig->WorkflowQueueName\"=\"<name>\";})"*
   6. *(only when `privateStampUpgrade.bvtRelease` is configured)* *"ARM id of the vault redirected to one of these ports? The BVT runs against it (PrivateStampVaultId). Format: /subscriptions/<guid>/resourceGroups/<rg>/providers/Microsoft.RecoveryServices/vaults/<name>"*
 - Then run `-Action SetInputs -Instance -LastPort -CurrentPort -LastBuild <link|id> -QueueName -VaultId` (without `artifact`: `-LastArtifactBranch <branch>` instead of `-LastBuild`). On a validation error, show the message and re-ask only the offending field(s). On success, reply with the resolved plan (instance, `port1 ← <last build number> (<branch>, build <id>)`, `port2 ← this release's build (pinned to release.buildId when queued)` — **deployed in parallel**, queue name, vault for the BVT) and the new status: `deploying` (both run links) if Step 3 has completed, otherwise *"Inputs saved — I'll deploy both builds as soon as the release build finishes."* Accepted while the track is `awaiting-input`, `inputs-ready` or `failed` (new inputs restart both legs), and also before Step 5 (inputs are kept until the build is ready).
@@ -435,7 +435,7 @@ When the release owner says `test-run`:
 
 2. **Setup** (same flow as `setup` command but with test overrides):
    a. Release ID: `TEST-{YYYY-MM}` (e.g., `TEST-2026-04`)
-   b. Ask for `currentBranch` (release branch to test) and `previousBranch`
+   b. Ask for `currentBranch` (release branch to test) and `previousBranch` — **deploy-base** (`CONFIG[ado.releaseMode]`): ask for the deployment branch (default `CONFIG[ado.baseBranch]`) and resolve the previous release with `Resolve-ReleaseBuild.ps1 -Action PreviousRelease` (owner confirms), exactly like `setup`; write `releaseMode`, `releaseTag`, `previousCommit`, `previousBuildId`.
    c. Run full `setup` prerequisites check
    d. Create `release.json` with test mode config:
       ```json
@@ -506,6 +506,7 @@ When the release owner says `teardown`:
 When the release owner says `rebuild` (e.g. after late cherry-picks into the release branch):
 1. Queue a new officialBuild on `release.json → currentBranch` (Step 2's queueing logic; the branch
    already exists, so skip branch creation). Update `release.json → buildId` / `buildNumber` and log.
+   **Deploy-base**: the new commits must already be on the deployment branch. Re-run "Step 2 — Deploy-base build (2c)" (`Resolve-ReleaseBuild.ps1 -Action DeployCommit`, reuse the CI build or `-Action QueueBuild`), show the owner the new commit + build vs the old ones and confirm, then update `currentCommit` / `buildId` / `buildNumber`. Every later run (retriggered canary, Steps 10/15) pins to the new build; append the newly added commits (`<old currentCommit>..<new currentCommit>`) to the commit tracker via Step 4's Publish (append-only).
 2. Arm Step 3's build watcher for the new build. On completion, **ask the owner which canary pipelines
    to retrigger** — only the pipelines whose service had missing commits need it; the others keep
    their existing canary results.

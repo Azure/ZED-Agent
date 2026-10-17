@@ -693,7 +693,7 @@ try {
             if (-not $currentBranch) { $errors += "release.json has no currentBranch." }
             if ($lastPin -and $rel.PSObject.Properties['buildId'] -and $rel.buildId -and [long]$rel.buildId -eq [long]$lastPin.buildId) {
                 $errors += "Build $($lastPin.buildId) is this release's own build — the upgrade test needs the PREVIOUS build."
-            } elseif ($LastArtifactBranch -and $currentBranch -and $LastArtifactBranch -ieq $currentBranch) {
+            } elseif (-not $lastPin -and -not ($rel.PSObject.Properties['releaseMode'] -and $rel.releaseMode -eq 'deploy-base') -and $LastArtifactBranch -and $currentBranch -and $LastArtifactBranch -ieq $currentBranch) {
                 $errors += "Last build branch equals this release's branch ($currentBranch) — the upgrade test needs the PREVIOUS build."
             }
             if ($errors.Count -gt 0) { throw ("Invalid private stamp inputs:`n - " + ($errors -join "`n - ")) }

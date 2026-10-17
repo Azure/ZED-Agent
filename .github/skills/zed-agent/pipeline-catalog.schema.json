@@ -110,6 +110,20 @@
       "then": { "required": ["clusterTypeMap"] }
     },
 
+    "artifactFeed": {
+      "type": "object",
+      "description": "Artifact feed that the deployment pipelines' build resources read (e.g. CloudVault). Used to pin runs to an exact build (Resolve-ReleaseBuild.ps1 -Action PinResources): feed branch = feedBranchPrefix + the build's git branch with / - . replaced by _ (must match the YAML resources.builds branch expression). Required when ado.releaseMode = 'deploy-base'.",
+      "required": ["connectionId", "sourceId", "feedBranchPrefix"],
+      "additionalProperties": false,
+      "properties": {
+        "type":              { "type": "string", "default": "CloudVaultArtifacts-v3" },
+        "connectionId":      { "type": "string" },
+        "connectionName":    { "type": "string" },
+        "sourceId":          { "type": "string" },
+        "feedBranchPrefix":  { "type": "string" },
+        "buildDefinitionId": { "type": "integer", "description": "Official build pipeline id (normally = officialBuild.id)." }
+      }
+    },
     "privateStampUpgrade": {
       "type": "object",
       "description": "Optional private stamp upgrade test — a side track kicked off at Step 5 (parallel to canary) and joined at Step 13 (SafeFly R2D waits for the owner's sign-off). Two runs of the private stamp pipeline on ONE owner-chosen instance, queued in parallel: leg 'last' (owner-supplied last build branch, port 1) and leg 'current' (release.currentBranch, port 2), both with the same ServiceOverrideSettings built from the owner-supplied queue name; then the optional bvtRelease against the owner-supplied redirected vault. Inputs are asked from the owner every release (never cached). Script: scripts/Invoke-PrivateStampUpgrade.ps1.",
@@ -226,6 +240,11 @@
           "enum": ["short", "full"],
           "default": "short",
           "description": "Controls which stamp field Resolve-TemplateParams.ps1 uses for {{*Stamps}} tokens. 'short' (default) → stampId (e.g. 'ea-01'); 'full' → stampName (e.g. 'ea-can02-prot1'). Different pipeline YAMLs expect different formats — SFMC's ParseStampId expects short IDs."
+        },
+        "buildResource": {
+          "type": "string",
+          "description": "YAML resources.builds alias that carries the service bits (e.g. 'bcm_service'). Required for every canary/production entry when ado.releaseMode = 'deploy-base': each run posts resources.builds.<alias>.version = the release build's artifact version (Resolve-ReleaseBuild.ps1 -Action PinResources), so it deploys exactly that build instead of the newest build of ArtifactsBranch. Also used to find the previous release from production run history.",
+          "minLength": 1
         },
         "scheduleGuard": {
           "type": "object",

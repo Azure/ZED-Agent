@@ -82,6 +82,9 @@ param(
     [string]$GateScope = 'production',
     [AllowNull()][object[]]$DeclaredParameters,
     [AllowNull()][object]$LearnedModel,
+    # deploy-base releases: resources.builds fragment from Resolve-ReleaseBuild.ps1 -Action PinResources
+    # (e.g. @{ bcm_service = @{ version = '<id>' } }) so the run consumes the exact release build.
+    [AllowNull()][object]$BuildResources,
     [switch]$SkipPayloadGate
 )
 
@@ -136,8 +139,10 @@ $tpObj = New-Object PSObject
 foreach ($k in $TemplateParameters.Keys) {
     $tpObj | Add-Member -MemberType NoteProperty -Name $k -Value ([string]$TemplateParameters[$k])
 }
+$resourcesObj = [ordered]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $SourceBranch } } }
+if ($null -ne $BuildResources) { $resourcesObj.builds = $BuildResources }
 $body = [pscustomobject]@{
-    resources          = [pscustomobject]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $SourceBranch } } }
+    resources          = [pscustomobject]$resourcesObj
     templateParameters = $tpObj
 } | ConvertTo-Json -Depth 16
 
@@ -251,6 +256,7 @@ $record = [ordered]@{
     pipelineId         = $PipelineId
     sourceBranch       = $SourceBranch
     postedParameters   = $TemplateParameters
+    pinnedBuilds       = $BuildResources
     runId              = $runId
     runUrl             = $runUrl
     triggered          = $triggered

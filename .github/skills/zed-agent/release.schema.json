@@ -5,7 +5,10 @@
   "description": "Schema for release.json — per-release runtime artifact tracking release owner, branch names, dates, build/SafeFly/EV2 identifiers, and the commit Excel URL.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["releaseId", "releaseOwner", "currentBranch", "previousBranch"],
+  "required": ["releaseId", "releaseOwner", "currentBranch"],
+  "if": { "not": { "properties": { "releaseMode": { "const": "deploy-base" } }, "required": ["releaseMode"] } },
+  "then": { "required": ["previousBranch"] },
+  "else": { "required": ["previousCommit", "previousBuildId"] },
   "properties": {
     "releaseId": {
       "type": "string",
@@ -33,14 +36,20 @@
     },
     "currentBranch": {
       "type": "string",
-      "description": "Name of the release branch being deployed (e.g., 'Release-2604').",
+      "description": "Name of the release branch being deployed (e.g., 'Release-2604'). In releaseMode 'deploy-base' this is the deployment branch itself (e.g. 'master').",
       "minLength": 1
     },
     "previousBranch": {
       "type": "string",
-      "description": "Name of the previous release branch (used for rollback in Step 7).",
+      "description": "Name of the previous release branch (used for rollback in Step 7). Not used in releaseMode 'deploy-base' (see previousCommit / previousBuildId).",
       "minLength": 1
     },
+    "releaseMode":         { "type": "string", "enum": ["cut-branch", "deploy-base"], "description": "Copied from service-config ado.releaseMode at setup; every step keys on this (not on the live config)." },
+    "releaseTag":          { "type": "string", "description": "Short release name for generated branch names / titles (e.g. 'bcm-2611'). Defaults to the leaf of currentBranch in cut-branch mode." },
+    "currentCommit":       { "type": "string", "description": "deploy-base: source commit of the release build (set at Step 2c)." },
+    "previousCommit":      { "type": "string", "description": "deploy-base: source commit of the previous release's build (set at setup from the last production rollout, owner-confirmed). Start of the Step 4 commit range." },
+    "previousBuildId":     { "type": ["integer", "string"], "description": "deploy-base: official build the previous production rollout deployed — Step 7 fallback rollback build and the default 'last build' for the private stamp upgrade test." },
+    "previousBuildNumber": { "type": "string" },
     "branchCutDate":     { "type": "string", "format": "date-time" },
     "buildId":           { "type": ["integer", "string"] },
     "buildNumber":       { "type": "string" },

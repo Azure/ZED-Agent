@@ -20,9 +20,10 @@
                -DryRun computes and validates everything without pushing.
 
     Commit resolution
-      current : -CurrentCommit, else the source commit of release.json → buildId (ADO), else
-                origin/<release.currentBranch>.
-      previous: -PreviousCommit, else state.revertBits.previousCommit, else the source commit of the
+      current : -CurrentCommit, else release.json → currentCommit (deploy-base), else the source commit
+                of release.json → buildId (ADO), else origin/<release.currentBranch>.
+      previous: -PreviousCommit, else state.revertBits.previousCommit, else release.json → previousCommit
+                (deploy-base), else the source commit of the
                 previous ZED release's build (.zed-agent/releases/<prev>/release.json → buildId),
                 else origin/<release.previousBranch> when that is a dedicated release branch.
 
@@ -98,7 +99,7 @@ function Get-BuildSourceVersion($BuildId) {
 function Expand-Template([string]$Template, $Release) {
     if ($ReleaseId -notmatch '^(\d{4})-(\d{2})') { throw "ReleaseId '$ReleaseId' is not YYYY-MM." }
     $yymm = $Matches[1].Substring(2) + $Matches[2]
-    $leaf = if ($Release -and $Release.currentBranch) { ([string]$Release.currentBranch).Split('/')[-1] } else { $yymm }
+    $leaf = if ($Release -and $Release.PSObject.Properties['releaseTag'] -and $Release.releaseTag) { [string]$Release.releaseTag } elseif ($Release -and $Release.currentBranch) { ([string]$Release.currentBranch).Split('/')[-1] } else { $yymm }
     $alias = if ($OwnerAlias) { $OwnerAlias } elseif ($Release -and $Release.releaseOwner -and $Release.releaseOwner.alias) { [string]$Release.releaseOwner.alias } else { 'zed' }
     return $Template.Replace('{{YYMM}}', $yymm).Replace('{{releaseId}}', $ReleaseId).Replace('{{releaseTag}}', $leaf).Replace('{ownerAlias}', $alias).Replace('{{ownerAlias}}', $alias)
 }
@@ -154,6 +155,7 @@ try {
     # ---- current release commit ----
     $cur = $null
     if ($CurrentCommit) { $cur = Resolve-Commit $CurrentCommit; if (-not $cur) { throw "Current commit '$CurrentCommit' not found." } }
+    if (-not $cur -and $release -and $release.PSObject.Properties['currentCommit'] -and $release.currentCommit) { $cur = Resolve-Commit ([string]$release.currentCommit) }
     if (-not $cur -and $release -and $release.PSObject.Properties['buildId']) { $sv = Get-BuildSourceVersion $release.buildId; if ($sv) { $cur = Resolve-Commit $sv } }
     if (-not $cur -and $release -and $release.currentBranch) { $cur = Resolve-Commit "$Remote/$($release.currentBranch)" }
     if (-not $cur) { throw "Could not determine the current release commit — pass -CurrentCommit." }
@@ -163,6 +165,8 @@ try {
     $prev = $null
     if ($PreviousCommit) { $prev = Resolve-Commit $PreviousCommit; if (-not $prev) { throw "Previous commit '$PreviousCommit' not found." } }
     if (-not $prev -and $state -and $state.PSObject.Properties['revertBits'] -and $state.revertBits -and $state.revertBits.previousCommit) { $prev = Resolve-Commit ([string]$state.revertBits.previousCommit) }
+    # deploy-base releases record the previous release commit at setup (from the last production rollout).
+    if (-not $prev -and $release -and $release.PSObject.Properties['previousCommit'] -and $release.previousCommit) { $prev = Resolve-Commit ([string]$release.previousCommit) }
     $candidates = New-Object System.Collections.Generic.List[object]
     if (-not $prev) {
         $rels = Join-Path $RepoPath '.zed-agent/releases'

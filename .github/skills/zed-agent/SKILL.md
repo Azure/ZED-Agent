@@ -195,7 +195,7 @@ Pipeline IDs, names, regions, and parameter differences are all defined in `pipe
 - For region-scoped (`mode: "static"`) catalogs, parameter shape is whatever the service author defined per entry — the agent passes `templateParameters` through verbatim.
 - All parameter details (Resources, OverrideResourceParameters, stamps) are defined per-pipeline in `pipeline-catalog.json`
 
-**Dynamic substitution:** `ArtifactsBranch = "{{currentBranch}}"` → replaced at runtime with the release branch from `release.json → currentBranch`.
+**Dynamic substitution:** `ArtifactsBranch = "{{currentBranch}}"` → replaced at runtime with the release branch from `release.json → currentBranch`. In `ado.releaseMode = "deploy-base"` (e.g. BCM) `currentBranch` is the deployment branch itself (e.g. `master`) and every run ALSO carries `resources.builds.<buildResource>.version` from `Resolve-ReleaseBuild.ps1 -Action PinResources` so it deploys the exact release build (see `reference/step-behaviors.md → Step 5 Action 2`).
 
 #### How the agent triggers the official build
 

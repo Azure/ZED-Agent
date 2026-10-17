@@ -77,4 +77,40 @@ Describe 'Expand-Template' {
             $parsed.text | Should -Be 'Release 2026-04 by gwazire'
         }
     }
+
+    Context '{{serviceName}} default from service-config.json' {
+        BeforeEach {
+            $script:Svc = Join-Path $TestDrive 'service-config.json'
+            @{ service = @{ name = 'BCM-internal'; displayName = 'BCM' } } | ConvertTo-Json | Set-Content $script:Svc -Encoding UTF8
+        }
+
+        It 'fills {{serviceName}} with service.displayName when the caller does not pass it' {
+            $tpl = Join-Path $TestDrive 'templates/svc.txt'
+            '🔔 {{serviceName}} Release Branch Cut Reminder {{releaseId}}' | Set-Content $tpl -Encoding UTF8
+            $vars = @{ releaseId = '2026-11' }
+            Expand-Template -TemplatePath $tpl -Variables $vars -ServiceConfigPath $script:Svc | Should -Be '🔔 BCM Release Branch Cut Reminder 2026-11'
+            $vars.ContainsKey('serviceName') | Should -BeFalse   # caller's hashtable is not modified
+        }
+
+        It 'falls back to service.name and lets an explicit serviceName win' {
+            @{ service = @{ name = 'BDP' } } | ConvertTo-Json | Set-Content $script:Svc -Encoding UTF8
+            $tpl = Join-Path $TestDrive 'templates/svc2.txt'
+            '{{serviceName}}' | Set-Content $tpl -Encoding UTF8
+            Expand-Template -TemplatePath $tpl -Variables @{} -ServiceConfigPath $script:Svc | Should -Be 'BDP'
+            Expand-Template -TemplatePath $tpl -Variables @{ serviceName = 'X' } -ServiceConfigPath $script:Svc | Should -Be 'X'
+        }
+
+        It 'still throws for {{serviceName}} when there is no service-config' {
+            $tpl = Join-Path $TestDrive 'templates/svc3.txt'
+            '{{serviceName}}' | Set-Content $tpl -Encoding UTF8
+            { Expand-Template -TemplatePath $tpl -Variables @{} -ServiceConfigPath (Join-Path $TestDrive 'none.json') } | Should -Throw '*{{serviceName}}*'
+        }
+    }
+
+    Context 'Shipped templates' {
+        It 'no template hardcodes a service name (use {{serviceName}})' {
+            $hits = Get-ChildItem (Join-Path $PSScriptRoot '..\templates') -File | Select-String -Pattern '\bBDP\b' -CaseSensitive
+            @($hits).Count | Should -Be 0
+        }
+    }
 }

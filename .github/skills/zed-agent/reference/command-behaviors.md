@@ -110,7 +110,7 @@ When the release owner says `status`:
    - Show a table of all 16 steps with status icons, step name, and duration
    - If `state.integration` exists, show it under Step 2 as sub-rows `2a RI`, `2b FI`, `2c Cut` with each status and PR link (e.g. `2a RI ✅ merged !123`, `2b FI ⏳ pr-open !124`)
    - If `state.privateStampUpgrade` exists, show a side-track row `🧪 Private stamp upgrade` with its status, instance, ports, both run links/results, and the owner action it is waiting for (if any)
-   - If `state.scheduleGuards` exists, show one line per guarded canary pipeline, e.g. `⏸ BCM-EACAN enableSchedule=false (paused after run 185400001, resumes on approve-bvt)` / `▶ … restored`
+   - If `state.scheduleGuards` exists, show one line per guarded canary pipeline, e.g. `⏸ BCM-EACAN schedule trigger removed (develop Sun–Thu 23:00 IST) + enableSchedule=false (paused after run 185400001, resumes on approve-bvt) · 2 foreign runs cancelled` / `▶ … restored`; show `warning` (YAML cron) and any `disable-failed` error
    - If `state.approvalRequests` has pending entries, show a `🔐 Waiting for approval` block (pipeline, stage, waiting since, approval link) — same rows as `approvals`
    - If `state.revertBits` exists, show it under Step 7: `🔁 Revert bits <revertBranch>: <phase>` with the kept settings count, PR link, build number/link and the owner action it waits for
    - Show progress (N/16 done)
@@ -315,7 +315,7 @@ When the release owner says `approve-bvt`:
 1. Verify step 6 (bvt-check) is in `waiting-approval`
 2. Record approval: `state.json → approvals.bvt`
 3. Set step 6 → `completed`, advance to step 7
-4. **Canary schedule guard**: run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason approve-bvt` and send an email per `NotifyEvents` entry (e.g. BCM-EACAN `enableSchedule` → `true`). See `step-behaviors.md → Canary schedule guard`.
+4. **Canary schedule guard**: run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason approve-bvt` and send an email per `NotifyEvents` entry (e.g. BCM-EACAN: schedule trigger re-added, `enableSchedule` → `true`). See `step-behaviors.md → Canary schedule guard`.
 5. Resume execution loop
 6. Log in audit
 

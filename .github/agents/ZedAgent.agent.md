@@ -260,7 +260,8 @@ Callers pass an `EventKey` to `Resolve-NotificationRecipients.ps1`. The helper m
 | `revert-bits-select`, `revert-bits-pr-raised`, `revert-bits-bvt-ready` | `7-rollback.halt` (revert bits pre-phase)          |
 | `approval-needed`, `approval-reminder`, `approval-expiring` | `approval-requests.halt` (pipeline waiting on Approval Service / ADO approval, any step) |
 | `approval-failed`               | `approval-requests.failure` (approval task ended without approval)   |
-| `schedule-guard-disabled`, `schedule-guard-preexisting`, `schedule-guard-restored`, `schedule-guard-failed` | unmapped → owner-only (canary schedule guard) |
+| `schedule-guard-disabled`, `schedule-guard-preexisting`, `schedule-guard-restored`, `schedule-guard-failed`, `schedule-guard-cancel-failed` | unmapped → owner-only (canary schedule guard) |
+| `schedule-guard-run-cancelled` | unmapped → owner-only, **plus** the run's `requestedForEmail` from `state.scheduleGuards.<key>.cancelledRuns[]` |
 | `commit-request`                | `4-collect-commits.success` (legacy alias)                           |
 | `create-r2d`                    | `13-create-r2d.success` (legacy alias)                               |
 | `ev2-stage-progress`            | `15-production-rollout.success` (per-stage EV2 ticks)                |
@@ -491,7 +492,7 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 
 **Approval requests:** every ZED-triggered deployment run waiting on the OneBranch Approval Service (or an ADO approval) is found by `Invoke-ApprovalWatch.ps1` (watcher side-channel, every 10 min) — record run ids in `triggeredPipelines.<N>` at every trigger. When the watcher invokes you with `approval <event> <id> for release <id>`, send `state.approvalRequests.<id>.lastMessage` verbatim by email (`SendEmailWithAttachments`, HTML) and Teams (`Send-TeamsMessage -Body`) to the recipients from `Resolve-NotificationRecipients -EventKey <lastMessage.eventKey>`, then EXIT — do not re-run the current step (see `step-behaviors.md → Approval requests`).
 
-**Canary schedule guard:** canary pipelines with `scheduleGuard` in the catalog (BCM-EACAN `enableSchedule`) are paused by ZED once ZED's own Step 5 run of them succeeds and resumed on `approve-bvt` (Step 6) — via `Invoke-ScheduleGuard.ps1` only, never by editing the pipeline any other way. ZED must never trigger a guarded pipeline while ZED has it disabled (Step 7 restores first and halts if it can't). When the watcher invokes you with `schedule guard <event> <key> for release <id>`, send that owner-only email (per `step-behaviors.md → Canary schedule guard`) and EXIT.
+**Canary schedule guard:** canary pipelines with `scheduleGuard` in the catalog (BCM-EACAN: UI schedule trigger removed + `enableSchedule`, runs ZED did not queue cancelled) are paused by ZED once ZED's own Step 5 run of them succeeds and resumed on `approve-bvt` (Step 6) — via `Invoke-ScheduleGuard.ps1` only, never by editing the pipeline or cancelling runs any other way. ZED must never trigger a guarded pipeline while ZED has it disabled (Step 7 restores first and halts if it can't). When the watcher invokes you with `schedule guard <event> <key> [run <runId>] for release <id>`, send that email (owner-only; `schedule-guard-run-cancelled` also to the person who queued the run — per `step-behaviors.md → Canary schedule guard`) and EXIT.
 
 # Step Execution Loop
 

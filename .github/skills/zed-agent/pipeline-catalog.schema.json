@@ -248,13 +248,15 @@
         },
         "scheduleGuard": {
           "type": "object",
-          "description": "Canary pipelines only. Pauses this pipeline's own scheduled/ad-hoc deployments while the release bits must stay on its stamps: once ZED's Step 5 run of this pipeline SUCCEEDS, ZED sets pipeline variable <variable> = <disabledValue> on the definition; when Step 6 BVT is signed off (or completed/skipped by any path, and always before ZED triggers this pipeline again) ZED sets it back to <enabledValue>. Only reverted if ZED changed it. Script: scripts/Invoke-ScheduleGuard.ps1.",
-          "required": ["variable"],
+          "description": "Canary pipelines only. Pauses this pipeline's own scheduled/ad-hoc deployments while the release bits must stay on its stamps. Once ZED's Step 5 run of this pipeline SUCCEEDS, ZED (in one definition PUT) removes the pipeline's UI schedule trigger(s) (pauseScheduleTriggers; saved verbatim in state) and/or sets definition variable <variable> = <disabledValue>; with cancelForeignRuns it also cancels every run of this pipeline that ZED did not queue until Step 6 is signed off. When Step 6 BVT is signed off (or completed/skipped by any path, and always before ZED triggers this pipeline again) ZED re-adds the trigger(s) / sets the variable back to <enabledValue>. Only what ZED changed is reverted. Editing needs 'Edit build pipeline'; cancelling needs only 'Stop builds'. Script: scripts/Invoke-ScheduleGuard.ps1.",
+          "anyOf": [ { "required": ["variable"] }, { "required": ["pauseScheduleTriggers"] } ],
           "additionalProperties": false,
           "properties": {
-            "variable":      { "type": "string", "minLength": 1, "description": "Definition (Pipeline settings → Variables) variable name, e.g. 'enableSchedule'." },
+            "pauseScheduleTriggers": { "type": "boolean", "default": false, "description": "Remove the pipeline's UI (Triggers tab) schedule trigger(s) while guarded and re-add them verbatim on restore. YAML pipelines: without a UI schedule, ADO runs the YAML 'schedules:' cron instead — ZED warns when the YAML on the scheduled branch still has one (use cancelForeignRuns as well)." },
+            "variable":      { "type": "string", "minLength": 1, "description": "Definition (Pipeline settings → Variables) variable name, e.g. 'enableSchedule'. With pauseScheduleTriggers it is optional at runtime: skipped (noted) if not defined on the pipeline." },
             "disabledValue": { "type": "string", "default": "false" },
-            "enabledValue":  { "type": "string", "default": "true" }
+            "enabledValue":  { "type": "string", "default": "true" },
+            "cancelForeignRuns": { "type": "boolean", "default": false, "description": "While guarded (ZED's Step 5 run succeeded → Step 6 signed off), cancel queued/running runs of this pipeline that ZED did not queue (manual runs, cron runs). A run queued before ZED's Step 5 run is cancelled only once it starts. The owner and the person who queued the run are emailed. Checked every operational.scheduleGuardPollIntervalSeconds (default 300)." }
           }
         },
         "sdpType": {

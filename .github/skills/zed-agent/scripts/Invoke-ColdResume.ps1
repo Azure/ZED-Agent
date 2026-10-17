@@ -39,7 +39,7 @@
                        a non-empty .NotifyEvent means the session must send that email
                        (see step-behaviors.md → Private stamp upgrade test)
       ScheduleGuardSideChannel - Result of Invoke-ScheduleGuard -Action Sync (if it ran);
-                       every .NotifyEvents entry ("<event>:<pipelineKey>") is an email to send
+                       every .NotifyEvents entry ("<event>:<pipelineKey>[:<runId>]") is an email to send
                        (see step-behaviors.md → Canary schedule guard)
       ApprovalSideChannel - Result of Invoke-ApprovalWatch -Action Sync; every .NotifyEvents entry
                        ({ event, id }) is an approval email + Teams message to send
@@ -177,7 +177,7 @@ try {
     $sgScript = Join-Path $PSScriptRoot 'Invoke-ScheduleGuard.ps1'
     $sgStep5 = ($state.steps | Where-Object { $_.number -eq 5 }).status
     $sgActive = $state.PSObject.Properties['scheduleGuards'] -and $state.scheduleGuards -and
-        @($state.scheduleGuards.PSObject.Properties | Where-Object { $_.Value.status -match '^(disabled|disable-failed|restore-failed)$' }).Count -gt 0
+        @($state.scheduleGuards.PSObject.Properties | Where-Object { $_.Value.status -match '^(disabled|preexisting|disable-failed|restore-failed)$' }).Count -gt 0
     if ((Test-Path $sgScript) -and ($sgStep5 -in @('in-progress', 'completed') -or $sgActive)) {
         $verdict.ScheduleGuardSideChannel = & $sgScript -Action Sync `
             -ReleaseId $activeRelease.ReleaseId `

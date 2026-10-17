@@ -100,6 +100,54 @@ function Invoke-ApprovalSideChannel {
     }
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Canary schedule guard (e.g. BCM EA-CAN): pause the pipeline's own deployments
+# (UI schedule trigger and/or an on/off variable) once ZED's Step 5 run of it
+# succeeds, cancel runs ZED did not queue until Step 6 is signed off, then
+# restore. Pure REST; the agent is only invoked to send emails. Non-fatal.
+# Throttled to operational.scheduleGuardPollIntervalSeconds (default 300) and
+# also called during the chunked sleep — a develop run needs ~20 min before it
+# reaches its deploy stage, so foreign runs are cancelled in time.
+# ─────────────────────────────────────────────────────────────────────────────
+$script:lastScheduleGuardSync = [datetime]::MinValue
+$script:scheduleGuardPollSeconds = 300
+try {
+    if ($svcCfgOp -and $svcCfgOp.PSObject.Properties['scheduleGuardPollIntervalSeconds'] -and [int]$svcCfgOp.scheduleGuardPollIntervalSeconds -ge 60) { $script:scheduleGuardPollSeconds = [int]$svcCfgOp.scheduleGuardPollIntervalSeconds }
+} catch { }
+function Invoke-ScheduleGuardSideChannel {
+    if (((Get-Date) - $script:lastScheduleGuardSync).TotalSeconds -lt $script:scheduleGuardPollSeconds) { return }
+    $script:lastScheduleGuardSync = Get-Date
+    try {
+        $sgScript = Join-Path $PSScriptRoot 'Invoke-ScheduleGuard.ps1'
+        if (-not (Test-Path $sgScript) -or -not (Test-Path $stateFile)) { return }
+        $sgState = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $sgStep5 = ($sgState.steps | Where-Object { $_.number -eq 5 }).status
+        $sgActive = $sgState.PSObject.Properties['scheduleGuards'] -and $sgState.scheduleGuards -and
+            @($sgState.scheduleGuards.PSObject.Properties | Where-Object { $_.Value.status -match '^(disabled|preexisting|disable-failed|restore-failed)$' }).Count -gt 0
+        if ($sgStep5 -notin @('in-progress', 'completed') -and -not $sgActive) { return }
+        $sgArgs = @{
+            Action      = 'Sync'
+            ReleaseId   = $ReleaseId
+            StateFile   = $stateFile
+            StateLock   = $stateLock
+            AuditFile   = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl")
+            ReleaseFile = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json")
+        }
+        $tokenSg = Get-AzToken "https://dev.azure.com"
+        if ($tokenSg) { $sgArgs.AccessToken = $tokenSg }
+        $sg = & $sgScript @sgArgs
+        foreach ($ev in @($sg.NotifyEvents)) {
+            # "<event>:<key>" or "<event>:<key>:<runId>" (run cancelled / cancel failed)
+            $evName, $evKey, $evRun = $ev -split ':', 3
+            $runPart = if ($evRun) { " run $evRun" } else { '' }
+            & copilot --agent=ZedAgent -p "schedule guard $evName $evKey$runPart for release $ReleaseId" --allow-all --autopilot --no-ask-user -s
+        }
+    } catch {
+        $auditFileSgErr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+        @{ ts = (Get-Date -Format 'o'); event = 'schedule-guard-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileSgErr -Encoding UTF8
+    }
+}
+
 while ($true) {
     if (-not (Test-Path $stateFile)) { Start-Sleep -Seconds 30; continue }
     $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -222,40 +270,8 @@ while ($true) {
         @{ ts = (Get-Date -Format 'o'); event = 'private-stamp-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFilePsuErr -Encoding UTF8
     }
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Canary schedule guard (e.g. BCM EA-CAN enableSchedule): pause the
-    # pipeline's own daily deployment once ZED's Step 5 run of it succeeds,
-    # restore it once Step 6 is signed off. Pure REST; the agent is only
-    # invoked to send emails. Non-fatal.
-    # ─────────────────────────────────────────────────────────────────────────
-    try {
-        $sgStep5 = ($state.steps | Where-Object { $_.number -eq 5 }).status
-        $sgActive = $state.PSObject.Properties['scheduleGuards'] -and $state.scheduleGuards -and
-            @($state.scheduleGuards.PSObject.Properties | Where-Object { $_.Value.status -match '^(disabled|disable-failed|restore-failed)$' }).Count -gt 0
-        if ($sgStep5 -in @('in-progress', 'completed') -or $sgActive) {
-            $sgScript = Join-Path $PSScriptRoot 'Invoke-ScheduleGuard.ps1'
-            if (Test-Path $sgScript) {
-                $sgArgs = @{
-                    Action      = 'Sync'
-                    ReleaseId   = $ReleaseId
-                    StateFile   = $stateFile
-                    StateLock   = $stateLock
-                    AuditFile   = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl")
-                    ReleaseFile = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json")
-                }
-                $tokenSg = Get-AzToken "https://dev.azure.com"
-                if ($tokenSg) { $sgArgs.AccessToken = $tokenSg }
-                $sg = & $sgScript @sgArgs
-                foreach ($ev in @($sg.NotifyEvents)) {
-                    $evName, $evKey = $ev -split ':', 2
-                    & copilot --agent=ZedAgent -p "schedule guard $evName $evKey for release $ReleaseId" --allow-all --autopilot --no-ask-user -s
-                }
-            }
-        }
-    } catch {
-        $auditFileSgErr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
-        @{ ts = (Get-Date -Format 'o'); event = 'schedule-guard-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileSgErr -Encoding UTF8
-    }
+    # Canary schedule guard: see Invoke-ScheduleGuardSideChannel (also runs during the sleep).
+    Invoke-ScheduleGuardSideChannel
 
     Invoke-ApprovalSideChannel
 
@@ -550,6 +566,7 @@ while ($true) {
         Start-Sleep -Seconds $chunk
         $remaining -= $chunk
         # Approval requests can't wait an hour — check them on their own (shorter) cadence.
+        Invoke-ScheduleGuardSideChannel
         Invoke-ApprovalSideChannel
         if (Test-Path $stateFile) {
             try {

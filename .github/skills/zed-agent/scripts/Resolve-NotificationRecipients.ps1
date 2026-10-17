@@ -33,6 +33,8 @@
       revert-bits-select         -> (7,  halt)     revert bits: owner picks the settings to keep
       revert-bits-pr-raised      -> (7,  halt)     revert bits PR opened, owner must merge
       revert-bits-bvt-ready      -> (7,  halt)     revert build ready, owner runs BVT
+      approval-needed / approval-reminder / approval-expiring -> ('approval-requests', halt)
+      approval-failed            -> ('approval-requests', failure)   (Invoke-ApprovalWatch.ps1)
       commit-request             -> (4,  success)
       create-r2d                 -> (13, success)
       ev2-stage-progress         -> (15, success)
@@ -111,6 +113,10 @@ $LegacyMap = @{
 
 function _Map-EventKey {
     param([string]$key)
+    # Approval requests (Invoke-ApprovalWatch.ps1) have their own routing row, independent of the
+    # step that triggered the run: notifications.routing['approval-requests'].
+    if ($key -match '^approval-(needed|reminder|expiring)$') { return @{ StepKey = 'approval-requests'; Outcome = 'halt' } }
+    if ($key -eq 'approval-failed') { return @{ StepKey = 'approval-requests'; Outcome = 'failure' } }
     if ($key -match '^step-(\d+)-(completed|skipped|failed|waiting-approval)$') {
         $n = [int]$Matches[1]
         if (-not $StepNames.ContainsKey($n)) { return $null }

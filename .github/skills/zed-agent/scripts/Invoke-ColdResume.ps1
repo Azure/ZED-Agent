@@ -41,6 +41,9 @@
       ScheduleGuardSideChannel - Result of Invoke-ScheduleGuard -Action Sync (if it ran);
                        every .NotifyEvents entry ("<event>:<pipelineKey>") is an email to send
                        (see step-behaviors.md → Canary schedule guard)
+      ApprovalSideChannel - Result of Invoke-ApprovalWatch -Action Sync; every .NotifyEvents entry
+                       ({ event, id }) is an approval email + Teams message to send
+                       (see step-behaviors.md → Approval requests)
       StatePaths     - Resolved state paths object
 #>
 [CmdletBinding()]
@@ -64,6 +67,7 @@ $verdict = [PSCustomObject]@{
     Step4SideChannel    = $null
     PrivateStampSideChannel = $null
     ScheduleGuardSideChannel = $null
+    ApprovalSideChannel = $null
     StatePaths          = $null
 }
 
@@ -187,6 +191,24 @@ try {
     }
 } catch {
     $verdict.ScheduleGuardSideChannel = [PSCustomObject]@{ Success = $false; Error = $_.Exception.Message }
+}
+
+# ── Step 3d: Approval requests (OneBranch Approval Service / ADO approvals) on any watched run ──
+try {
+    $awScript = Join-Path $PSScriptRoot 'Invoke-ApprovalWatch.ps1'
+    if (Test-Path $awScript) {
+        $verdict.ApprovalSideChannel = & $awScript -Action Sync `
+            -ReleaseId $activeRelease.ReleaseId `
+            -StateFile $activeRelease.StateFile `
+            -StateLock (Join-Path $paths.ScratchDir 'state.json.lock') `
+            -AuditFile $paths.AuditFile `
+            -ReleaseFile $paths.ReleaseFile
+        if (@($verdict.ApprovalSideChannel.NotifyEvents).Count -gt 0) {
+            $state = Get-Content $activeRelease.StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+    }
+} catch {
+    $verdict.ApprovalSideChannel = [PSCustomObject]@{ Success = $false; Error = $_.Exception.Message }
 }
 
 # ── Step 4: Determine current step ──

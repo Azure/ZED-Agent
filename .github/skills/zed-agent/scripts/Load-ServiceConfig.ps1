@@ -126,7 +126,8 @@ $validStepKeys = @(
     '5-deploy-canary','6-bvt-check','7-rollback','8-post-rollback-bvt',
     '9-post-rollback-signoff','10-roll-forward','11-post-rollforward-bvt',
     '12-post-rollforward-signoff','13-create-r2d','14-crb-review',
-    '15-production-rollout','16-merge-back'
+    '15-production-rollout','16-merge-back',
+    'approval-requests'   # pipeline approval requests (Invoke-ApprovalWatch.ps1), any step
 )
 
 $groupsObj = $cfg.notifications.groups

@@ -258,6 +258,8 @@ Callers pass an `EventKey` to `Resolve-NotificationRecipients.ps1`. The helper m
 | `private-stamp-input-needed`, `private-stamp-bvt-ready` | `5-deploy-canary.halt` (private stamp upgrade side track) |
 | `private-stamp-failed`          | `5-deploy-canary.failure` (private stamp leg failed)                 |
 | `revert-bits-select`, `revert-bits-pr-raised`, `revert-bits-bvt-ready` | `7-rollback.halt` (revert bits pre-phase)          |
+| `approval-needed`, `approval-reminder`, `approval-expiring` | `approval-requests.halt` (pipeline waiting on Approval Service / ADO approval, any step) |
+| `approval-failed`               | `approval-requests.failure` (approval task ended without approval)   |
 | `schedule-guard-disabled`, `schedule-guard-preexisting`, `schedule-guard-restored`, `schedule-guard-failed` | unmapped → owner-only (canary schedule guard) |
 | `commit-request`                | `4-collect-commits.success` (legacy alias)                           |
 | `create-r2d`                    | `13-create-r2d.success` (legacy alias)                               |
@@ -486,6 +488,8 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 **Private stamp upgrade side track (Step 5 ∥ Steps 5–12, joined at Step 13):** when `CONFIG[pipelines.privateStampUpgrade.enabled]`, Step 5 kicks off `state.privateStampUpgrade` (owner inputs → last build on port 1 → current build on port 2 → owner BVT sign-off). It is NOT a step and has no number: the watcher/cold-resume advance it as a co-located side-channel (`Invoke-PrivateStampUpgrade.ps1 -Action Poll`), and Step 13 refuses to create the R2D until it is `signed-off` or `skipped`. When the watcher invokes you with `private stamp upgrade <event> for release <id>`, send the email for `<event>` (per `step-behaviors.md → Private stamp upgrade test`) and EXIT — do **not** re-run the current main-loop step.
 
 **Deploy-base releases** (`release.json → releaseMode == "deploy-base"`, e.g. BCM deploys `master`): no release branch exists. The release is ONE build of the deployment branch (Step 2c: newest deployable commit, CI build reused) and the previous release is the build the last production rollout deployed (`previousBuildId` / `previousCommit`, confirmed at setup). Because `ArtifactsBranch = master` alone would deploy whatever master's newest build is, **every canary, rollback and production run request MUST be pinned** with `resources.builds` from `Resolve-ReleaseBuild.ps1 -Action PinResources` (Step 5 Action 2). Step 4's range is `previousCommit..currentCommit`; Step 7 without revert bits rolls back to `previousBuildId`; Step 16 is skipped. Never use `previousBranch` in this mode.
+
+**Approval requests:** every ZED-triggered deployment run waiting on the OneBranch Approval Service (or an ADO approval) is found by `Invoke-ApprovalWatch.ps1` (watcher side-channel, every 10 min) — record run ids in `triggeredPipelines.<N>` at every trigger. When the watcher invokes you with `approval <event> <id> for release <id>`, send `state.approvalRequests.<id>.lastMessage` verbatim by email (`SendEmailWithAttachments`, HTML) and Teams (`Send-TeamsMessage -Body`) to the recipients from `Resolve-NotificationRecipients -EventKey <lastMessage.eventKey>`, then EXIT — do not re-run the current step (see `step-behaviors.md → Approval requests`).
 
 **Canary schedule guard:** canary pipelines with `scheduleGuard` in the catalog (BCM-EACAN `enableSchedule`) are paused by ZED once ZED's own Step 5 run of them succeeds and resumed on `approve-bvt` (Step 6) — via `Invoke-ScheduleGuard.ps1` only, never by editing the pipeline any other way. ZED must never trigger a guarded pipeline while ZED has it disabled (Step 7 restores first and halts if it can't). When the watcher invokes you with `schedule guard <event> <key> for release <id>`, send that owner-only email (per `step-behaviors.md → Canary schedule guard`) and EXIT.
 
@@ -816,7 +820,7 @@ Rules:
 # Command Behaviors
 
 The full behavior of every command — `help`, `setup-service`, `setup`, `status`,
-`run`, `modify`, `skip`, `approve-ri`, `private-stamp`, `approve-private-stamp`, `revert-bits`, `approve-revert`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
+`run`, `modify`, `skip`, `approve-ri`, `private-stamp`, `approve-private-stamp`, `revert-bits`, `approve-revert`, `approvals`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
 `approve-crb`, `ack`, `resume`, `stop`, `test`, `test-run`, `teardown`, `rebuild`,
 `new-stamp` — is specified in:
 

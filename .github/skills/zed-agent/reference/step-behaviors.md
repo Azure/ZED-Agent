@@ -286,38 +286,10 @@ Run 2a and 2b back-to-back **without `-Push`**: the merge + resolution is comput
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step5 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState` (already done in Action 2's pre-trigger write)
 4. Email notification via `SendEmailWithAttachments` MCP tool: "Canary deployment started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-5-completed'` (this is part of the Step 5 → Step 6 transition email per Behavior Rule 11; do not emit a separate "canary started" broadcast).
 4a. **Per-pipeline stamp summary** (Layer 3 — narrative addition): for each triggered pipeline key, call `Get-StampsForPipeline -PipelineKey $key -Scope canary` (Step 5/7) or `-Scope production` (Step 10/15) to expand the pipeline → stamp list, and render it into the Teams summary message under a "Deploying to" column. Format: `<pipelineName>: stamp1, stamp2, …` (or `(all routed stamps)` if the call returns the full set). This makes it visually obvious which DCs each pipeline will actually hit — caught a misrouted pipeline twice in dry-runs.
-5. **Extract and post EV2 approval links** (after 5-minute wait for EV2 to generate approval gates):
-   ```powershell
-   . .github\skills\zed-agent\scripts\Get-PipelineApprovalLinks.ps1
-   $builds = @(
-       # One entry per triggered canary pipeline from CONFIG[pipelines.canary.*]
-       @{ pipelineName = "<key> Canary"; buildId = <id> }
-       # ... all triggered builds
-   )
-   $links = Get-PipelineApprovalLinks -Builds $builds
-   ```
-   - If any `approvalUrl` found → compose HTML table rows for `{{approvalRows}}`:
-     ```
-     <tr><td>{pipelineName}</td><td>{stage}</td><td>{status}</td><td><a href="{approvalUrl}">Approve</a></td><td><a href="{buildUrl}">Build</a></td></tr>
-     ```
-   - If any `ev2RolloutUrl` found → compose `{{ev2Links}}` as `<a href="{url}">{pipelineName}</a><br>` entries
-   - Send Teams message to the first group in `CONFIG[notifications.groups.teamsExtended]`:
-     ```powershell
-     . .github\skills\zed-agent\scripts\Send-TeamsMessage.ps1
-     $secrets = Get-Content ".zed-agent/secrets.json" -Raw | ConvertFrom-Json
-     $chatName = (CONFIG[notifications.groups.teamsExtended])[0]
-     $convId = $secrets.teamsChats.$chatName
-     Send-TeamsMessage -ConversationId $convId -TemplatePath ".github/skills/zed-agent/templates/canary-approval-request.html" -Variables @{
-         releaseId = $releaseId; buildVersion = $buildVersion; branch = $branch
-         approvalRows = $rowsHtml; ev2Links = $ev2LinksHtml; releaseOwner = $releaseOwnerAlias
-     }
-     ```
-   - If no approval links found after scan → post simpler message: "Canary pipelines triggered, check ADO for status"
-   - Log `canary-approval-links-posted` event to `audit.jsonl`
-   - **If `az` CLI token is expired** (Get-PipelineApprovalLinks returns partial results): post what you have, note in message that some links may be missing. If the agent is mid-step and needs a fresh token immediately, dot-source `Repair-AzAuth.ps1` (see Step 5(a)) before retrying — same 3-attempt cascade as preflight.
+5. **Approval requests**: right after triggering, run `Invoke-ApprovalWatch.ps1 -Action Sync -ReleaseId <id>` once (and send any returned `NotifyEvents` — see "Approval requests" below); from then on the watcher checks every `CONFIG[operational.approvalPollIntervalSeconds]` (600 s). Any run that stops on the OneBranch **Approval Service** (or an ADO approval check) gets an email + Teams message with the approval link, reminders, and an expiry alert. Do **not** post approval links by hand.
 6. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
-**Watcher approval detection**: On each poll cycle, the watcher also scans for new approval links (see `poll-ado-pipelines` action in `Release-Watcher.ps1`). If new links are found that haven't been posted, the watcher sends an updated Teams message to the Teams chat specified in the watcher directive's `teamsChatName` field.
+**Watcher approval detection**: handled for every watched run by the approval side-channel (`Invoke-ApprovalWatch.ps1`) — see "Approval requests".
 **Completion**: All triggered pipelines succeed → send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-completed'`: "Canary deployment completed"
 **Failure**: Any pipeline fails → step `failed`, send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-failed'` (default: current-owner-only — owner widens via `routing.5-deploy-canary.failure`), halt for `ack`
 
@@ -381,6 +353,27 @@ All changes go through `scripts/Invoke-ScheduleGuard.ps1` (read definition → c
 
 Failures never fail Step 5 or Step 6; a failed **restore** halts Step 7 (see Step 7 pre-trigger).
 
+## Approval requests (all deployment runs)
+
+Canary (Step 5), rollback (Step 7), roll-forward (Step 10), production (Step 15) and private stamp runs stop on the **OneBranch Approval Service** (job `ApprovalService`, task `Approval service`) until someone approves at `https://approval.azengsys.com/approvalRequest?id=…`. ZED finds these waits and sends the link out — owners never have to dig through ADO logs.
+
+`scripts/Invoke-ApprovalWatch.ps1 -Action Sync` (watcher + cold resume, every `CONFIG[operational.approvalPollIntervalSeconds]`, default 600 s — also during the watcher's hourly sleep):
+- **Watched runs**: every run id in `state.triggeredPipelines.<N>` (record them at trigger time in Steps 5, 7, 10, 15), `watcherDirective.targets[].buildId`, and the private stamp runs. Completed runs are remembered in `state.approvalWatch.doneRuns` and not re-read.
+- **Detected**: an `Approval service` task still `pending`/`inProgress` → link from its `Waiting for Approval` log, plus the task expiry (`Approval Task will expire on …`, ~5 days); stages that share one approval request (e.g. PROD/FF/MC) are one request. ADO environment approvals (`Checkpoint.Approval` in progress) → link = the run page. Other checks (e.g. `Checkpoint.ProductionReadinessCheck`) are not approvals and are ignored. Verified on BCM canary run 186266333 (Release-2610-12): link `…approvalRequest?id=BD73B6DD5C88431EAA170B044C9B28E7`, stage `PROD: Managed SDP Deployment`, expiry 2026-10-22 04:18 UTC.
+- **State**: `state.approvalRequests.<id>` (id = 8-hex) with kind, url, run, pipeline, step, stages, waitingSince, expiresAt, status (`pending` / `approved` / `ended`), notifyCount, lastNotifiedAt, and the rendered `lastMessage { event, eventKey, subject, html }`.
+
+| Event | When | Subject |
+|---|---|---|
+| `approval-needed` | first time a pending approval with a link is seen | `🔐 Approval needed — <pipeline> \| <service> <releaseId>` |
+| `approval-reminder` | still pending `CONFIG[operational.approvalReminderHours]` (4 h) after the last message | `⏰ Reminder #n: approval still pending — …` |
+| `approval-expiring` | ≤ `CONFIG[operational.approvalExpiryWarnHours]` (12 h) before the approval task expires (once) | `⚠️ Approval expires soon — …` |
+| `approval-failed` | the approval task ended without approval (rejected / expired / canceled) | `❌ Approval task ended (<result>) — …` — restart the stage |
+| — | approved | audit `approval-approved` only |
+
+**Sending** — the watcher invokes the agent with `approval <event> <id> for release <releaseId>`. The agent then: reads `state.approvalRequests.<id>.lastMessage`; resolves recipients with `Resolve-NotificationRecipients -EventKey <lastMessage.eventKey> -Config $cfg -Release $release -Secrets $secrets` (routing row `notifications.routing.approval-requests` — `halt` for needed/reminder/expiring, `failure` for failed; owner always included; test mode → owner only, no Teams); sends ONE email via `SendEmailWithAttachments` (`subject`, `html` body, `contentType: "HTML"`) to `EmailTo`/`EmailCc`; and posts the same `html` with `Send-TeamsMessage -ConversationId <id> -Body <html>` to every `TeamsConversationIds` entry. Send the stored message verbatim (template `templates/approval-service-request.html`) — do not re-compose it — then EXIT. A send failure is retried by re-running the owner command `approvals resend <id>`.
+
+**Test mode**: runs are cancelled within seconds, so the side-channel does nothing.
+
 ## Step 6: BVT Check (Kusto-Based Failure Analysis)
 
 **Trigger**: Step 5 completed (canary deployed)
@@ -437,7 +430,7 @@ Failures never fail Step 5 or Step 6; a failed **restore** halts Step 7 (see Ste
 2. Trigger each of those CANARY pipelines, but with `ArtifactsBranch` overridden to the **rollback source** (in **parallel**): `state.revertBits.revertBranch` when `CONFIG[revertBits.useForRollback] != false` and `state.revertBits.phase == "signed-off"` (the revert-bits build); otherwise `release.json → previousBranch` (the previous release branch containing known-good production bits). **Deploy-base**: `previousBranch` does not exist — the rollback source is pinned instead: revert bits signed off → `ArtifactsBranch = <revertBranch>` pinned to `state.revertBits.buildId`; otherwise `ArtifactsBranch = <deployment branch>` pinned to `release.previousBuildId` (the build the previous production rollout deployed). Never roll back with an unpinned `ArtifactsBranch` in deploy-base — it would redeploy the newest build of the branch, i.e. this release. Preserve every other parameter (including the stamp lists) exactly as Step 5 sent them. Record which source was used in `state.revertBits.rollbackSource` and in the audit row.
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step7 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. Email notification via `SendEmailWithAttachments` MCP tool: "Rollback started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-7-completed'` (Step 6 → Step 7 transition per Behavior Rule 11).
-5. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use `releaseId` + `releaseOwner` + the rollback build details for the template vars. Rollback pipelines have the same EV2 approval gates as forward canary, so release owners need these links.
+5. **Approval requests** — record the rollback run ids in `triggeredPipelines.7` and run `Invoke-ApprovalWatch.ps1 -Action Sync` once (see "Approval requests"). Rollback pipelines have the same Approval Service gates as forward canary.
 6. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
 **Completion**: All triggered pipelines succeed
@@ -509,7 +502,7 @@ State: `state.revertBits = { phase, previousCommit, currentCommit, revertBranch,
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step10 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. **Capture BuildNumber**: After the PROD pipeline runs start, read the `buildNumber` from **any** of the triggered pipeline runs via ADO API (`GET /{project}/_apis/build/builds/{buildId}`) — all PROD pipelines build from the same release branch so `buildNumber` is identical across runs. The format is `<BranchName>-<RunCount>` (e.g., `Release-2604-2` means branch `Release-2604`, 2nd run). Store this in `release.json → buildNumber`. This value is used later by Step 13 for the SafeFly `DeploymentDetails.DeploymentToolInputs.BuildNumber` parameter.
 5. Email notification via `SendEmailWithAttachments` MCP tool: "Roll-forward started (PROD pipelines → canary)" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-10-completed'` (Step 9 → Step 10 transition per Behavior Rule 11).
-6. **Extract and post EV2 approval links** — same procedure as Step 5 action 5 (5-min wait, `Get-PipelineApprovalLinks`, post HTML table via `Send-TeamsMessage` to first entry in `CONFIG[notifications.groups.teamsExtended]` using `templates/canary-approval-request.html`). Use the PROD pipeline build details for the template vars; PROD pipelines have EV2 approval gates just like canary.
+6. **Approval requests** — record the production run ids in `triggeredPipelines.10` and run `Invoke-ApprovalWatch.ps1 -Action Sync` once (see "Approval requests"). Production pipelines gate each cloud stage (PROD / FF / MC) behind the Approval Service; stages sharing one approval request are reported as one.
 7. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
 **Completion**: All triggered pipelines succeed
@@ -788,6 +781,7 @@ This step polls SafeFly approval via the skill and waits for the release owner's
 ## Step 15: Production Rollout (EV2 Managed) + Rollout Diagnostics
 
 **Trigger**: Step 14 approved
+**Approval requests**: record every production run id in `state.triggeredPipelines.15` at trigger time — the approval side-channel watches them and mails/Teams the Approval Service links (see "Approval requests"). The Step 15 directive is `poll-ev2-rollout`, which does not scan approvals itself.
 **Deploy-base**: every production run request carries `resources.builds` pinned to `release.buildId` — see Step 5 Action 2 "Deploy-base build pinning". Before triggering, re-run `PinResources`: if the release build has dropped out of the artifact feed's listed versions (busy branch, long CRB), stop with `failed` rather than deploy something else.
 **⚠️ Test Mode Override**: When `testMode` is `true`, Step 15 **does not trigger EV2** — but it does **send the transition email notification** (action 4 below) using Step 10's captured production-trigger params for scope data, then marks Step 15 `skipped` with `reason: "test-run: EV2 rollout skipped, transition notification sent"`. The PROD-pipeline trigger-and-cancel validation happens at **Step 10** (see "Test Mode Overrides → Step 10"). Record the notification in `notifications-capture.json`.
 

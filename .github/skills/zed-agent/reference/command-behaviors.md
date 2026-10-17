@@ -31,6 +31,7 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `approve-private-stamp` | Sign off the private stamp BVT (releases the Step 13 join) |
 | `revert-bits base <sha>` / `revert-bits preserve <numbers\|all\|none>` | Revert bits (Step 7, after canary BVT sign-off): confirm the previous release commit / choose which changed settings to keep. Also `revert-bits status`, `revert-bits skip <reason>` |
 | `approve-revert` | Sign off the BVT on the revert build — Step 7 then rolls canary back with it |
+| `approvals` | Show deployment runs waiting for approval (Approval Service / ADO) with their links. Also `approvals resend <id>` (send the email + Teams message again) and `approvals check` (scan now instead of waiting for the watcher) |
 | `approve-bvt` | Approve BVT check results (unblocks step 6) |
 | `approve-rollback` | Approve post-rollback results (unblocks step 9) |
 | `approve-rollforward` | Approve post-roll-forward results (unblocks step 12) |
@@ -110,6 +111,7 @@ When the release owner says `status`:
    - If `state.integration` exists, show it under Step 2 as sub-rows `2a RI`, `2b FI`, `2c Cut` with each status and PR link (e.g. `2a RI ✅ merged !123`, `2b FI ⏳ pr-open !124`)
    - If `state.privateStampUpgrade` exists, show a side-track row `🧪 Private stamp upgrade` with its status, instance, ports, both run links/results, and the owner action it is waiting for (if any)
    - If `state.scheduleGuards` exists, show one line per guarded canary pipeline, e.g. `⏸ BCM-EACAN enableSchedule=false (paused after run 185400001, resumes on approve-bvt)` / `▶ … restored`
+   - If `state.approvalRequests` has pending entries, show a `🔐 Waiting for approval` block (pipeline, stage, waiting since, approval link) — same rows as `approvals`
    - If `state.revertBits` exists, show it under Step 7: `🔁 Revert bits <revertBranch>: <phase>` with the kept settings count, PR link, build number/link and the owner action it waits for
    - Show progress (N/16 done)
    - Show watcher status (running/stopped, PID, what it's polling)
@@ -297,6 +299,14 @@ When the release owner says `approve-revert` (or `approve revert`):
 3. Resume execution loop → Step 7 Action 1 (canary rollback with the revert build per Action 2).
 
 `approve` / `approve-step 7` are accepted as aliases while `phase == "awaiting-bvt"` — they never mark Step 7 `completed`.
+
+## approvals — Pending Pipeline Approvals
+
+Spec: `step-behaviors.md → Approval requests`.
+
+- **`approvals`** — run `Invoke-ApprovalWatch.ps1 -Action Get -ReleaseId <id>` and show one row per pending request: pipeline, run (link), step, waiting stage(s), waiting since, expires at, and the **approval link**; plus the last few approved/ended ones. Nothing pending → say so and when the last scan ran (`state.approvalWatch.lastSyncAt`).
+- **`approvals check`** — run `-Action Sync` now and send every returned `NotifyEvents` entry exactly as the watcher would (email + Teams, see "Approval requests → Sending").
+- **`approvals resend <id>`** — send `state.approvalRequests.<id>.lastMessage` again (email + Teams); if the request is no longer pending, say so and do not send.
 
 ## approve-bvt — Approve BVT Results
 

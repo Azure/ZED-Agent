@@ -57,6 +57,49 @@ function Write-AuthFailureAudit([string]$ReleaseId, [string]$Action) {
     } | ConvertTo-Json -Compress | Add-Content $auditFile -Encoding UTF8
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Approval side-channel: every ZED-triggered deployment run (canary, rollback,
+# roll-forward, production, private stamp) that is waiting on the OneBranch
+# Approval Service / an ADO approval gets an email + Teams message with the
+# approval link, reminders and an expiry alert (Invoke-ApprovalWatch.ps1).
+# Throttled to operational.approvalPollIntervalSeconds (default 600) so it also
+# runs during the (hour-long) chunked sleep without hammering ADO.
+# ─────────────────────────────────────────────────────────────────────────────
+$script:lastApprovalSync = [datetime]::MinValue
+$script:approvalPollSeconds = 600
+try {
+    $svcCfgPath = Join-Path (Get-Location) '.github/skills/zed-agent/service-config.json'
+    if (Test-Path $svcCfgPath) {
+        $svcCfgOp = (Get-Content $svcCfgPath -Raw | ConvertFrom-Json).operational
+        if ($svcCfgOp -and $svcCfgOp.PSObject.Properties['approvalPollIntervalSeconds'] -and [int]$svcCfgOp.approvalPollIntervalSeconds -ge 60) { $script:approvalPollSeconds = [int]$svcCfgOp.approvalPollIntervalSeconds }
+    }
+} catch { }
+function Invoke-ApprovalSideChannel {
+    if (((Get-Date) - $script:lastApprovalSync).TotalSeconds -lt $script:approvalPollSeconds) { return }
+    $script:lastApprovalSync = Get-Date
+    try {
+        $awScript = Join-Path $PSScriptRoot 'Invoke-ApprovalWatch.ps1'
+        if (-not (Test-Path $awScript)) { return }
+        $awArgs = @{
+            Action      = 'Sync'
+            ReleaseId   = $ReleaseId
+            StateFile   = $stateFile
+            StateLock   = $stateLock
+            AuditFile   = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl")
+            ReleaseFile = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json")
+        }
+        $tokenAw = Get-AzToken "https://dev.azure.com"
+        if ($tokenAw) { $awArgs.AccessToken = $tokenAw }
+        $aw = & $awScript @awArgs
+        foreach ($ev in @($aw.NotifyEvents)) {
+            & copilot --agent=ZedAgent -p "approval $($ev.event) $($ev.id) for release $ReleaseId" --allow-all --autopilot --no-ask-user -s
+        }
+    } catch {
+        $auditFileAwErr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+        @{ ts = (Get-Date -Format 'o'); event = 'approval-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileAwErr -Encoding UTF8
+    }
+}
+
 while ($true) {
     if (-not (Test-Path $stateFile)) { Start-Sleep -Seconds 30; continue }
     $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -213,6 +256,9 @@ while ($true) {
         $auditFileSgErr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
         @{ ts = (Get-Date -Format 'o'); event = 'schedule-guard-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileSgErr -Encoding UTF8
     }
+
+    Invoke-ApprovalSideChannel
+
     if (-not $dir -or $dir.action -eq 'none') { Start-Sleep -Seconds 30; continue }
 
     $conditionMet = $false
@@ -290,72 +336,8 @@ while ($true) {
                 if ($t.status -notin @('completed','failed')) { $allDone = $false }
             }
 
-            # Approval link detection: scan build logs for EV2 approval URLs (per-URL dedup)
-            if (-not $dir.postedApprovalUrls) { $dir.postedApprovalUrls = @() }
-            try {
-                $scriptRoot = Join-Path (Get-Location) ".github/skills/zed-agent/scripts"
-                . "$scriptRoot/Get-PipelineApprovalLinks.ps1"
-                $builds = @($dir.targets | Where-Object { $_.status -notin @('completed','failed') } | ForEach-Object {
-                    @{ pipelineName = $_.name; buildId = $_.buildId }
-                })
-                if ($builds.Count -gt 0) {
-                    $links = Get-PipelineApprovalLinks -Builds $builds -AccessToken $token
-                    # Collect only NEW approval links (not already posted)
-                    $newRows = @(); $newEv2Links = @(); $newApprovalUrls = @()
-                    foreach ($l in $links) {
-                        foreach ($s in $l.stages) {
-                            if ($s.approvalUrl -and $s.approvalUrl -notin $dir.postedApprovalUrls) {
-                                $safeName = [System.Net.WebUtility]::HtmlEncode($l.pipelineName)
-                                $safeStageName = [System.Net.WebUtility]::HtmlEncode($s.name)
-                                $newRows += "<tr><td>$safeName</td><td>$safeStageName</td><td>$($s.status)</td><td><a href='$($s.approvalUrl)'>Approve</a></td><td><a href='$($l.buildUrl)'>Build</a></td></tr>"
-                                $newApprovalUrls += $s.approvalUrl
-                            }
-                            if ($s.ev2RolloutUrl -and $s.ev2RolloutUrl -notin $dir.postedApprovalUrls) {
-                                $safeName = [System.Net.WebUtility]::HtmlEncode($l.pipelineName)
-                                $newEv2Links += "<a href='$($s.ev2RolloutUrl)'>$safeName</a><br>"
-                            }
-                        }
-                    }
-                    if ($newRows.Count -gt 0) {
-                        # Post to Teams
-                        . "$scriptRoot/Send-TeamsMessage.ps1"
-                        $secretsFile = Join-Path (Get-Location) ".zed-agent/secrets.json"
-                        if (Test-Path $secretsFile) {
-                            $secrets = Get-Content $secretsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                            # Use Teams chat name from watcher directive (set by agent from config routing)
-                            $teamsChatName = if ($dir.teamsChatName) { $dir.teamsChatName } else { $null }
-                            $convId = if ($teamsChatName -and $secrets.teamsChats.$teamsChatName) { $secrets.teamsChats.$teamsChatName } else { $null }
-                            if ($convId) {
-                                $releaseFile = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json"
-                                $release = Get-Content $releaseFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                                $templatePath = Join-Path (Get-Location) ".github/skills/zed-agent/templates/canary-approval-request.html"
-                                . "$scriptRoot/Expand-Template.ps1"
-                                . "$scriptRoot/Get-ScopeTemplateVars.ps1"
-                                $vars = @{
-                                    releaseId = $ReleaseId; buildVersion = $release.buildVersion; branch = $release.branch
-                                    approvalRows = ($newRows -join "`n"); ev2Links = ($newEv2Links -join "`n")
-                                    releaseOwner = if ($release.releaseOwner) { $release.releaseOwner } else { 'Release Owner' }
-                                }
-                                # L-18: comms must state the route/geography scope of the rollout.
-                                foreach ($kv in (Get-ScopeTemplateVars -ReleaseId $ReleaseId).GetEnumerator()) {
-                                    $vars[$kv.Key] = $kv.Value
-                                }
-                                Send-TeamsMessage -ConversationId $convId -TemplatePath $templatePath -Variables $vars
-                                $dir.postedApprovalUrls += $newApprovalUrls
-                                # Audit
-                                $auditFile = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
-                                @{ ts = (Get-Date -Format 'o'); event = 'canary-approval-links-posted'; newCount = $newRows.Count; totalPosted = $dir.postedApprovalUrls.Count } |
-                                    ConvertTo-Json -Compress | Add-Content $auditFile -Encoding UTF8
-                            }
-                        }
-                    }
-                }
-            } catch {
-                # Non-fatal — approval link detection is best-effort
-                $auditFile = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
-                @{ ts = (Get-Date -Format 'o'); event = 'approval-link-scan-error'; error = $_.Exception.Message } |
-                    ConvertTo-Json -Compress | Add-Content $auditFile -Encoding UTF8
-            }
+            # Approval requests (OneBranch Approval Service / ADO approvals) are handled by the
+            # approval side-channel (Invoke-ApprovalSideChannel) for every watched run, not only here.
 
             # Write updated target statuses back to state
             Invoke-WithStateLock -LockFile $stateLock -Action {
@@ -567,6 +549,8 @@ while ($true) {
         $chunk = [math]::Min($remaining, 60)
         Start-Sleep -Seconds $chunk
         $remaining -= $chunk
+        # Approval requests can't wait an hour — check them on their own (shorter) cadence.
+        Invoke-ApprovalSideChannel
         if (Test-Path $stateFile) {
             try {
                 $peek = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json

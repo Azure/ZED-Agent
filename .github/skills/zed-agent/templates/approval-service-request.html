@@ -1,0 +1,13 @@
+<b>{{headline}} — {{serviceName}} release {{releaseId}}</b><br><br>
+<b>{{pipelineName}}</b> is waiting for approval and will not continue until it is approved.<br>
+{{note}}<br><br>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:Segoe UI,Arial,sans-serif; font-size:13px;">
+<tr><td><b>Release step</b></td><td>{{stepLabel}}</td></tr>
+<tr><td><b>Pipeline run</b></td><td><a href='{{runUrl}}'>{{runName}}</a></td></tr>
+<tr><td><b>Waiting stage(s)</b></td><td>{{stages}}</td></tr>
+<tr><td><b>Waiting since</b></td><td>{{waitingSince}}</td></tr>
+{{#expiresAt}}<tr><td><b>Approval expires</b></td><td>{{expiresAt}}</td></tr>{{/expiresAt}}
+{{#scope}}<tr><td><b>Scope</b></td><td>{{scope}}</td></tr>{{/scope}}
+</table><br>
+👉 <b><a href='{{approveUrl}}'>{{approveLabel}}</a></b><br><br>
+<i>{{#releaseOwner}}Release owner: {{releaseOwner}} · {{/releaseOwner}}Sent automatically by ZED Agent.</i>

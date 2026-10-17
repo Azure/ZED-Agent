@@ -981,6 +981,8 @@ Routing is **per step, per outcome**. Each of the 16 pipeline steps has three ou
 
 The **current** release owner's personal email is **always** added to every notification by `Resolve-NotificationRecipients.ps1` on top of whatever's in the cell. **Empty arrays mean current-owner-only.** Add any group from Group 5a to widen further.
 
+Besides the 16 steps there is one extra row, **`approval-requests`** — the email + Teams message ZED sends when a canary / rollback / production / private stamp run is stuck waiting on the OneBranch Approval Service (or an ADO approval): `halt` = approval needed / reminder / expiring soon, `failure` = approval task ended without approval. Ask: *"Who should get 'pipeline waiting for approval' emails and Teams messages (with the approval link)?"* — propose `halt` and `failure` = `emailGroups: [permanent]`, `teamsGroups: [teamsExtended]` (approvers usually aren't only the release owner). Also confirm `operational.approvalReminderHours` (default 4) and `approvalExpiryWarnHours` (default 12).
+
 Ensure the per-step routing block exists in `service-config.json` first — if `notifications.routing` is missing, write all 16 steps × 3 outcomes with empty `{ "emailGroups": [], "ccGroups": [], "teamsGroups": [] }` cells plus the four seeded non-default success cells from the Generation section. Then read it back and **render the full 16-step table** to the release owner. Use `—` (em dash) for empty/current-owner-only cells. Each outcome cell shows `emailGroups` / `ccGroups` / `teamsGroups` separated by ` / `.
 
 Example of what the agent renders (with the owner's actual values, not these placeholders):

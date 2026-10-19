@@ -290,7 +290,8 @@ Run 2a and 2b back-to-back **without `-Push`**: the merge + resolution is comput
 6. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
 **Watcher approval detection**: handled for every watched run by the approval side-channel (`Invoke-ApprovalWatch.ps1`) — see "Approval requests".
-**Completion**: All triggered pipelines succeed → send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-completed'`: "Canary deployment completed"
+**EV2 deployment done**: canary pipelines with `deploymentDoneWhen` (BCM-CANARY → `Canary-ManagedValidation`) count as done once EV2 reports every canary region deployed and that step started — the run itself keeps going for ~24 h. See "EV2 deployment done (deploymentDoneWhen)".
+**Completion**: All triggered pipelines succeed (or are `deployed` per EV2) → record `state.ev2DeployedRuns.5` (see "EV2 deployment done") and send transition email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-completed'`: "Canary deployment completed" — for a `deployed` run say "deployed to all canary regions at {deployedAt}; EV2 {validationStep} running (≈24 h, EV2 link {portalUrl}); the pipeline run finishes after it".
 **Failure**: Any pipeline fails → step `failed`, send failure email via `SendEmailWithAttachments` MCP tool to recipients from `Resolve-NotificationRecipients -EventKey 'step-5-failed'` (default: current-owner-only — owner widens via `routing.5-deploy-canary.failure`), halt for `ack`
 
 ## Private stamp upgrade test (side track: Step 5 ∥ canary → joined at Step 13)
@@ -384,14 +385,43 @@ Canary (Step 5), rollback (Step 7), roll-forward (Step 10), production (Step 15)
 
 **Test mode**: runs are cancelled within seconds, so the side-channel does nothing.
 
+## EV2 deployment done (deploymentDoneWhen)
+
+BCM-CANARY's run (`Managed SDP Deployment` → `Ev2Agentless` / `Rollout Progress`) stays **in progress for ~24 h after the bits are deployed**: EV2 runs `Canary-ManagedValidation` (bake time + health checks) before the rollout — and the run — complete. Waiting for the run would put Step 6's 24 h BVT window *after* that, ~48 h in total. Instead, configure the pipeline in `pipeline-catalog.json`:
+
+```json
+"canary": { "BCM-CANARY": { ..., "deploymentDoneWhen": { "ev2StepStarted": "Canary-ManagedValidation", "portalLinkTask": "Ev2 Managed SDP Region Agnostic" } } }
+```
+
+`scripts/EV2/Get-Ev2DeploymentProgress.ps1 -RunId <run> -StepName <ev2StepStarted> -PortalLinkTask <portalLinkTask>`:
+1. Reads the EV2 portal link from the run — task `Ev2 Managed SDP Region Agnostic` logs `##[warning]Ev2 portal link - https://ra.ev2portal.azure.net/#/rollouts/Prod/<serviceTreeId>/<serviceGroup>/<rolloutId>` (newest link wins; fallback `Rollout Progress`).
+2. GETs the rollout from the EV2 API (`https://azureservicedeploy.msft.net/api/rollouts/<id>?servicegroupname=<sg>&embed-detail=true`, `az` token for that resource).
+3. `Phase`: `no-rollout` (no link yet — e.g. still on the Approval Service) · `deploying` · **`deployed`** = every `Canary.<region>` stage `Succeeded` **and** the `Canary-ManagedValidation` action (`ResourceGroups[].Resources[].Actions[]`, `StepName`) has started (or the rollout already succeeded); `DeployedAt` = the validation start · `failed` (a region stage, the validation or the rollout failed/cancelled) · `unsupported-cloud` (non-Prod EV2 — the run result is used) · `error` (lookup failed — the run result is used). Verified on BCM run 186291713 / rollout `481dbbb6-…`: regions done 12:04:06/08 UTC, `Canary-ManagedValidation` 10/17 12:04:23 → 10/18 12:06:24 UTC.
+
+**Watcher** (`poll-ado-pipelines`, Steps 5 and 7 — every target whose run's definition has `deploymentDoneWhen`): while the run is still in progress, call the script each poll. `deployed` → target `status: "deployed"` (counts as done, never polled again in this directive) + `ev2 { phase, rolloutId, portalUrl, validationStep, validationStatus, validationStartedAt, deployedAt, reason }` and audit `ev2-deployed`; `failed` → target `failed` (→ `onFailure`, audit `ev2-failed`); anything else → keep polling (the run result still decides). Cold resume treats `deployed` as done too.
+
+**On step completion** (Step 5 / Step 7): for every `deployed` target write `state.ev2DeployedRuns.<step> = [ { runId, pipelineKey, rolloutId, portalUrl, deployedAt, validationStep } ]` (via `Update-ReleaseState -StateProperties`) — the watcher directive is replaced by the BVT timer, so this is where the runs are remembered. The BVT step (Step 6 / 8) starts at step completion, i.e. in parallel with the validation — with `bvtReleases` it creates the BVT releases right away (see "BVT releases").
+
+**When the BVT window ends** (Step 6 / Step 8, before the Kusto query): for each `state.ev2DeployedRuns.<5|7>` run, GET the ADO run:
+- `completed` + `succeeded` → fine (mention "EV2 {validationStep} passed" in the BVT email).
+- `completed` + not succeeded → the step is `failed`: "EV2 {validationStep} failed for {pipelineKey} run {runId} ({portalUrl}) — canary health validation did not pass", Rule 11 failure email, halt for `ack` (in addition to any BVT failures).
+- still in progress → run `Get-Ev2DeploymentProgress.ps1` and state "EV2 {validationStep} still running since {validationStartedAt}" in the BVT email; the next deployment waits for it (below).
+
+**Before triggering Steps 7, 10, 15**: EV2 runs one rollout per service group at a time. If any run in `state.ev2DeployedRuns.*` is still in progress, do not trigger — arm `{ action: "poll-ado-pipelines", targets: [<those runs>], onSuccess: "continue release {id}" }` and tell the owner "waiting for EV2 {validationStep} of run {runId} to finish (started {validationStartedAt})"; a failed run there halts the step as above.
+
+**Test mode**: runs are cancelled at trigger, no EV2 rollout exists — nothing to do.
+
 ## Step 6: BVT Check (Kusto-Based Failure Analysis)
 
 **Trigger**: Step 5 completed (canary deployed)
-**Wait**: **24 hours** after Step 5 completion. Set a timer watcher directive:
+**BVT releases** (when `CONFIG[pipelines.bvtReleases.steps]` contains 6 — BCM): **no 24 h timer**. Create the BVT releases and wait for them instead — see "BVT releases (Steps 6, 8, 11)" below. Actions 0–5 run once they have all finished.
+**Revert bits during the canary BVT** (when `CONFIG[revertBits.prepareDuringCanaryBvt]` — BCM): on Step 6 entry, right after starting the BVT releases (or the timer), also start the revert bits — 7a Plan + selection email now, 7b PR on `revert-bits preserve`, the build via the watcher side-channel — so the revert build is ready by `approve-bvt`. Never changes Step 6's status. See "Step 7 — Revert bits → Prepared during the canary BVT".
+**Wait** (no `bvtReleases` for this step): **24 hours** after Step 5 completion. Set a timer watcher directive:
 `{ action: "wait-timer", waitUntil: "<step5CompletionTime + 24h ISO 8601>", onSuccess: "continue release {id}", onFailure: "wait-timer error for release {id}" }`
 **⚠️ Test Mode Override**: When `testMode` is `true`, this step becomes a **BVT-query-works check** — skip the 24h wait (no `wait-timer` directive), query Kusto with `ago(48h)`, and **auto-pass with no `approve-bvt`**: if the query executes, mark Step 6 `completed`; if it errors (auth, unreachable cluster, malformed KQL), mark it `failed`. Write a `bvt-query-check` record to `test-run-capture.json`. See "Test Mode Overrides → Step 6" for details.
 
 **Actions** (after wait completes):
+0. **EV2 validation outcome** — if `state.ev2DeployedRuns.5` exists, check those runs first (see "EV2 deployment done → When the BVT window ends").
 1. Load the BVT query template from `.github/skills/zed-agent/queries/CONFIG[kusto.bvt.queryFile]`
 2. Read `state.json` → `pipelineTriggerTimestamps.step5` to get the pipeline trigger time
 3. Substitute placeholders in the query:
@@ -430,25 +460,62 @@ Canary (Step 5), rollback (Step 7), roll-forward (Step 10), production (Step 15)
 **Release owner**: `approve-bvt` — confirms BVT results are acceptable, advances to Step 7
 **Note**: BVT check **always** requires release owner sign-off, even when no failures are detected. This ensures the release owner has reviewed the BVT window before proceeding.
 
+## BVT releases (Steps 6, 8, 11)
+
+Configured in `pipeline-catalog.json` (BCM: both canary test releases, for all three BVT steps):
+
+```json
+"bvtReleases": {
+  "steps": [6, 8, 11],
+  "timeoutHours": 12,
+  "releases": {
+    "IaaSVM-CloudTest":     { "definitionId": 40785, "variables": { "MABIsOfficial": "true" } },
+    "IaaSVM-LHT-CloudTest": { "definitionId": 47437, "variables": { "MABIsOfficial": "true" } }
+  }
+}
+```
+
+The deployment just finished (Step 5 canary · Step 7 rollback · Step 10 roll-forward), so instead of waiting 24 h the BVT step runs the BVT releases against it right away and continues as soon as they are done (they take ~1.5–4 h: `Publish VSO Drop`, then `IaaSVME2ETestsECY` / `CCY` / `EaCan`). All work goes through `scripts/Invoke-BvtReleases.ps1` (never create these releases by hand). Each release is created like the portal's *Create release*: every artifact's latest version passed explicitly (BCM: `Build` = newest `git_mgmt_recoverysvcs_test_develop` test build), the configured `variables` overridden (**`MABIsOfficial=true`** — settable at release time), everything else at its definition default (`AzureEnvironment=Canary`, `UseExistingVault=True`, …).
+
+**On entry** of Step 6 / 8 / 11 (when the step is in `CONFIG[pipelines.bvtReleases.steps]`):
+1. `$bv = Invoke-BvtReleases.ps1 -Action Start -ReleaseId <id> -Step <N>` (idempotent — re-entry never creates duplicates).
+2. `$bv.Phase == 'skipped'` (test mode) → follow the step's Test Mode Override instead.
+3. `$bv.Phase == 'failed'` (a release could not be created — e.g. no artifact version, variable not settable) → step `failed` with the run `error`, Rule 11 failure email, halt for `ack`.
+4. Otherwise send ONE owner email (EventKey `step-<N>-started`, unmapped → owner): `🧪 Step <N> BVT releases started | {releaseId}` with `$bv.Summary` (links), and arm the watcher, then EXIT:
+   `{ action: "poll-bvt-releases", step: <N>, pollIntervalSeconds: 900, onSuccess: "continue release {id}", onFailure: "release {id} Step <N> BVT releases failed or timed out" }`
+
+**Watcher** — `poll-bvt-releases` calls `Invoke-BvtReleases.ps1 -Action Poll -Step <N>` each tick. A release is finished when all its stages are final (`succeeded` / `partiallySucceeded` / `rejected` / `canceled`), it was abandoned, or a stage was rejected/canceled with nothing still running. All finished → `onSuccess`. `failed` / `timed-out` (`timeoutHours`, default 12) → directive cleared + `onFailure`. Cold resume: `state.bvtReleases.<N>.status == completed` → continue; otherwise a live Poll is needed.
+
+**On `continue`** (Phase `completed`): run the step's Actions (Step 6 Actions 0–5: EV2 validation outcome, Kusto BVT query from the deployment trigger time to now, FrontLiner notifications). Add the BVT releases table (`Invoke-BvtReleases.ps1 -Action Get -Step <N>` → `.Summary`: release link, outcome, per-stage status) to the BVT email.
+- Any release `outcome == 'rejected'` (a stage rejected/canceled, or abandoned) → the step is `failed`: "BVT release <name> ended rejected (<stages>)" — Rule 11 failure email, halt for `ack` (together with any Kusto failures).
+- `partiallySucceeded` is the normal result (some test cases fail / `Publish VSO Drop` is always partial) — not a failure; the owner reviews the results and signs off (`approve-bvt` for Step 6; Steps 8 / 11 sign-off in Steps 9 / 12).
+
+**Owner commands while halted**: `ack retry` → `Invoke-BvtReleases.ps1 -Action Start -Step <N> -Rerun` (re-creates only the releases that failed to start or ended rejected; the earlier run is kept in `history[]`) and re-arm `poll-bvt-releases`; `ack skip` → continue with the Kusto check / sign-off as is.
+
+**State**: `state.bvtReleases.<N> = { status: running | completed | failed | timed-out, startedAt, completedAt, runs: { <key>: { definitionId, definitionName, releaseId, name, url, createdAt, status, outcome, stages[], summary, finishedAt, artifacts[], error } }, history[] }`. Audit: `bvt-release-created`, `bvt-release-create-failed`, `bvt-release-completed`, `bvt-releases-timed-out`.
+
+**Test mode**: `Start` returns `skipped` and creates nothing — the step's Test Mode Override applies (BVT-query-works check).
+
 ## Step 7: Rollback
 
 **Trigger**: Step 6 approved
-**Revert bits pre-phase**: When `CONFIG[revertBits.enabled]` is `true`, Step 7 first runs the revert-bits sub-phases 7a–7d (see "Step 7 — Revert bits (7a–7d)" below) and only reaches Action 1 after the owner signs off the revert build (`approve-revert`) or skips it (`revert-bits skip`). Without `revertBits`, Step 7 is exactly the Actions below.
+**Revert bits pre-phase**: When `CONFIG[revertBits.enabled]` is `true`, Step 7 first runs the revert-bits sub-phases 7a–7d (see "Step 7 — Revert bits (7a–7d)" below) and only reaches Action 1 after the owner signs off the revert build (`approve-revert`) or skips it (`revert-bits skip`). With `CONFIG[revertBits.prepareDuringCanaryBvt]` the revert bits were prepared during Step 6: `phase == "ready"` → Action 1 immediately; otherwise Step 7 waits for `ready` (see "Prepared during the canary BVT"). Without `revertBits`, Step 7 is exactly the Actions below.
 **Pre-trigger (canary schedule guard)**: before Action 2, run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason step-7-pre-trigger` (no-op unless ZED still has a guard disabled). If any result is `restore-failed`, set Step 7 → `failed` ("cannot roll back: <key> is still paused by ZED (<guards>) — its schedule is off and/or its gated run would be silently skipped") and halt — never trigger a guarded pipeline while ZED has it disabled. See "Canary schedule guard".
+**EV2 one-rollout-at-a-time**: before triggering, if any run in `state.ev2DeployedRuns.*` is still in progress (EV2 post-deployment validation), wait for it instead — see "EV2 deployment done → Before triggering Steps 7, 10, 15".
 **Actions**:
 1. **Reuse Step 5's actually-triggered set** — do NOT re-query Kusto and do NOT recompute pipeline selection. Rollback MUST target exactly the same canary surface that was deployed to in Step 5, otherwise the rollback either (a) restores bits in regions that were never updated, or (b) misses regions that received the forward bits. Read from the Step 5 `cluster-type-routing` audit row (or equivalent `state.json → step5.triggeredPipelines`) the list of `{ key, params }` pairs that were actually triggered with their `templateParameters`. Use those verbatim. This applies to both `mode: "static"` and `mode: "cluster-type"` — Step 7 never re-runs the routing sub-procedure. If Step 5's triggered-set is missing from state/audit (e.g., manual intervention scrubbed it), halt with `failed` and ask the release owner to provide the list explicitly via `modify` before retrying.
-2. Trigger each of those CANARY pipelines, but with `ArtifactsBranch` overridden to the **rollback source** (in **parallel**): `state.revertBits.revertBranch` when `CONFIG[revertBits.useForRollback] != false` and `state.revertBits.phase == "signed-off"` (the revert-bits build); otherwise `release.json → previousBranch` (the previous release branch containing known-good production bits). **Deploy-base**: `previousBranch` does not exist — the rollback source is pinned instead: revert bits signed off → `ArtifactsBranch = <revertBranch>` pinned to `state.revertBits.buildId`; otherwise `ArtifactsBranch = <deployment branch>` pinned to `release.previousBuildId` (the build the previous production rollout deployed). Never roll back with an unpinned `ArtifactsBranch` in deploy-base — it would redeploy the newest build of the branch, i.e. this release. Preserve every other parameter (including the stamp lists) exactly as Step 5 sent them. Record which source was used in `state.revertBits.rollbackSource` and in the audit row.
+2. Trigger each of those CANARY pipelines, but with `ArtifactsBranch` overridden to the **rollback source** (in **parallel**): `state.revertBits.revertBranch` when `CONFIG[revertBits.useForRollback] != false` and `state.revertBits.phase` is `"signed-off"` or `"ready"` (the revert-bits build); otherwise `release.json → previousBranch` (the previous release branch containing known-good production bits). **Deploy-base**: `previousBranch` does not exist — the rollback source is pinned instead: revert bits signed off / ready → `ArtifactsBranch = <revertBranch>` pinned to `state.revertBits.buildId`; otherwise `ArtifactsBranch = <deployment branch>` pinned to `release.previousBuildId` (the build the previous production rollout deployed). Never roll back with an unpinned `ArtifactsBranch` in deploy-base — it would redeploy the newest build of the branch, i.e. this release. Preserve every other parameter (including the stamp lists) exactly as Step 5 sent them. Record which source was used in `state.revertBits.rollbackSource` and in the audit row.
 3. **Record pipeline trigger timestamp**: Save `pipelineTriggerTimestamps.step7 = <current UTC ISO 8601>` to `state.json` via `Update-ReleaseState`
 4. Email notification via `SendEmailWithAttachments` MCP tool: "Rollback started" — resolve recipients via `Resolve-NotificationRecipients -EventKey 'step-7-completed'` (Step 6 → Step 7 transition per Behavior Rule 11).
 5. **Approval requests** — record the rollback run ids in `triggeredPipelines.7` and run `Invoke-ApprovalWatch.ps1 -Action Sync` once (see "Approval requests"). Rollback pipelines have the same Approval Service gates as forward canary.
 6. Watcher polls all triggered pipeline runs every 1 hour
 **Watcher**: `{ action: "poll-ado-pipelines", targets: ["<run1>", "<run2>", ...], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], teamsChatName: "<first entry from CONFIG[notifications.groups.teamsExtended]>" }`
-**Completion**: All triggered pipelines succeed
+**Completion**: All triggered pipelines succeed (or are `deployed` per EV2 — record `state.ev2DeployedRuns.7`, see "EV2 deployment done")
 **Note**: Rollback deploys from `previousBranch` (or the revert-bits branch — see Action 2) via CANARY pipelines to restore known-good bits in canary regions
 
 ## Step 7 — Revert bits (7a–7d)
 
-Runs only when `CONFIG[revertBits.enabled] == true` (BCM), immediately after the canary BVT sign-off (`approve-bvt`). Produces a **revert build** kept on hand for a regression rollback: branch `CONFIG[revertBits.branchTemplate]` (BCM: `releases/bcm{{YYMM}}revert`, e.g. `releases/bcm2610revert`) = the **previous release commit** + only the settings the owner chooses to keep from **this release**. This matches how the team built `releases/rollback2610` by hand (2609 release commit + 2610's `BCMTeeWorkflowVersion`). All git work goes through `scripts/Invoke-RevertBits.ps1` (never hand-edit the settings file); `releases/*` branches have blocking policies, so the kept settings reach the revert branch through a PR that the owner completes.
+Runs only when `CONFIG[revertBits.enabled] == true` (BCM), immediately after the canary BVT sign-off (`approve-bvt`) — or, with `CONFIG[revertBits.prepareDuringCanaryBvt]` (BCM), already during Step 6 (see "Prepared during the canary BVT" below). Produces a **revert build** kept on hand for a regression rollback: branch `CONFIG[revertBits.branchTemplate]` (BCM: `releases/bcm{{YYMM}}revert`, e.g. `releases/bcm2610revert`) = the **previous release commit** + only the settings the owner chooses to keep from **this release**. This matches how the team built `releases/rollback2610` by hand (2609 release commit + 2610's `BCMTeeWorkflowVersion`). All git work goes through `scripts/Invoke-RevertBits.ps1` (never hand-edit the settings file); `releases/*` branches have blocking policies, so the kept settings reach the revert branch through a PR that the owner completes.
 
 State: `state.revertBits = { phase, previousCommit, currentCommit, revertBranch, topicBranch, planPath, preserved[], prId, prUrl, headSha, buildId, buildNumber, buildUrl, signedOffAt, signedOffBy, skippedReason, rollbackSource }`, written with `Update-ReleaseState -Action update-step -StepNumber 7 ... -StateProperties @{ revertBits = <obj> }`. Mirror `revertBranch`, `revertPrId`, `revertBuildId` into `release.json`. Dispatch on `phase`:
 
@@ -472,6 +539,25 @@ State: `state.revertBits = { phase, previousCommit, currentCommit, revertBranch,
 
 **7d — BVT sign-off.** Build succeeded → `phase = "awaiting-bvt"`, Step 7 → `waiting-approval`, email (EventKey `revert-bits-bvt-ready`, subject `🧪 Revert build {buildNumber} ({revertBranch}) ready — run BVT, then reply approve-revert | {releaseId}`) with the build link, the revert branch, the kept settings, and what happens next (Step 7 rolls canary back with this build). EXIT. `approve-revert` → `phase = "signed-off"`, record `signedOffAt/By`, Step 7 → `in-progress`, continue with Step 7 Action 1 (Action 2 uses the revert branch).
 
+### Prepared during the canary BVT (`revertBits.prepareDuringCanaryBvt`)
+
+BCM. The revert build does not depend on the canary BVT result — only on the previous and current release commits — so it is prepared **while Step 6 runs** and Step 7 rolls back with it **right after `approve-bvt`**. Its BVT is Step 8 (the BVT releases after the rollback), its sign-off Step 9 — there is no separate `approve-revert`.
+
+| When | What | Who |
+|---|---|---|
+| Step 6 entry (after the BVT releases / timer are started) | **7a** Plan exactly as above → selection email (`revert-bits-select`; say "Step 7 will roll back with this build right after you approve the canary BVT"). No changed settings → 7b with `-Preserve none` at once. Step 6 status is not touched. | agent |
+| `revert-bits preserve <list>` (during Step 6) | **7b** Prepare + PR exactly as above, but arm **no** watcher directive (Step 6's is active) — just write `phase = "pr-open"` (`no-config-changes` → `phase = "queue-build"`) and send `revert-bits-pr-raised`. | agent |
+| `pr-open` → PR merged | `phase = "queue-build"` (`prMergedAt`); PR abandoned → `failed` | side-channel |
+| `queue-build` | reuse the official build CI started for the merge commit (`Resolve-ReleaseBuild.ps1 -Action DeployCommit -DeployBranch <revertBranch>`); none after 10 min → `-Action QueueBuild` pinned to that commit → `phase = "building"` (`buildId`, `buildNumber`, `buildUrl`, `revertCommit`) | side-channel |
+| `building` → build succeeded | `phase = "ready"` (`readyAt`) → `revert-bits-ready`; failed/canceled → `failed` → `revert-bits-failed` | side-channel |
+| `approve-bvt` | Step 7 starts: `ready` → Action 1 now (rollback pinned to `buildId`); earlier phase → Step 7 `waiting` ("waiting for the revert build: <selection \| PR <link> merge \| build <link>>") — on `revert-bits-ready` the agent continues Step 7 Action 1 | agent |
+
+**Side-channel** — `scripts/Invoke-RevertBitsTrack.ps1 -Action Poll` (watcher every `CONFIG[revertBits.prPollIntervalSeconds]`, 900 s, also during its sleep; cold resume Step 3e) while `phase` is `pr-open` / `queue-build` / `building`. Each transition writes `state.revertBits` under the state lock only if the phase is unchanged. The watcher invokes the agent with `revert bits <event> for release <id>`:
+- `revert-bits-ready` — mirror `revertBranch` / `revertBuildId` into `release.json`; email (EventKey `revert-bits-ready`) `🔁 Revert build {buildNumber} ({revertBranch}) ready | {releaseId}` — build link, kept settings, "Step 7 rolls canary back with it as soon as you approve the canary BVT; Step 8 runs the BVT releases on it". If Step 7 is already waiting for it → continue Step 7 Action 1.
+- `revert-bits-failed` — email (EventKey `revert-bits-failed`) with `error` / `lastError` and the options (`ack retry`, `revert-bits skip <reason>`). Repeated identical errors are reported once. If Step 7 is waiting, it stays `waiting`.
+
+**Test mode**: unchanged — 7a read-only + 7b `-DryRun` only; nothing is prepared during Step 6.
+
 **Owner commands / failure**: see `command-behaviors.md → revert-bits`. `revert-bits skip <reason>` → `phase = "skipped"` and Step 7 rolls back with `release.previousBranch` as before. `ack retry` re-runs the current sub-phase (Prepare is idempotent: an existing revert branch that contains the previous commit and an identical work branch are reused). Any `Invoke-RevertBits.ps1` error → Step 7 `failed` with the message.
 
 **Test mode**: Steps 7–9 are skipped in a true test run. If `revertBits.enabled`, still run 7a (`-Action Plan`, read-only) and 7b with `-DryRun` (validates the edit, pushes nothing), put the plan table and the dry-run result into `test-run-capture.json → revertBits` and the test summary — no branch, PR, build or BVT.
@@ -479,8 +565,8 @@ State: `state.revertBits = { phase, previousCommit, currentCommit, revertBranch,
 ## Step 8: Post-Rollback BVT
 
 **Trigger**: Step 7 completed
-**Wait**: **24 hours** after Step 7 completion (same timer pattern as Step 6)
-**Actions**: Same Kusto-based BVT failure analysis as Step 6, but uses `pipelineTriggerTimestamps.step7` as the query start time.
+**Wait**: **24 hours** after Step 7 completion (same timer pattern as Step 6) — or, when `CONFIG[pipelines.bvtReleases.steps]` contains 8, the BVT releases (see "BVT releases (Steps 6, 8, 11)")
+**Actions**: Same Kusto-based BVT failure analysis as Step 6, but uses `pipelineTriggerTimestamps.step7` as the query start time (and Action 0 checks `state.ev2DeployedRuns.7`).
 **State**: Step 8 → `completed` (pass) or `failed` (CONFIG[service.name] failures)
 
 ## Step 9: Post-Rollback Sign-off
@@ -496,6 +582,7 @@ State: `state.revertBits = { phase, previousCommit, currentCommit, revertBranch,
 ## Step 10: Roll-Forward (PROD Pipelines → Canary Regions)
 
 **Trigger**: Step 9 approved
+**EV2 one-rollout-at-a-time**: before triggering, if any run in `state.ev2DeployedRuns.*` is still in progress (EV2 post-deployment validation), wait for it instead — see "EV2 deployment done → Before triggering Steps 7, 10, 15".
 **Deploy-base**: every production run request carries `resources.builds` pinned to `release.buildId` — see Step 5 Action 2 "Deploy-base build pinning".
 **⚠️ Test Mode Override**: When `testMode` is `true`, run the inventory gate + resolve the production trigger set + REAL params as normal, then call `Invoke-TriggerAndCancel.ps1 -Step 10` **once per resolved pipeline** (instant cancel + capture). This is where PROD-pipeline params are validated in a test run (the old Step 15 trigger-and-cancel moved here). See "Test Mode Overrides → Step 10".
 **Actions**:
@@ -521,7 +608,7 @@ State: `state.revertBits = { phase, previousCommit, currentCommit, revertBranch,
 ## Step 11: Post-Roll-Forward BVT
 
 **Trigger**: Step 10 completed
-**Wait**: **24 hours** after Step 10 completion (same timer pattern as Step 6)
+**Wait**: **24 hours** after Step 10 completion (same timer pattern as Step 6) — or, when `CONFIG[pipelines.bvtReleases.steps]` contains 11, the BVT releases (see "BVT releases (Steps 6, 8, 11)")
 **Actions**: Same Kusto-based BVT failure analysis as Step 6, but uses `pipelineTriggerTimestamps.step10` as the query start time.
 **State**: Step 11 → `completed` (pass) or `failed` (CONFIG[service.name] failures)
 
@@ -791,6 +878,7 @@ This step polls SafeFly approval via the skill and waits for the release owner's
 ## Step 15: Production Rollout (EV2 Managed) + Rollout Diagnostics
 
 **Trigger**: Step 14 approved
+**EV2 one-rollout-at-a-time**: before triggering, if any run in `state.ev2DeployedRuns.*` is still in progress (EV2 post-deployment validation), wait for it instead — see "EV2 deployment done → Before triggering Steps 7, 10, 15".
 **Approval requests**: record every production run id in `state.triggeredPipelines.15` at trigger time — the approval side-channel watches them and mails/Teams the Approval Service links (see "Approval requests"). The Step 15 directive is `poll-ev2-rollout`, which does not scan approvals itself.
 **Deploy-base**: every production run request carries `resources.builds` pinned to `release.buildId` — see Step 5 Action 2 "Deploy-base build pinning". Before triggering, re-run `PinResources`: if the release build has dropped out of the artifact feed's listed versions (busy branch, long CRB), stop with `failed` rather than deploy something else.
 **⚠️ Test Mode Override**: When `testMode` is `true`, Step 15 **does not trigger EV2** — but it does **send the transition email notification** (action 4 below) using Step 10's captured production-trigger params for scope data, then marks Step 15 `skipped` with `reason: "test-run: EV2 rollout skipped, transition notification sent"`. The PROD-pipeline trigger-and-cancel validation happens at **Step 10** (see "Test Mode Overrides → Step 10"). Record the notification in `notifications-capture.json`.

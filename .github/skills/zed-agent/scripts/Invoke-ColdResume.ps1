@@ -44,6 +44,9 @@
       ApprovalSideChannel - Result of Invoke-ApprovalWatch -Action Sync; every .NotifyEvents entry
                        ({ event, id }) is an approval email + Teams message to send
                        (see step-behaviors.md → Approval requests)
+      RevertBitsSideChannel - Result of Invoke-RevertBitsTrack -Action Poll (if it ran); a non-empty
+                       .NotifyEvent (revert-bits-ready / revert-bits-failed) is an email to send
+                       (see step-behaviors.md → Step 7 — Revert bits → Prepared during the canary BVT)
       StatePaths     - Resolved state paths object
 #>
 [CmdletBinding()]
@@ -68,6 +71,7 @@ $verdict = [PSCustomObject]@{
     PrivateStampSideChannel = $null
     ScheduleGuardSideChannel = $null
     ApprovalSideChannel = $null
+    RevertBitsSideChannel = $null
     StatePaths          = $null
 }
 
@@ -211,6 +215,25 @@ try {
     $verdict.ApprovalSideChannel = [PSCustomObject]@{ Success = $false; Error = $_.Exception.Message }
 }
 
+# ── Step 3e: Revert bits side track (revertBits.prepareDuringCanaryBvt): PR → revert build → ready ──
+try {
+    $rbScript = Join-Path $PSScriptRoot 'Invoke-RevertBitsTrack.ps1'
+    $rbPhase = if ($state.PSObject.Properties['revertBits'] -and $state.revertBits) { [string]$state.revertBits.phase } else { '' }
+    if ((Test-Path $rbScript) -and $rbPhase -in @('pr-open', 'queue-build', 'building')) {
+        $verdict.RevertBitsSideChannel = & $rbScript -Action Poll `
+            -ReleaseId $activeRelease.ReleaseId `
+            -StateFile $activeRelease.StateFile `
+            -StateLock (Join-Path $paths.ScratchDir 'state.json.lock') `
+            -AuditFile $paths.AuditFile `
+            -ReleaseFile $paths.ReleaseFile
+        if ($verdict.RevertBitsSideChannel.Transition) {
+            $state = Get-Content $activeRelease.StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+    }
+} catch {
+    $verdict.RevertBitsSideChannel = [PSCustomObject]@{ Success = $false; Error = $_.Exception.Message }
+}
+
 # ── Step 4: Determine current step ──
 # Current step = lowest-numbered step whose status is neither 'completed' nor 'skipped'
 $stepDeps = @{
@@ -306,7 +329,8 @@ switch ($currentStep.status) {
                         $allDone = $true
                         $anyFailed = $false
                         foreach ($t in $dir.targets) {
-                            if ($t.status -notin @('completed', 'failed')) { $allDone = $false }
+                            # 'deployed' = EV2 deployment done, run still in its managed validation (deploymentDoneWhen)
+                            if ($t.status -notin @('completed', 'failed', 'deployed')) { $allDone = $false }
                             if ($t.status -eq 'failed') { $anyFailed = $true }
                         }
                         $eval.ConditionMet = $allDone
@@ -327,6 +351,14 @@ switch ($currentStep.status) {
                 'poll-ev2-rollout' {
                     $eval.Details = "EV2 rollout poll — requires API evaluation"
                     $eval.ConditionMet = $null
+                }
+                'poll-bvt-releases' {
+                    # Invoke-BvtReleases.ps1 state for the BVT step; 'running' needs a live Poll.
+                    $bvS = $null
+                    if ($state.PSObject.Properties['bvtReleases'] -and $state.bvtReleases -and $state.bvtReleases.PSObject.Properties["$($dir.step)"]) { $bvS = $state.bvtReleases."$($dir.step)" }
+                    $bvStatus = if ($bvS) { [string]$bvS.status } else { 'not-started' }
+                    $eval.Details = "BVT releases for Step $($dir.step): $bvStatus"
+                    $eval.ConditionMet = if ($bvStatus -eq 'completed') { $true } else { $null }
                 }
                 default {
                     $eval.Details = "Unknown directive action: $($dir.action)"

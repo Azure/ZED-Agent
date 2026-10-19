@@ -148,6 +148,96 @@ function Invoke-ScheduleGuardSideChannel {
     }
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Revert bits side track (revertBits.prepareDuringCanaryBvt): while Step 6 runs,
+# follow the revert bits PR → reuse/queue the revert build → 'ready', so Step 7
+# can roll back with it right after approve-bvt (Invoke-RevertBitsTrack.ps1).
+# Throttled to revertBits.prPollIntervalSeconds (default 900); also runs during
+# the chunked sleep. The agent is only invoked to send the event emails.
+# ─────────────────────────────────────────────────────────────────────────────
+$script:lastRevertBitsSync = [datetime]::MinValue
+$script:revertBitsPollSeconds = 900
+try {
+    $rbCfgW = (Get-Content (Join-Path (Get-Location) '.github/skills/zed-agent/service-config.json') -Raw | ConvertFrom-Json).revertBits
+    if ($rbCfgW -and $rbCfgW.PSObject.Properties['prPollIntervalSeconds'] -and [int]$rbCfgW.prPollIntervalSeconds -ge 60) { $script:revertBitsPollSeconds = [int]$rbCfgW.prPollIntervalSeconds }
+} catch { }
+function Invoke-RevertBitsSideChannel {
+    if (((Get-Date) - $script:lastRevertBitsSync).TotalSeconds -lt $script:revertBitsPollSeconds) { return }
+    $script:lastRevertBitsSync = Get-Date
+    try {
+        $rbScript = Join-Path $PSScriptRoot 'Invoke-RevertBitsTrack.ps1'
+        if (-not (Test-Path $rbScript) -or -not (Test-Path $stateFile)) { return }
+        $rbState = (Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json).revertBits
+        if (-not $rbState -or [string]$rbState.phase -notin @('pr-open', 'queue-build', 'building')) { return }
+        $rbArgs = @{
+            Action      = 'Poll'
+            ReleaseId   = $ReleaseId
+            StateFile   = $stateFile
+            StateLock   = $stateLock
+            AuditFile   = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl")
+            ReleaseFile = (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json")
+        }
+        $tokenRb = Get-AzToken "https://dev.azure.com"
+        if ($tokenRb) { $rbArgs.AccessToken = $tokenRb }
+        $rb = & $rbScript @rbArgs
+        if ($rb.NotifyEvent) {
+            & copilot --agent=ZedAgent -p "revert bits $($rb.NotifyEvent) for release $ReleaseId" --allow-all --autopilot --no-ask-user -s
+        }
+    } catch {
+        $auditFileRbErr = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+        @{ ts = (Get-Date -Format 'o'); event = 'revert-bits-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileRbErr -Encoding UTF8
+    }
+}
+# ─────────────────────────────────────────────────────────────────────────────
+# EV2 "deployment done" for pipeline runs that keep running through a long
+# post-deployment managed validation (BCM canary: Canary-ManagedValidation, ~24 h).
+# pipeline-catalog.json → canary.<key>.deploymentDoneWhen = { ev2StepStarted, portalLinkTask }.
+# A poll-ado-pipelines target of such a pipeline becomes status 'deployed' (counts as
+# done) once every region stage succeeded and that EV2 step has started.
+# ─────────────────────────────────────────────────────────────────────────────
+$script:ev2RuleCache = $null
+function Get-DeploymentDoneRules {
+    if ($null -ne $script:ev2RuleCache) { return $script:ev2RuleCache }
+    $rules = @{}
+    try {
+        $cat = Get-Content (Join-Path (Get-Location) '.github/skills/zed-agent/pipeline-catalog.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $svcAdo = (Get-Content (Join-Path (Get-Location) '.github/skills/zed-agent/service-config.json') -Raw -Encoding UTF8 | ConvertFrom-Json).ado
+        if ($cat.PSObject.Properties['canary'] -and $cat.canary) {
+            foreach ($p in $cat.canary.PSObject.Properties) {
+                $w = if ($p.Value.PSObject.Properties['deploymentDoneWhen']) { $p.Value.deploymentDoneWhen } else { $null }
+                if (-not $w -or -not $w.ev2StepStarted -or -not $p.Value.id) { continue }
+                $rules[[string]$p.Value.id] = [pscustomobject]@{
+                    key = $p.Name; step = [string]$w.ev2StepStarted
+                    task = $(if ($w.PSObject.Properties['portalLinkTask'] -and $w.portalLinkTask) { [string]$w.portalLinkTask } else { 'Ev2 Managed SDP Region Agnostic' })
+                    org = [string]$svcAdo.organization; project = [string]$svcAdo.project
+                }
+            }
+        }
+    } catch { }
+    $script:ev2RuleCache = $rules
+    return $rules
+}
+function Update-TargetFromEv2 {
+    param($Target, $Run, $Rule, [string]$AdoToken)
+    $auditEv2 = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+    try {
+        $p = & (Join-Path $PSScriptRoot 'EV2\Get-Ev2DeploymentProgress.ps1') -RunId ([long]$Run.id) -StepName $Rule.step -PortalLinkTask $Rule.task -Organization $Rule.org -Project $Rule.project -AdoToken $AdoToken
+        $info = [pscustomobject]@{
+            phase = $p.Phase; pipelineKey = $Rule.key; rolloutId = $p.RolloutId; portalUrl = $p.PortalUrl; rolloutStatus = $p.RolloutStatus
+            validationStep = $p.ValidationStep; validationStatus = $p.ValidationStatus; validationStartedAt = $p.ValidationStartedAt
+            deployedAt = $p.DeployedAt; reason = $p.Reason; error = $p.Error; checkedAt = (Get-Date).ToUniversalTime().ToString('o')
+        }
+        $Target | Add-Member -NotePropertyName ev2 -NotePropertyValue $info -Force
+        if ($p.Phase -in @('deployed', 'failed')) {
+            $Target | Add-Member -NotePropertyName status -NotePropertyValue $p.Phase -Force
+            @{ ts = (Get-Date -Format 'o'); event = "ev2-$($p.Phase)"; runId = $Run.id; pipelineKey = $Rule.key; rolloutId = $p.RolloutId; portalUrl = $p.PortalUrl; deployedAt = $p.DeployedAt; validationStatus = $p.ValidationStatus; reason = $p.Reason } |
+                ConvertTo-Json -Compress | Add-Content $auditEv2 -Encoding UTF8
+        }
+    } catch {
+        @{ ts = (Get-Date -Format 'o'); event = 'ev2-progress-error'; runId = $Run.id; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditEv2 -Encoding UTF8
+    }
+}
+
 while ($true) {
     if (-not (Test-Path $stateFile)) { Start-Sleep -Seconds 30; continue }
     $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -272,6 +362,7 @@ while ($true) {
 
     # Canary schedule guard: see Invoke-ScheduleGuardSideChannel (also runs during the sleep).
     Invoke-ScheduleGuardSideChannel
+    Invoke-RevertBitsSideChannel
 
     Invoke-ApprovalSideChannel
 
@@ -342,14 +433,19 @@ while ($true) {
             $authFailNotified = $false
             $headers = @{ Authorization = "Bearer $token" }
             $allDone = $true; $anyFailed = $false
+            $ev2Rules = Get-DeploymentDoneRules
             foreach ($t in $dir.targets) {
-                if ($t.status -in @('completed','failed')) { continue }
+                if ($t.status -in @('completed','failed','deployed')) { continue }
                 $resp = Invoke-RestMethod -Uri $t.url -Headers $headers -TimeoutSec 60 -ErrorAction Stop
                 if ($resp.status -eq 'completed') {
                     $t.status = if ($resp.result -eq 'succeeded') { 'completed' } else { 'failed' }
+                } elseif ($resp.definition -and $ev2Rules.ContainsKey([string]$resp.definition.id)) {
+                    # catalog deploymentDoneWhen: the run stays in progress for EV2's post-deployment
+                    # managed validation (~24 h) — the deployment itself is done once that step starts.
+                    Update-TargetFromEv2 -Target $t -Run $resp -Rule $ev2Rules[[string]$resp.definition.id] -AdoToken $token
                 }
                 if ($t.status -eq 'failed') { $anyFailed = $true }
-                if ($t.status -notin @('completed','failed')) { $allDone = $false }
+                if ($t.status -notin @('completed','failed','deployed')) { $allDone = $false }
             }
 
             # Approval requests (OneBranch Approval Service / ADO approvals) are handled by the
@@ -503,6 +599,41 @@ while ($true) {
             $delay = [math]::Min($baseDelay * [math]::Pow(2, $retryCount - 1), 300)
             Start-Sleep -Seconds $delay; continue
         }
+    } elseif ($dir.action -eq 'poll-bvt-releases') {
+        # Steps 6/8/11: the BVT releases created right after the canary deployment
+        # (Invoke-BvtReleases.ps1 -Action Start) — continue once all of their stages finished.
+        try {
+            $token = Get-AzToken "https://dev.azure.com"
+            if (-not $token) {
+                if (-not $authFailNotified) { Write-AuthFailureAudit $ReleaseId $dir.action; $authFailNotified = $true }
+                Start-Sleep -Seconds 300; continue
+            }
+            $authFailNotified = $false
+            $bv = & (Join-Path $PSScriptRoot 'Invoke-BvtReleases.ps1') -Action Poll -ReleaseId $ReleaseId -Step ([int]$dir.step) `
+                -StateFile $stateFile -StateLock $stateLock `
+                -AuditFile (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl") `
+                -ReleaseFile (Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/release.json") -AccessToken $token
+            if ($bv.Phase -in @('failed', 'timed-out')) {
+                Invoke-WithStateLock -LockFile $stateLock -Action {
+                    $latest = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $latest.watcherDirective = [pscustomobject]@{ action = 'none' }
+                    $latest | ConvertTo-Json -Depth 10 | Set-Content $stateFile -Encoding UTF8 -NoNewline
+                }
+                & copilot --agent=ZedAgent -p $dir.onFailure --allow-all --autopilot --no-ask-user -s
+                Start-Sleep -Seconds 30; continue
+            }
+            if ($bv.Error) { throw $bv.Error }   # transient read error — retry with backoff
+            $retryCount = 0
+            $conditionMet = ($bv.Phase -eq 'completed')
+        } catch {
+            $retryCount++
+            if ($retryCount -ge $maxRetries) {
+                & copilot --agent=ZedAgent -p $dir.onFailure --allow-all --autopilot --no-ask-user -s
+                break
+            }
+            $delay = [math]::Min($baseDelay * [math]::Pow(2, $retryCount - 1), 300)
+            Start-Sleep -Seconds $delay; continue
+        }
     } else {
         # Single-target polling (poll-ado-build, poll-ado-pipelines, poll-onedrive-file, wait-timer, safefly-approval-poll)
         try {
@@ -567,6 +698,7 @@ while ($true) {
         $remaining -= $chunk
         # Approval requests can't wait an hour — check them on their own (shorter) cadence.
         Invoke-ScheduleGuardSideChannel
+        Invoke-RevertBitsSideChannel
         Invoke-ApprovalSideChannel
         if (Test-Path $stateFile) {
             try {

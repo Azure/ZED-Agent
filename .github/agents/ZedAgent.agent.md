@@ -257,7 +257,8 @@ Callers pass an `EventKey` to `Resolve-NotificationRecipients.ps1`. The helper m
 | `ri-pr-raised`, `fi-pr-raised`  | `2-cut-branch.halt` (Step 2a/2b integration PR opened)               |
 | `private-stamp-input-needed`, `private-stamp-bvt-ready` | `5-deploy-canary.halt` (private stamp upgrade side track) |
 | `private-stamp-failed`          | `5-deploy-canary.failure` (private stamp leg failed)                 |
-| `revert-bits-select`, `revert-bits-pr-raised`, `revert-bits-bvt-ready` | `7-rollback.halt` (revert bits pre-phase)          |
+| `revert-bits-select`, `revert-bits-pr-raised`, `revert-bits-bvt-ready`, `revert-bits-ready` | `7-rollback.halt` (revert bits pre-phase)          |
+| `revert-bits-failed` | `7-rollback.failure` (revert bits PR abandoned / build failed) |
 | `approval-needed`, `approval-reminder`, `approval-expiring` | `approval-requests.halt` (pipeline waiting on Approval Service / ADO approval, any step) |
 | `approval-failed`               | `approval-requests.failure` (approval task ended without approval)   |
 | `schedule-guard-disabled`, `schedule-guard-preexisting`, `schedule-guard-restored`, `schedule-guard-failed`, `schedule-guard-cancel-failed` | unmapped → owner-only (canary schedule guard) |
@@ -454,7 +455,7 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 | 4 | `collect-commits` | Collect & Analyze Commit Details | Async (watcher) |
 | 5 | `deploy-canary` | Deploy Canary | Async (watcher) |
 | 6 | `bvt-check` | BVT Check | Async (timer + Kusto) + Approval |
-| 7 | `rollback` | Rollback (preceded by revert bits 7a–7d when `CONFIG[revertBits.enabled]`: settings selection → PR → revert build → owner BVT) | Async (watcher) (+ `revert-bits preserve` / `approve-revert` when revert bits enabled) |
+| 7 | `rollback` | Rollback (preceded by revert bits 7a–7d when `CONFIG[revertBits.enabled]`: settings selection → PR → revert build → owner BVT; with `prepareDuringCanaryBvt` the revert build is prepared during Step 6 and used right after `approve-bvt`, its BVT is Step 8) | Async (watcher) (+ `revert-bits preserve` / `approve-revert` when revert bits enabled) |
 | 8 | `post-rollback-bvt` | Post-Rollback BVT | Async (timer + Kusto) |
 | 9 | `post-rollback-signoff` | Post-Rollback Sign-off | Approval |
 | 10 | `roll-forward` | Roll-Forward (PROD pipelines → canary regions) | Async (watcher) |
@@ -493,6 +494,12 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 **Approval requests:** every ZED-triggered deployment run waiting on the OneBranch Approval Service (or an ADO approval) is found by `Invoke-ApprovalWatch.ps1` (watcher side-channel, every 10 min) — record run ids in `triggeredPipelines.<N>` at every trigger. When the watcher invokes you with `approval <event> <id> for release <id>`, send `state.approvalRequests.<id>.lastMessage` verbatim by email (`SendEmailWithAttachments`, HTML) and Teams (`Send-TeamsMessage -Body`) to the recipients from `Resolve-NotificationRecipients -EventKey <lastMessage.eventKey>`, then EXIT — do not re-run the current step (see `step-behaviors.md → Approval requests`).
 
 **Canary schedule guard:** canary pipelines with `scheduleGuard` in the catalog (BCM-EACAN: UI schedule trigger removed + `enableSchedule`, runs ZED did not queue cancelled) are paused by ZED once ZED's own Step 5 run of them succeeds and resumed on `approve-bvt` (Step 6) — via `Invoke-ScheduleGuard.ps1` only, never by editing the pipeline or cancelling runs any other way. ZED must never trigger a guarded pipeline while ZED has it disabled (Step 7 restores first and halts if it can't). When the watcher invokes you with `schedule guard <event> <key> [run <runId>] for release <id>`, send that email (owner-only; `schedule-guard-run-cancelled` also to the person who queued the run — per `step-behaviors.md → Canary schedule guard`) and EXIT.
+
+**EV2 deployment done:** canary pipelines with `deploymentDoneWhen` in the catalog (BCM-CANARY → `Canary-ManagedValidation`) stay in progress ~24 h after deploying. The watcher marks such a run `deployed` once `scripts/EV2/Get-Ev2DeploymentProgress.ps1` reports every canary region deployed and that EV2 step started, so Step 5/7 completes then and the BVT timer runs in parallel with the validation. On completion record `state.ev2DeployedRuns.<step>`; when the BVT window ends check how those runs finished; never trigger Steps 7/10/15 while one is still running (see `step-behaviors.md → EV2 deployment done`). When resuming a step yourself, use the same script for runs of such pipelines that are still in progress.
+
+**BVT releases:** when `pipeline-catalog.json → bvtReleases.steps` contains the BVT step (BCM: 6, 8, 11), do NOT arm the 24 h timer. Run `scripts/Invoke-BvtReleases.ps1 -Action Start -Step <N>` (creates the configured releases — BCM 40785 + 47437 with `MABIsOfficial=true`), email the owner the release links and arm `poll-bvt-releases`. When the watcher continues the release, run the step's BVT actions and put the releases table (`-Action Get` → `.Summary`) in the BVT email; a release that ended rejected fails the step (`ack retry` → `-Action Start -Rerun`). Never create these releases by hand. See `step-behaviors.md → BVT releases`.
+
+**Revert bits during the canary BVT:** with `CONFIG[revertBits.prepareDuringCanaryBvt]` (BCM) start the revert bits at **Step 6 entry** (7a Plan + selection email; 7b Prepare + PR on `revert-bits preserve`) but arm no directive for them — `scripts/Invoke-RevertBitsTrack.ps1` (watcher side-channel) follows the PR, reuses/queues the revert build and sets `phase = "ready"`. On `approve-bvt` Step 7 rolls back with the ready build at once (pinned to `state.revertBits.buildId`) or waits for `ready`; Step 8 BVT is the revert bits BVT — no `approve-revert`. When the watcher invokes you with `revert bits <event> for release <id>`, send that email (and continue Step 7 if it was waiting for `revert-bits-ready`). See `step-behaviors.md → Step 7 — Revert bits → Prepared during the canary BVT`.
 
 # Step Execution Loop
 

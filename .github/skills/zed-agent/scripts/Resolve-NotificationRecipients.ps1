@@ -33,6 +33,8 @@
       revert-bits-select         -> (7,  halt)     revert bits: owner picks the settings to keep
       revert-bits-pr-raised      -> (7,  halt)     revert bits PR opened, owner must merge
       revert-bits-bvt-ready      -> (7,  halt)     revert build ready, owner runs BVT
+      revert-bits-ready          -> (7,  halt)     revert build ready during canary BVT (prepareDuringCanaryBvt)
+      revert-bits-failed         -> (7,  failure)  revert bits PR abandoned / build failed / track error
       approval-needed / approval-reminder / approval-expiring -> ('approval-requests', halt)
       approval-failed            -> ('approval-requests', failure)   (Invoke-ApprovalWatch.ps1)
       commit-request             -> (4,  success)
@@ -105,6 +107,8 @@ $LegacyMap = @{
     'revert-bits-select'         = @{ Step = 7; Outcome = 'halt'    }
     'revert-bits-pr-raised'      = @{ Step = 7; Outcome = 'halt'    }
     'revert-bits-bvt-ready'      = @{ Step = 7; Outcome = 'halt'    }
+    'revert-bits-ready'          = @{ Step = 7; Outcome = 'halt'    }
+    'revert-bits-failed'         = @{ Step = 7; Outcome = 'failure' }
     'commit-request'         = @{ Step = 4;  Outcome = 'success' }
     'create-r2d'             = @{ Step = 13; Outcome = 'success' }
     'ev2-stage-progress'     = @{ Step = 15; Outcome = 'success' }

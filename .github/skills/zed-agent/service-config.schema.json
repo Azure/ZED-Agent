@@ -300,7 +300,8 @@
         "files": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Repo-relative settings files to compare (every '.../Properties' object: defaults, per cloud, per stamp)." },
         "preserveAlways": { "type": "array", "items": { "type": "string" }, "description": "Setting keys always kept from this release when they changed (any scope), e.g. 'BCMAppConfig->BCMTeeWorkflowVersion'." },
         "useForRollback": { "type": "boolean", "default": true, "description": "Step 7 deploys the revert build (ArtifactsBranch = revert branch) instead of release.previousBranch." },
-        "prPollIntervalSeconds": { "type": "integer", "minimum": 60, "default": 900 }
+        "prPollIntervalSeconds": { "type": "integer", "minimum": 60, "default": 900 },
+        "prepareDuringCanaryBvt": { "type": "boolean", "default": false, "description": "Prepare the revert bits WHILE the canary BVT (Step 6) runs instead of after approve-bvt: 7a plan + owner selection + PR at Step 6 entry; the watcher side-channel (scripts/Invoke-RevertBitsTrack.ps1) follows the PR, reuses/queues the revert build and marks it 'ready'. Right after approve-bvt Step 7 rolls canary back with the ready revert build and Step 8 runs the BVT on it — no separate approve-revert." }
       }
     },
 

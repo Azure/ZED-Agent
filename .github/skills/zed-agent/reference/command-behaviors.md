@@ -65,6 +65,7 @@ Step 5:  (automatic)          ← Deploys canary (CANARY pipelines → EACan/ECY
 Step 6:  (automatic)          ← BVT check runs, frontliners notified if failures
 Step 7:  (automatic)          ← Rollback (CANARY pipelines with previous bits)
          └ revertBits:        ← revert-bits preserve … → PR (owner merges) → revert build → owner BVT → approve-revert → rollback uses the revert build
+                                (prepareDuringCanaryBvt: selection/PR/build during Step 6 → ready → rollback right after approve-bvt; BVT = Step 8)
 Step 8:  (automatic)          ← Post-rollback BVT check runs
 Step 9:  approve-rollback     ← Release owner reviews post-rollback results, approves
 Step 10: (automatic)          ← Roll-forward (PROD pipelines → canary regions)
@@ -286,11 +287,14 @@ When the release owner says `approve-private-stamp` or `approve private-stamp`:
 Only meaningful when `CONFIG[revertBits.enabled]`. Spec: `step-behaviors.md → Step 7 — Revert bits (7a–7d)`. All git work goes through `scripts/Invoke-RevertBits.ps1`.
 
 - **`revert-bits base <sha|branch>`** — accepted while `state.revertBits.phase == "needs-previous-commit"` (or `awaiting-selection`, to correct it). Resolve to a full sha (`git rev-parse`), store `state.revertBits.previousCommit`, re-run 7a (`-Action Plan -PreviousCommit <sha>`) and send the selection email. Warn if the commit is not an ancestor of the current release commit.
-- **`revert-bits preserve <list>`** — accepted while `phase == "awaiting-selection"`. `<list>` = setting numbers from the plan (`2,4,7`), `all`, or `none`; `CONFIG[revertBits.preserveAlways]` settings (BCM: `BCMAppConfig->BCMTeeWorkflowVersion`) are always included and need not be listed. Echo the resolved list (number, scope, setting, kept value) before running 7b; on an invalid number show the error and the valid range and change nothing.
+- **`revert-bits preserve <list>`** — accepted while `phase == "awaiting-selection"` (with `CONFIG[revertBits.prepareDuringCanaryBvt]` this is asked — and answered — during Step 6). `<list>` = setting numbers from the plan (`2,4,7`), `all`, or `none`; `CONFIG[revertBits.preserveAlways]` settings (BCM: `BCMAppConfig->BCMTeeWorkflowVersion`) are always included and need not be listed. Echo the resolved list (number, scope, setting, kept value) before running 7b; on an invalid number show the error and the valid range and change nothing.
 - **`revert-bits status`** — show `state.revertBits` (phase, commits, kept settings, PR, build) and the plan table.
-- **`revert-bits skip <reason>`** — any phase before `signed-off`: `phase = "skipped"`, `skippedReason`, Step 7 → `in-progress` and continue with Step 7 Action 1 using `release.previousBranch`. Ask for a reason if missing. An already-open PR or branch is left as is (mention it).
+- **`revert-bits skip <reason>`** — any phase before `signed-off` / `ready`: `phase = "skipped"`, `skippedReason`; if Step 7 is already running/waiting, Step 7 → `in-progress` and continue with Step 7 Action 1 using the previous release (`release.previousBranch` / `release.previousBuildId`). Ask for a reason if missing. An already-open PR or branch is left as is (mention it).
+- **`ack retry`** while `phase == "failed"` (prepareDuringCanaryBvt): PR abandoned → re-run 7b (Prepare is idempotent, opens a new PR); build failed → `phase = "queue-build"` (the side-channel queues a new build). Clear `lastError`.
 
 ## approve-revert — Sign Off the Revert Build
+
+Not used with `CONFIG[revertBits.prepareDuringCanaryBvt]` — there the revert build is used as soon as it is `ready` and its BVT is Step 8 (BVT releases after the rollback); reply that and change nothing.
 
 When the release owner says `approve-revert` (or `approve revert`):
 
@@ -316,6 +320,7 @@ When the release owner says `approve-bvt`:
 2. Record approval: `state.json → approvals.bvt`
 3. Set step 6 → `completed`, advance to step 7
 4. **Canary schedule guard**: run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason approve-bvt` and send an email per `NotifyEvents` entry (e.g. BCM-EACAN: schedule trigger re-added, `enableSchedule` → `true`). See `step-behaviors.md → Canary schedule guard`.
+4a. **Revert bits prepared during the canary BVT** (`CONFIG[revertBits.prepareDuringCanaryBvt]`): Step 7 starts right away — `state.revertBits.phase == "ready"` → rollback with the revert build now; still in progress → Step 7 waits for `ready` (tell the owner what it waits for: selection / PR merge / build). See `step-behaviors.md → Step 7 — Revert bits → Prepared during the canary BVT`.
 5. Resume execution loop
 6. Log in audit
 

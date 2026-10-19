@@ -124,6 +124,29 @@
         "buildDefinitionId": { "type": "integer", "description": "Official build pipeline id (normally = officialBuild.id)." }
       }
     },
+    "bvtReleases": {
+      "type": "object",
+      "description": "Optional. Classic BVT releases that replace the fixed 24 h BVT wait in the listed steps (6 after canary, 8 after rollback, 11 after roll-forward): ZED creates every release right after the deployment (latest artifact versions, `variables` overridden) and the BVT step continues once all of their stages have finished. Script: scripts/Invoke-BvtReleases.ps1. See step-behaviors.md → BVT releases.",
+      "required": ["steps", "releases"],
+      "additionalProperties": false,
+      "properties": {
+        "steps": { "type": "array", "items": { "type": "integer", "enum": [6, 8, 11] }, "minItems": 1, "uniqueItems": true },
+        "timeoutHours": { "type": "number", "minimum": 1, "default": 12, "description": "Fail the BVT step if the releases have not finished after this many hours." },
+        "releases": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": ["definitionId"],
+            "additionalProperties": false,
+            "properties": {
+              "definitionId": { "type": "integer", "description": "Classic release definition id (…/_release?definitionId=<id>)." },
+              "variables": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Release variables to override (must be 'Settable at release time'), e.g. { \"MABIsOfficial\": \"true\" }." }
+            }
+          }
+        }
+      }
+    },
     "privateStampUpgrade": {
       "type": "object",
       "description": "Optional private stamp upgrade test — a side track kicked off at Step 5 (parallel to canary) and joined at Step 13 (SafeFly R2D waits for the owner's sign-off). Two runs of the private stamp pipeline on ONE owner-chosen instance, queued in parallel: leg 'last' (owner-supplied last build branch, port 1) and leg 'current' (release.currentBranch, port 2), both with the same ServiceOverrideSettings built from the owner-supplied queue name; then the optional bvtRelease against the owner-supplied redirected vault. Inputs are asked from the owner every release (never cached). Script: scripts/Invoke-PrivateStampUpgrade.ps1.",
@@ -257,6 +280,16 @@
             "disabledValue": { "type": "string", "default": "false" },
             "enabledValue":  { "type": "string", "default": "true" },
             "cancelForeignRuns": { "type": "boolean", "default": false, "description": "While guarded (ZED's Step 5 run succeeded → Step 6 signed off), cancel queued/running runs of this pipeline that ZED did not queue (manual runs, cron runs). A run queued before ZED's Step 5 run is cancelled only once it starts. The owner and the person who queued the run are emailed. Checked every operational.scheduleGuardPollIntervalSeconds (default 300)." }
+          }
+        },
+        "deploymentDoneWhen": {
+          "type": "object",
+          "description": "Canary pipelines whose run stays in progress through a long EV2 post-deployment step (BCM-CANARY: 'Canary-ManagedValidation', ~24 h). ZED reads the EV2 portal link from the run (task <portalLinkTask>) and asks the EV2 API; once every '<prefix>.<region>' stage succeeded and <ev2StepStarted> has started, the run counts as deployed (watcher target status 'deployed') and Step 5 (Step 7 for rollback) completes without waiting for the run. The run's final result is re-checked when the following BVT window ends. Prod cloud only (gov-cloud EV2 APIs are not reachable — those runs are tracked by the pipeline result). Script: scripts/EV2/Get-Ev2DeploymentProgress.ps1.",
+          "required": ["ev2StepStarted"],
+          "additionalProperties": false,
+          "properties": {
+            "ev2StepStarted": { "type": "string", "minLength": 1, "description": "EV2 step (action StepName) that starts right after the deployment, e.g. 'Canary-ManagedValidation'. Its region stages are '<name without -ManagedValidation>.<region>'." },
+            "portalLinkTask": { "type": "string", "default": "Ev2 Managed SDP Region Agnostic", "description": "Pipeline task whose log prints 'Ev2 portal link - https://ra.ev2portal.azure.net/#/rollouts/...'." }
           }
         },
         "sdpType": {

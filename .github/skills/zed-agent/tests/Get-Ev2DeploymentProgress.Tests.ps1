@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Pester tests for EV2\Get-Ev2DeploymentProgress.ps1 — "is the canary deployment done?" from the
-    EV2 rollout (Canary-ManagedValidation started) instead of waiting ~24 h for the pipeline run.
+    EV2 region stages succeeded, without waiting for managed validation or the pipeline run.
     Shapes copied from BCM canary run 186291713 / rollout 481dbbb6-f88e-4b5e-8027-2e5630017555.
 #>
 
@@ -55,7 +55,7 @@ Describe 'Get-Ev2DeploymentProgress' {
         $p.Success | Should -BeTrue
         $p.Phase | Should -Be 'deployed'
         $p.Deployed | Should -BeTrue
-        $p.DeployedAt | Should -Match '^2026-10-17T12:04:23'
+        $p.DeployedAt | Should -Match '^2026-10-17T12:04:08'
         $p.ValidationStatus | Should -Be 'Running'
         $p.ValidationEndedAt | Should -BeNullOrEmpty
         $p.RolloutId | Should -Be '481dbbb6-f88e-4b5e-8027-2e5630017555'
@@ -74,15 +74,49 @@ Describe 'Get-Ev2DeploymentProgress' {
         $p.Reason | Should -Be 'rollout succeeded'
     }
 
-    It 'is still deploying while a region is running or the validation has not started' {
-        $global:AwRollout = New-Rollout -Regions @{ centraluseuap = 'Succeeded'; eastus2euap = 'Running' } -V $null
-        (Invoke-P).Phase | Should -Be 'deploying'
-        (Invoke-P).Reason | Should -Match 'eastus2euap=Running'
+    It 'is deployed with validation <Validation> not started' -ForEach @(
+        @{ Validation = 'NotStarted' }
+        @{ Validation = 'Pending' }
+        @{ Validation = 'Waiting' }
+        @{ Validation = 'Skipped' }
+        @{ Validation = '' }
+    ) {
+        $global:AwRollout = New-Rollout -V $Validation -VStart '0001-01-01T00:00:00'
+        $p = Invoke-P
+        $p.Success | Should -BeTrue
+        $p.Phase | Should -Be 'deployed'
+        $p.Deployed | Should -BeTrue
+        $p.DeployedAt | Should -Match '^2026-10-17T12:04:08'
+        $p.ValidationStartedAt | Should -BeNullOrEmpty
+        if ($Validation) { $p.ValidationStatus | Should -Be $Validation }
+        else { $p.ValidationStatus | Should -BeNullOrEmpty }
+        $p.Reason | Should -Match 'not required for deployment completion'
+    }
 
-        $global:AwRollout = New-Rollout -V 'NotStarted' -VStart '0001-01-01T00:00:00'
+    It 'uses the last regional completion time rather than validation start' {
+        $global:AwRollout.StageInfos | Where-Object StageName -eq 'Canary.eastus2euap' | ForEach-Object { $_.EndTime = '2026-10-17T12:05:00Z' }
+        (Invoke-P).DeployedAt | Should -Match '^2026-10-17T12:05:00'
+    }
+
+    It 'blocks a <RegionStatus> region even if the rollout says <RolloutStatus>' -ForEach @(
+        @{ RegionStatus = 'Running'; RolloutStatus = 'Running' }
+        @{ RegionStatus = 'Pending'; RolloutStatus = 'Running' }
+        @{ RegionStatus = 'NotStarted'; RolloutStatus = 'Succeeded' }
+        @{ RegionStatus = 'Skipped'; RolloutStatus = 'Succeeded' }
+    ) {
+        $global:AwRollout = New-Rollout -Status $RolloutStatus -Regions @{ centraluseuap = 'Succeeded'; eastus2euap = $RegionStatus }
         $p = Invoke-P
         $p.Phase | Should -Be 'deploying'
-        $p.Reason | Should -Match 'Canary-ManagedValidation not started yet'
+        $p.Deployed | Should -BeFalse
+        $p.Reason | Should -Match "eastus2euap=$RegionStatus"
+    }
+
+    It 'does not infer deployment from validation or rollout success without region stages' {
+        $global:AwRollout = New-Rollout -Status 'Succeeded' -Regions @{} -V 'Succeeded'
+        $p = Invoke-P
+        $p.Deployed | Should -BeFalse
+        $p.Phase | Should -Be 'deploying'
+        $p.Reason | Should -Match 'no.*region stages'
     }
 
     It 'reports failed for a failed region, validation or rollout' {
@@ -93,7 +127,33 @@ Describe 'Get-Ev2DeploymentProgress' {
         $p.Reason | Should -Match 'centraluseuap=Failed'
 
         $global:AwRollout = New-Rollout -Status 'Failed' -V 'Failed'
-        (Invoke-P).Reason | Should -Match 'Canary-ManagedValidation Failed'
+        $p = Invoke-P
+        $p.Reason | Should -Match 'Canary-ManagedValidation Failed'
+        $p.Phase | Should -Be 'failed'
+        $p.Deployed | Should -BeFalse
+        $p.ValidationStatus | Should -Be 'Failed'
+    }
+
+    It 'blocks a <BadStatus> region regardless of aggregate rollout success' -ForEach @(
+        @{ BadStatus = 'Failed' }
+        @{ BadStatus = 'Canceled' }
+        @{ BadStatus = 'Aborted' }
+        @{ BadStatus = 'TimedOut' }
+        @{ BadStatus = 'Rollback' }
+    ) {
+        $global:AwRollout = New-Rollout -Status 'Succeeded' -Regions @{ centraluseuap = $BadStatus; eastus2euap = 'Succeeded' } -V 'Pending'
+        $p = Invoke-P
+        $p.Phase | Should -Be 'failed'
+        $p.Deployed | Should -BeFalse
+        $p.Reason | Should -Match "centraluseuap=$BadStatus"
+    }
+
+    It 'retains rollout failure as a blocker even with successful regions and pending validation' {
+        $global:AwRollout = New-Rollout -Status 'Failed' -V 'Pending'
+        $p = Invoke-P
+        $p.Phase | Should -Be 'failed'
+        $p.Deployed | Should -BeFalse
+        $p.Reason | Should -Be 'rollout Failed'
     }
 
     It 'returns no-rollout while the run has no EV2 portal link (e.g. waiting on the Approval Service)' {

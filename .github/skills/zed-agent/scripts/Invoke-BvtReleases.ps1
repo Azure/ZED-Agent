@@ -2,7 +2,7 @@
 .SYNOPSIS
     BVT releases instead of a fixed BVT wait: after a canary deployment (Steps 5, 7, 10) ZED creates
     the configured classic BVT releases (BCM: 40785 IaaSVM-CloudTest-Scheduled-Canary and 47437
-    IaaSVM-LHT-CloudTest-Canary, MABIsOfficial=true) and the BVT step (6, 8, 11) continues as soon as
+    IaaSVM-LHT-CloudTest-Canary, MABIsOfficial="True") and the BVT step (6, 8, 11) continues as soon as
     all of their stages have finished — not after 24 h.
 
 .DESCRIPTION
@@ -11,7 +11,7 @@
           "steps": [6, 8, 11],                       # BVT steps that use the releases
           "timeoutHours": 12,                        # Poll → Phase 'timed-out' after this
           "releases": {
-            "<key>": { "definitionId": 40785, "variables": { "MABIsOfficial": "true" } }, ...
+            "<key>": { "definitionId": 40785, "variables": { "MABIsOfficial": "True" } }, ...
           }
         }
     Each release is created like the portal's "Create release": every artifact's default (latest)
@@ -117,6 +117,9 @@ function New-BvtRelease([string]$Key, $Cfg) {
     $defId = [int]$Cfg.definitionId
     $run = [ordered]@{ definitionId = $defId; definitionName = $null; releaseId = $null; name = $null; url = $null; createdAt = (Get-NowIso); status = 'running'; outcome = $null; stages = @(); summary = $null; finishedAt = $null; artifacts = @(); error = $null }
     try {
+        if ($Cfg.variables -and $Cfg.variables.PSObject.Properties['MABIsOfficial']) {
+            Assert-OfficialValue $Cfg.variables.MABIsOfficial
+        }
         $versions = Invoke-RestMethod -Uri "$vsrm/artifacts/versions?releaseDefinitionId=$defId&api-version=7.1" -Headers $headers -ErrorAction Stop
         $artifacts = @()
         foreach ($av in @($versions.artifactVersions)) {
@@ -130,7 +133,13 @@ function New-BvtRelease([string]$Key, $Cfg) {
             foreach ($p in $Cfg.variables.PSObject.Properties) { $vars[$p.Name] = [ordered]@{ value = [string]$p.Value } }
         }
         $body = [ordered]@{ definitionId = $defId; isDraft = $false; description = "ZED $($script:ServiceName) release $ReleaseId — Step $Step BVT"; artifacts = $artifacts; variables = $vars } | ConvertTo-Json -Depth 8
+        # Capture the actual serialized payload, not a later editable release variable.
+        $posted = $body | ConvertFrom-Json
+        if ($vars.Contains('MABIsOfficial')) { Assert-OfficialValue $posted.variables.MABIsOfficial.value }
         $rel = Invoke-RestMethod -Uri "$vsrm/releases?api-version=7.1" -Method POST -Headers $headers -Body $body -ErrorAction Stop
+        $run['creationVariables'] = @{}
+        # Only this non-secret contract value is needed as provenance.
+        if ($vars.Contains('MABIsOfficial')) { $run.creationVariables['MABIsOfficial'] = $posted.variables.MABIsOfficial.value }
         $run.releaseId = [long]$rel.id; $run.name = [string]$rel.name
         $run.definitionName = if ($rel.releaseDefinition) { [string]$rel.releaseDefinition.name } else { $null }
         $run.url = if ($rel._links -and $rel._links.web -and $rel._links.web.href) { [string]$rel._links.web.href } else { "https://dev.azure.com/$($script:Organization)/$($script:Project)/_releaseProgress?_a=release-pipeline-progress&releaseId=$($rel.id)" }
@@ -144,10 +153,84 @@ function New-BvtRelease([string]$Key, $Cfg) {
     return $run
 }
 
+function Assert-OfficialValue($Value) {
+    if ($Value -isnot [string] -or $Value -cne 'True') {
+        throw 'BVT_VARIABLE_INVALID: MABIsOfficial must be the case-sensitive string "True" (not a Boolean or "true").'
+    }
+}
+
+# An explicitly verified retry is separate from creation provenance. Bind it to the latest
+# deployment/phase and re-read its task log even on Get (cached completion is not a bypass).
+function Assert-VerifiedAttempts($Run) {
+    $proof = $Run['verifiedAttempts']
+    if (-not $proof -or [long]$proof['releaseId'] -ne [long]$Run['releaseId']) { throw 'Missing attempt provenance.' }
+    Assert-OfficialValue $proof['MABIsOfficial']
+    $base = "https://vsrm.dev.azure.com/$($script:Organization)/$($script:Project)/_apis/release/releases/$($Run['releaseId'])"
+    $headers = @{ Authorization = "Bearer $(Get-AdoToken)" }
+    $rel = Invoke-RestMethod -Uri "${base}?api-version=7.1" -Headers $headers -TimeoutSec 30 -ErrorAction Stop
+    Assert-OfficialValue $rel.variables.MABIsOfficial.value
+    $checked = 0
+    foreach ($env in @($rel.environments)) {
+        $mapped = @($env.deployPhasesSnapshot | ForEach-Object { $_.workflowTasks } | Where-Object {
+            $_.inputs.parserProperties -cmatch '(?:^|;)worker:MABIsOfficialRun=\$\(MABIsOfficial\)(?:;|$)'
+        })
+        if (-not $mapped.Count) { continue }
+        if ($mapped.Count -ne 1) { throw 'Ambiguous official-variable task mapping.' }
+        $rows = @($proof['environments'] | Where-Object { [long]$_['environmentId'] -eq [long]$env.id })
+        if ($rows.Count -ne 1) { throw "Missing/duplicate attempt proof for environment $($env.id)." }
+        $row = $rows[0]
+        $latest = @($env.deploySteps | Sort-Object attempt -Descending)[0]
+        if (-not $latest -or [int]$latest.attempt -ne [int]$row['attempt'] -or [long]$latest.id -ne [long]$row['deploymentId']) {
+            throw "Unverified newer/different attempt for environment $($env.id)."
+        }
+        $phases = @($latest.releaseDeployPhases | Where-Object { [long]$_.id -eq [long]$row['phaseId'] })
+        if ($phases.Count -ne 1) { throw 'Attempt phase identity mismatch.' }
+        $tasks = @($phases[0].deploymentJobs | ForEach-Object { $_.tasks } | Where-Object { [int]$_.id -eq [int]$row['taskId'] })
+        if ($tasks.Count -ne 1 -or $tasks[0].name -cne $row['taskName']) { throw 'Attempt task identity mismatch.' }
+        # Construct the URL ourselves; never send auth to an evidence-provided URL.
+        $url = "$base/environments/$($env.id)/deployPhases/$($row['phaseId'])/tasks/$($row['taskId'])/logs"
+        $text = [string](Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 20 -ErrorAction Stop).Content
+        $lines = @($text -split "`n")
+        $line = [int]$row['line']
+        if ($line -lt 1 -or $line -gt $lines.Count) { throw 'Attempt log evidence line missing.' }
+        $values = @([regex]::Matches($lines[$line - 1], '(?:^|[;"\s])worker:MABIsOfficialRun=([^;"\s]+)'))
+        if ($values.Count -ne 1) { throw 'Missing/ambiguous consumed official value.' }
+        Assert-OfficialValue $values[0].Groups[1].Value
+        $checked++
+    }
+    if ($checked -eq 0 -or $checked -ne @($proof['environments']).Count) { throw 'Incomplete attempt coverage.' }
+}
+
+function Test-RunEvidence([string]$Key, $Run) {
+    if ($Run['status'] -eq 'failed-to-start') { return $Run }
+    $entry = if ($cfg -and $cfg.releases) { $cfg.releases.$Key } else { $null }
+    $requiresOfficial = $entry -and $entry.variables -and $entry.variables.PSObject.Properties['MABIsOfficial']
+    if ($requiresOfficial -or ($Run['creationVariables'] -and $Run['creationVariables'].Contains('MABIsOfficial'))) {
+        try {
+            if ($Run['verifiedAttempts']) { Assert-VerifiedAttempts $Run }
+            else { Assert-OfficialValue $Run['creationVariables']['MABIsOfficial'] }
+        } catch {
+            $Run['status'] = 'invalid-evidence'
+            $Run['error'] = 'BVT_VARIABLE_EVIDENCE_INVALID: missing or invalid creation-time MABIsOfficial="True". Editing a live release does not repair consumed job variables; owner-approved replacement or attempt-level verification is required.'
+            Write-Audit @{ event = 'bvt-evidence-invalid'; step = $Step; key = $Key; releaseId = $Run['releaseId']; error = $Run['error'] }
+        }
+    }
+    return $Run
+}
+
 function Update-Run([string]$Key, $Run) {
+    $Run = Test-RunEvidence $Key $Run
     if ($Run['status'] -ne 'running' -or -not $Run['releaseId']) { return $Run }
     $headers = @{ Authorization = "Bearer $(Get-AdoToken)" }
     $rel = Invoke-RestMethod -Uri "https://vsrm.dev.azure.com/$($script:Organization)/$($script:Project)/_apis/release/releases/$($Run['releaseId'])?api-version=7.1" -Headers $headers -ErrorAction Stop
+    if ($Run['creationVariables'] -and $Run['creationVariables'].Contains('MABIsOfficial')) {
+        try { Assert-OfficialValue $rel.variables.MABIsOfficial.value }
+        catch {
+            $Run['status'] = 'invalid-evidence'; $Run['error'] = $_.Exception.Message
+            Write-Audit @{ event = 'bvt-evidence-invalid'; step = $Step; key = $Key; releaseId = $Run['releaseId']; error = $Run['error'] }
+            return $Run
+        }
+    }
     $envs = @($rel.environments | Sort-Object rank)
     $Run['stages'] = @($envs | ForEach-Object { [ordered]@{ name = [string]$_.name; status = [string]$_.status } })
     $Run['summary'] = ($envs | ForEach-Object { "$($_.name)=$($_.status)" }) -join '; '
@@ -167,7 +250,7 @@ function Update-Run([string]$Key, $Run) {
 function Get-Phase($S) {
     if (-not $S) { return $null }
     $runs = @($S['runs'].Values)
-    if (@($runs | Where-Object { $_['status'] -eq 'failed-to-start' }).Count) { return 'failed' }
+    if (@($runs | Where-Object { $_['status'] -in @('failed-to-start', 'invalid-evidence') }).Count) { return 'failed' }
     if ($runs.Count -and @($runs | Where-Object { $_['status'] -ne 'completed' }).Count -eq 0) { return 'completed' }
     return [string]$S['status']
 }
@@ -178,7 +261,7 @@ function Format-Summary($S) {
     foreach ($k in @($S['runs'].Keys | Sort-Object)) {
         $r = $S['runs'][$k]
         $label = if ($r['definitionName']) { "$($r['definitionName']) $($r['name'])" } else { "$k $($r['name'])" }
-        $o = if ($r['status'] -eq 'failed-to-start') { "failed to start: $($r['error'])" } elseif ($r['outcome']) { $r['outcome'] } else { 'running' }
+        $o = if ($r['status'] -in @('failed-to-start', 'invalid-evidence')) { "$($r['status']): $($r['error'])" } elseif ($r['outcome']) { $r['outcome'] } else { 'running' }
         $lines += "| [$label]($($r['url'])) | $o | $($r['summary']) |"
     }
     return ($lines -join "`n")
@@ -208,7 +291,7 @@ try {
     $script:ServiceName = if ($svc -and $svc.service.displayName) { $svc.service.displayName } elseif ($svc) { $svc.service.name } else { '' }
 
     switch ($Action) {
-        'Get' { }
+        'Get' { } # The common output path below validates cached evidence too.
         'Start' {
             if (-not $cfg -or -not $cfg.releases -or @($cfg.steps) -notcontains $Step) { throw "pipeline-catalog.json has no bvtReleases for Step $Step." }
             if ($release -and $release.testMode) { $out.Phase = 'skipped'; $out.Success = $true; break }
@@ -216,7 +299,7 @@ try {
             $cur = Get-StepState
             $todo = @($keys | Where-Object {
                 $r = if ($cur -and $cur['runs'] -and $cur['runs'].ContainsKey($_)) { $cur['runs'][$_] } else { $null }
-                -not $r -or ($Rerun -and ($r['status'] -eq 'failed-to-start' -or $r['outcome'] -eq 'rejected'))
+                -not $r -or ($Rerun -and ($r['status'] -in @('failed-to-start', 'invalid-evidence') -or $r['outcome'] -eq 'rejected'))
             })
             $created = @{}
             foreach ($k in $todo) { $created[$k] = New-BvtRelease $k $cfg.releases.$k }
@@ -259,10 +342,12 @@ try {
         }
     }
 
-    if (-not $out.Phase) {
+    if ($out.Phase -ne 'skipped') {
         $s = Get-StepState
-        $out.Phase = if ($s) { [string]$s['status'] } else { 'not-started' }
+        if (-not $out.Phase) { $out.Phase = if ($s) { [string]$s['status'] } else { 'not-started' } }
         if ($s) {
+            foreach ($k in @($s['runs'].Keys)) { $s['runs'][$k] = Test-RunEvidence $k $s['runs'][$k] }
+            if ((Get-Phase $s) -eq 'failed') { $out.Phase = 'failed' }
             $out.Runs = @($s['runs'].Keys | Sort-Object | ForEach-Object { $r = $s['runs'][$_]; [pscustomobject]@{ key = $_; releaseId = $r['releaseId']; name = $r['name']; definitionName = $r['definitionName']; url = $r['url']; status = $r['status']; outcome = $r['outcome']; summary = $r['summary']; error = $r['error'] } })
             $out.Summary = Format-Summary $s
         }

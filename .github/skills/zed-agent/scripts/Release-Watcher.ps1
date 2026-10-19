@@ -193,7 +193,7 @@ function Invoke-RevertBitsSideChannel {
 # post-deployment managed validation (BCM canary: Canary-ManagedValidation, ~24 h).
 # pipeline-catalog.json → canary.<key>.deploymentDoneWhen = { ev2StepStarted, portalLinkTask }.
 # A poll-ado-pipelines target of such a pipeline becomes status 'deployed' (counts as
-# done) once every region stage succeeded and that EV2 step has started.
+# done) once every region stage succeeded, without waiting for managed validation to start.
 # ─────────────────────────────────────────────────────────────────────────────
 $script:ev2RuleCache = $null
 function Get-DeploymentDoneRules {
@@ -441,7 +441,7 @@ while ($true) {
                     $t.status = if ($resp.result -eq 'succeeded') { 'completed' } else { 'failed' }
                 } elseif ($resp.definition -and $ev2Rules.ContainsKey([string]$resp.definition.id)) {
                     # catalog deploymentDoneWhen: the run stays in progress for EV2's post-deployment
-                    # managed validation (~24 h) — the deployment itself is done once that step starts.
+                    # managed validation (~24 h) — deployment is done once every region succeeded.
                     Update-TargetFromEv2 -Target $t -Run $resp -Rule $ev2Rules[[string]$resp.definition.id] -AdoToken $token
                 }
                 if ($t.status -eq 'failed') { $anyFailed = $true }

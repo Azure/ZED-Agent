@@ -49,6 +49,19 @@ Describe 'Invoke-ColdResume' {
             $result = & $script:coldResumeScript
             $result.CurrentStep | Should -BeGreaterOrEqual 3
         }
+
+        It 'does not auto-continue cached BVT completion without creation-time official evidence' {
+            $state.steps = @(@{ number = 8; name = 'post-rollback-bvt'; status = 'in-progress' })
+            $state.watcherDirective = @{ action = 'poll-bvt-releases'; step = 8 }
+            $state.bvtReleases = @{ '8' = @{ status = 'completed'; runs = @{
+                'IaaSVM-CloudTest' = @{ releaseId = 17877228; status = 'completed'; outcome = 'succeeded' }
+            } } }
+            $state | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $relDir 'state.json')
+            $result = & $script:coldResumeScript
+            $result.Action | Should -Be 'resume-step'
+            $result.DirectiveEvaluation.ConditionMet | Should -Not -BeTrue
+            $result.DirectiveEvaluation.Details | Should -Match 'evidence not verified'
+        }
     }
 
     Context 'Active release in .zed-release/ (durable)' {

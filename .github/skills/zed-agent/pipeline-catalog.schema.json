@@ -141,7 +141,7 @@
             "additionalProperties": false,
             "properties": {
               "definitionId": { "type": "integer", "description": "Classic release definition id (…/_release?definitionId=<id>)." },
-              "variables": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Release variables to override (must be 'Settable at release time'), e.g. { \"MABIsOfficial\": \"true\" }." }
+              "variables": { "type": "object", "properties": { "MABIsOfficial": { "type": "string", "const": "True" } }, "additionalProperties": { "type": "string" }, "description": "Release variables to override (must be 'Settable at release time'), e.g. { \"MABIsOfficial\": \"True\" }. Preserve exact string case; never use Boolean true or string true." }
             }
           }
         }
@@ -284,11 +284,11 @@
         },
         "deploymentDoneWhen": {
           "type": "object",
-          "description": "Canary pipelines whose run stays in progress through a long EV2 post-deployment step (BCM-CANARY: 'Canary-ManagedValidation', ~24 h). ZED reads the EV2 portal link from the run (task <portalLinkTask>) and asks the EV2 API; once every '<prefix>.<region>' stage succeeded and <ev2StepStarted> has started, the run counts as deployed (watcher target status 'deployed') and Step 5 (Step 7 for rollback) completes without waiting for the run. The run's final result is re-checked when the following BVT window ends. Prod cloud only (gov-cloud EV2 APIs are not reachable — those runs are tracked by the pipeline result). Script: scripts/EV2/Get-Ev2DeploymentProgress.ps1.",
+          "description": "Canary pipelines whose run stays in progress through a long EV2 post-deployment step (BCM-CANARY: 'Canary-ManagedValidation', ~24 h). ZED reads the EV2 portal link from the run (task <portalLinkTask>) and asks the EV2 API; once a nonempty set of '<prefix>.<region>' deployment stages all succeeded, the run counts as deployed (watcher target status 'deployed') and Step 5 (Step 7 for rollback) completes without waiting for managed validation to start or finish. Failed/pending region stages remain blockers; validation status stays separate and the run's final result is re-checked when the following BVT window ends. Prod cloud only (gov-cloud EV2 APIs are not reachable — those runs are tracked by the pipeline result). Script: scripts/EV2/Get-Ev2DeploymentProgress.ps1.",
           "required": ["ev2StepStarted"],
           "additionalProperties": false,
           "properties": {
-            "ev2StepStarted": { "type": "string", "minLength": 1, "description": "EV2 step (action StepName) that starts right after the deployment, e.g. 'Canary-ManagedValidation'. Its region stages are '<name without -ManagedValidation>.<region>'." },
+            "ev2StepStarted": { "type": "string", "minLength": 1, "description": "Legacy selector for the validation action StepName, e.g. 'Canary-ManagedValidation', and its regional deployment prefix '<name without -ManagedValidation>.<region>'. Does not require validation to start; completion depends on successful regional deployment stages." },
             "portalLinkTask": { "type": "string", "default": "Ev2 Managed SDP Region Agnostic", "description": "Pipeline task whose log prints 'Ev2 portal link - https://ra.ev2portal.azure.net/#/rollouts/...'." }
           }
         },

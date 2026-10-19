@@ -12,16 +12,15 @@
        new rollout). -PortalUrl skips this.
     2. GET <ev2>/api/rollouts/<id>?servicegroupname=<sg>&embed-detail=true (Prod only — the gov
        cloud APIs are not reachable from CorpNet: Phase 'unsupported-cloud').
-    3. -StepName (default 'Canary-ManagedValidation') is the EV2 step that starts right after
-       deployment: an action in ResourceGroups[].Resources[].Actions[] with that StepName. Its
+    3. -StepName (default 'Canary-ManagedValidation') identifies the post-deployment validation
+       action in ResourceGroups[].Resources[].Actions[]; its status is reported separately. Its
        region stages are the StageInfos named '<prefix>.<region>' where <prefix> = StepName
        without '-ManagedValidation' (e.g. 'Canary.centraluseuap').
 
     Phase:
       no-rollout         run has no portal link yet (e.g. still waiting on the Approval Service)
-      deploying          rollout running, regions not all deployed / validation not started
-      deployed           every region stage succeeded AND the validation step has started
-                         (or the rollout already succeeded)
+      deploying          no region stages yet, or regions not all deployed
+      deployed           every region stage succeeded; validation need not have started
       failed             a region stage, the validation step or the rollout failed/was cancelled
       unsupported-cloud  rollout is in a cloud whose EV2 API is not reachable (use the ADO run)
       error              lookup failed (see Error) — callers fall back to the ADO run status
@@ -142,16 +141,14 @@ try {
         $out.Phase = 'failed'; $out.Reason = "$StepName $($out.ValidationStatus)"
     } elseif ($out.RolloutStatus -match $bad) {
         $out.Phase = 'failed'; $out.Reason = "rollout $($out.RolloutStatus)"
-    } elseif ($out.RolloutStatus -match '(?i)^(succeeded|completed)$' -or
-              ($regions.Count -gt 0 -and @($regions | Where-Object { $_.status -notmatch '(?i)^(succeeded|completed)$' }).Count -eq 0 -and
-               $out.ValidationStartedAt -and $out.ValidationStatus -notmatch '(?i)^(notstarted|waiting|pending|skipped|)$')) {
+    } elseif ($regions.Count -gt 0 -and @($regions | Where-Object { $_.status -notmatch '(?i)^(succeeded|completed)$' }).Count -eq 0) {
         $out.Phase = 'deployed'; $out.Deployed = $true
-        $out.DeployedAt = if ($out.ValidationStartedAt) { $out.ValidationStartedAt } else { @($regions | Where-Object endTime | Sort-Object endTime | Select-Object -Last 1).endTime }
-        $out.Reason = if ($out.RolloutStatus -match '(?i)^(succeeded|completed)$') { 'rollout succeeded' } else { "all $($regions.Count) region(s) deployed; $StepName $($out.ValidationStatus) since $($out.ValidationStartedAt)" }
+        $out.DeployedAt = @($regions | Where-Object endTime | Sort-Object endTime | Select-Object -Last 1).endTime
+        $out.Reason = if ($out.RolloutStatus -match '(?i)^(succeeded|completed)$') { 'rollout succeeded' } else { "all $($regions.Count) region(s) deployed; $StepName $(if ($out.ValidationStatus) { $out.ValidationStatus } else { 'not reported' }) (not required for deployment completion)" }
     } else {
         $out.Phase = 'deploying'
         $pending = @($regions | Where-Object { $_.status -notmatch '(?i)^(succeeded|completed)$' })
-        $out.Reason = if ($regions.Count -eq 0) { "no '$prefix.*' region stages yet" } elseif ($pending.Count) { "waiting for $(($pending | ForEach-Object { "$($_.name)=$($_.status)" }) -join ', ')" } else { "regions deployed; $StepName not started yet" }
+        $out.Reason = if ($regions.Count -eq 0) { "no '$prefix.*' region stages yet" } else { "waiting for $(($pending | ForEach-Object { "$($_.name)=$($_.status)" }) -join ', ')" }
     }
     $out.Success = $true
 } catch {

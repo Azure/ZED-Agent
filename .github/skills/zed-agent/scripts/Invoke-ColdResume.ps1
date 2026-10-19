@@ -358,7 +358,22 @@ switch ($currentStep.status) {
                     if ($state.PSObject.Properties['bvtReleases'] -and $state.bvtReleases -and $state.bvtReleases.PSObject.Properties["$($dir.step)"]) { $bvS = $state.bvtReleases."$($dir.step)" }
                     $bvStatus = if ($bvS) { [string]$bvS.status } else { 'not-started' }
                     $eval.Details = "BVT releases for Step $($dir.step): $bvStatus"
-                    $eval.ConditionMet = if ($bvStatus -eq 'completed') { $true } else { $null }
+                    # Reuse the catalog-aware evidence gate; do not trust cached completion.
+                    $evidenceValid = $false
+                    if ($bvStatus -eq 'completed') {
+                        try {
+                            $bv = & (Join-Path $PSScriptRoot 'Invoke-BvtReleases.ps1') -Action Get `
+                                -ReleaseId $activeRelease.ReleaseId -Step ([int]$dir.step) `
+                                -StateFile $activeRelease.StateFile -StateLock $paths.LockFile `
+                                -AuditFile $paths.AuditFile -ReleaseFile $paths.ReleaseFile
+                            $evidenceValid = $bv.Success -and $bv.Phase -eq 'completed'
+                        } catch {
+                            # Unreadable state/catalog: fail closed (live Poll needed), never crash cold resume.
+                            $evidenceValid = $false
+                        }
+                        if (-not $evidenceValid) { $eval.Details += ' — BVT evidence not verified' }
+                    }
+                    $eval.ConditionMet = if ($bvStatus -eq 'completed' -and $evidenceValid) { $true } else { $null }
                 }
                 default {
                     $eval.Details = "Unknown directive action: $($dir.action)"

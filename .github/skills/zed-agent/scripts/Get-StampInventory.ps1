@@ -22,6 +22,17 @@
         {shortName}-{layout}-{stampTag}{index}
         ex: ea-can02-prot1, eus-pod01-prot2, eus2-pod01-rec1d
 
+    Stamp-name normalization (service-config.json → inventory.stampNaming):
+      partitionSuffixPattern  opt-in regex for a per-partition Kusto suffix
+                              (e.g. '-p[0-9]+[a-z]*' folds
+                              'ecy-pod01-coord1-p1a' into 'ecy-pod01-coord1').
+      sdsStampIdPattern       regex (named groups shortName, index) for SDS
+                              short StampIds; default '^(?<shortName>[a-z0-9]+)-(?<index>[0-9]+)$'.
+      SDS reconciliation pairs stamps on the cloud-local key
+      {shortName}-{index} (numeric index unpadded), so SDS 'acl-01' and
+      Kusto 'acl-pod01-coord1' are the same stamp. Only Kusto stamps in the
+      reconciled cloud are compared; others go to kustoOutOfScope.
+
     Cluster-type extraction (production scope only) reuses the same
     extraction modes as Resolve-PipelinesByClusterType.ps1
     (deployment-unit-substring | column | custom), driven by
@@ -74,6 +85,11 @@
       drift          = @(@{ stampName, reason, ... })
       sources        = @{ stamps = 'config'|'kusto'; ascSource = 'live'|'cache'|'snapshot'; ascPath; fetchedAt }
       kusto          = @{ ranAt; durationMs; rowCount } | $null
+      stampNaming    = @{ partitionSuffixPattern; sdsStampIdPattern; foldedPartitions = @(@{ from; to }) }
+      sdsReconciliation (production + sds configured) =
+                       @{ hash; source; stampCount; cloud; matchedBy; matchedCount;
+                          sdsOnly; kustoOnly; kustoOutOfScope; driftCount;
+                          toleranceCount; withinTolerance }
 #>
 [CmdletBinding()]
 param(
@@ -172,6 +188,81 @@ $sdsReconcileEnabled = [bool]$sdsEntry -and ($Scope -eq 'production') -and ($Sds
 # ── Stamp regex ────────────────────────────────────────────────────────
 # {shortName}-{layout}-{stampTag}{index}.  All lowercase; index may be alnum.
 $stampRegex = "^(?<shortName>[a-z0-9]+)-(?<layout>[a-z0-9]+)-(?<serviceTag>[a-z]+)(?<index>[a-z0-9]*)$"
+
+# ── Stamp-name normalization (service-config.json → inventory.stampNaming) ──
+# Kusto and SDS name the same stamp differently:
+#   Kusto StampName : {shortName}-{layout}-{stampTag}{index}       e.g. acl-pod01-coord1
+#                     + optional per-partition suffix              e.g. ecy-pod01-coord1-p1a
+#   SDS StampId     : {shortName}-{index}  (Phobos 2022 StampId)   e.g. acl-01
+# Both reduce to the same reconcile key {shortName}-{numeric index} within ONE
+# cloud (acl-pod01-coord1 → acl-1, acl-01 → acl-1). Partition folding is
+# OPT-IN (partitionSuffixPattern) because the suffix vocabulary is
+# service-family specific; the SDS short-id pattern ships as a default because
+# StampId is Phobos 2022 vocabulary. Both are overridable.
+$stampNaming = if ($config.inventory -and $config.inventory.PSObject.Properties['stampNaming'] -and $config.inventory.stampNaming) { $config.inventory.stampNaming } else { $null }
+$partitionSuffixPattern = if ($stampNaming -and $stampNaming.PSObject.Properties['partitionSuffixPattern'] -and $stampNaming.partitionSuffixPattern) {
+    [string]$stampNaming.partitionSuffixPattern
+} else { $null }
+$sdsStampIdPattern = if ($stampNaming -and $stampNaming.PSObject.Properties['sdsStampIdPattern'] -and $stampNaming.sdsStampIdPattern) {
+    [string]$stampNaming.sdsStampIdPattern
+} else {
+    '^(?<shortName>[a-z0-9]+)-(?<index>[0-9]+)$'
+}
+foreach ($g in @('shortName','index')) {
+    if (([regex]$sdsStampIdPattern).GetGroupNames() -notcontains $g) {
+        throw "service-config.json → inventory.stampNaming.sdsStampIdPattern must declare a named group '(?<$g>...)'. Got: $sdsStampIdPattern"
+    }
+}
+$foldedPartitions = [System.Collections.Generic.List[object]]::new()
+
+function ConvertTo-BaseStampName {
+    # Strips a configured per-partition suffix (e.g. '-p1a') from a Kusto
+    # StampName. Only strips when what remains is itself a valid stamp name,
+    # so a stampTag that happens to look like a suffix is never truncated.
+    param([string]$Name)
+    $n = "$Name".ToLowerInvariant()
+    if ($partitionSuffixPattern) {
+        $m = [regex]::Match($n, "(?:$partitionSuffixPattern)$")
+        if ($m.Success -and $m.Index -gt 0) {
+            $base = $n.Substring(0, $m.Index)
+            if ($base -match $stampRegex) {
+                return [PSCustomObject]@{ name = $base; partition = $m.Value }
+            }
+        }
+    }
+    return [PSCustomObject]@{ name = $n; partition = $null }
+}
+
+function Get-StampReconcileKey {
+    # Cloud-local identity of a stamp, independent of naming style:
+    # full name or SDS short id → '{shortName}-{index}', numeric index unpadded.
+    param([string]$Name)
+    $n = "$Name".ToLowerInvariant()
+    $sn = $null; $idx = $null
+    $full = [regex]::Match($n, $stampRegex)
+    if ($full.Success) {
+        $sn = $full.Groups['shortName'].Value; $idx = $full.Groups['index'].Value
+    } else {
+        $short = [regex]::Match($n, $sdsStampIdPattern)
+        if ($short.Success) { $sn = $short.Groups['shortName'].Value.ToLowerInvariant(); $idx = $short.Groups['index'].Value.ToLowerInvariant() }
+    }
+    if (-not $sn) { return $n }
+    if ($idx -match '^[0-9]+$') { $idx = [string][int64]$idx }
+    return "$sn-$idx"
+}
+
+function ConvertFrom-SdsStampId {
+    # SDS short id → canonical {shortName}-{layout}-{stampTag}{index} for a
+    # known cloud layout. Returns the input unchanged if it is not a short id.
+    param([string]$Name, [string]$Layout)
+    $n = "$Name".ToLowerInvariant()
+    if (-not $Layout -or $n -match $stampRegex) { return $n }
+    $m = [regex]::Match($n, $sdsStampIdPattern)
+    if (-not $m.Success) { return $n }
+    $idx = $m.Groups['index'].Value.ToLowerInvariant()
+    if ($idx -match '^[0-9]+$') { $idx = [string][int64]$idx }
+    return "$($m.Groups['shortName'].Value.ToLowerInvariant())-$($Layout.ToLowerInvariant())-$stampTag$idx"
+}
 
 # ── Pull ASC (live → cache → snapshot) ────────────────────────────────
 $ascArgs = @{ MaxAgeHours = $MaxAgeHours }
@@ -351,8 +442,12 @@ elseif ($isSovereignCloud) {
         throw "SDS at '$sdsPath' returned 0 stamps for cloud '$Cloud'. Verify sds.$PipelineKey is correct."
     }
     foreach ($s in $sdsInv.stamps) {
+        # SDS may carry only the short StampId (e.g. 'udc-01'); expand it to the
+        # canonical stamp name using this cloud's ASC layout so ASC validation works.
+        $sovLayout = "$(($ascData.Clouds | Where-Object { $_.Name -eq $Cloud } | Select-Object -First 1).Layout)"
+        $sovName = if ($s.stampName) { "$($s.stampName)" } else { "$($s.stampId)" }
         $rawStamps.Add([PSCustomObject]@{
-            stampName   = "$($s.stampName)".ToLowerInvariant()
+            stampName   = ConvertFrom-SdsStampId -Name $sovName -Layout $sovLayout
             clusterType = $null
             cloudHint   = $Cloud
             layoutHint  = $null
@@ -417,8 +512,12 @@ else {
     $extraction = if ($k.clusterTypeExtraction) { $k.clusterTypeExtraction } else { [PSCustomObject]@{ mode = 'deployment-unit-substring' } }
 
     foreach ($row in $rows) {
-        $stampName = "$($row.StampName)".ToLowerInvariant()
+        $norm = ConvertTo-BaseStampName -Name "$($row.StampName)"
+        $stampName = $norm.name
         if (-not $stampName) { continue }
+        if ($norm.partition) {
+            $foldedPartitions.Add([PSCustomObject]@{ from = "$($row.StampName)".ToLowerInvariant(); to = $stampName })
+        }
         $ct = Resolve-RowClusterType -Row $row -Extraction $extraction -DefaultSubstrings $defaultClusterTypeSubstrings -Strict
         $rawStamps.Add([PSCustomObject]@{
             stampName   = $stampName
@@ -549,7 +648,7 @@ if ($Scope -eq 'canary' -and $stamps.Count -gt 0) {
                         $extraction = if ($kc.clusterTypeExtraction) { $kc.clusterTypeExtraction } else { [PSCustomObject]@{ mode = 'deployment-unit-substring' } }
                         $stampMap = @{}
                         foreach ($row in $kRows) {
-                            $rowStamp = "$($row.StampName)".ToLowerInvariant()
+                            $rowStamp = (ConvertTo-BaseStampName -Name "$($row.StampName)").name
                             if (-not $rowStamp) { continue }
                             $rowCt = Resolve-RowClusterType -Row $row -Extraction $extraction -DefaultSubstrings $defaultClusterTypeSubstrings
                             if ($rowCt) { $stampMap[$rowStamp] = $rowCt }
@@ -625,7 +724,11 @@ $result | Add-Member -NotePropertyName regions      -NotePropertyValue $regionsO
 $result | Add-Member -NotePropertyName drift        -NotePropertyValue $driftOut
 $result | Add-Member -NotePropertyName sources      -NotePropertyValue $sourcesObj
 $result | Add-Member -NotePropertyName kusto        -NotePropertyValue $kustoMeta
-
+$result | Add-Member -NotePropertyName stampNaming  -NotePropertyValue ([PSCustomObject]@{
+    partitionSuffixPattern = $partitionSuffixPattern
+    sdsStampIdPattern      = $sdsStampIdPattern
+    foldedPartitions       = @($foldedPartitions | ForEach-Object { $_ })
+})
 # ── SDS reconciliation (production scope only) ───────────────────────────────
 if ($sdsReconcileEnabled) {
     $sdsScript = Join-Path $PSScriptRoot 'Get-StampInventoryFromSds.ps1'
@@ -642,12 +745,28 @@ if ($sdsReconcileEnabled) {
         $sdsCloudForReconcile = if ($Cloud) { $Cloud } elseif ($isSovereignCloud) { $Cloud } else { $defaultCommercialCloud }
         if ($sdsCloudForReconcile) { $sdsArgs.Cloud = $sdsCloudForReconcile }
         $sdsInv = & $sdsScript @sdsArgs
-        $sdsNames   = @($sdsInv.stamps | ForEach-Object { "$($_.stampName)".ToLowerInvariant() }) | Sort-Object -Unique
-        $kustoNames = @($stampsOut | ForEach-Object { $_.stampName }) | Sort-Object -Unique
-        $sdsSet   = [System.Collections.Generic.HashSet[string]]::new([string[]]$sdsNames, [System.StringComparer]::OrdinalIgnoreCase)
-        $kustoSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$kustoNames, [System.StringComparer]::OrdinalIgnoreCase)
-        $sdsOnly   = @($sdsNames   | Where-Object { -not $kustoSet.Contains($_) })
-        $kustoOnly = @($kustoNames | Where-Object { -not $sdsSet.Contains($_) })
+        # Compare like with like: only Kusto stamps that ASC resolved into the
+        # SDS cloud being reconciled. Kusto stamps in other clouds (e.g. a
+        # Canary-cloud stamp visible in the same Kusto table) are reported
+        # as out-of-scope, not as drift — and cannot collide on the
+        # cloud-local reconcile key.
+        $kustoInScope  = @($stampsOut | Where-Object { -not $sdsCloudForReconcile -or $_.cloud -eq $sdsCloudForReconcile })
+        $kustoOutScope = @($stampsOut | Where-Object { $sdsCloudForReconcile -and $_.cloud -ne $sdsCloudForReconcile } |
+            ForEach-Object { [PSCustomObject]@{ stampName = $_.stampName; cloud = $_.cloud } })
+        # Match on Get-StampReconcileKey so SDS short ids ('acl-01') and Kusto
+        # full names ('acl-pod01-coord1') of the same stamp pair up.
+        $sdsKeyed = @($sdsInv.stamps | ForEach-Object {
+            $nm = if ($_.stampName) { "$($_.stampName)" } else { "$($_.stampId)" }
+            [PSCustomObject]@{ name = $nm.ToLowerInvariant(); key = Get-StampReconcileKey -Name $nm }
+        })
+        $kustoKeyed = @($kustoInScope | ForEach-Object {
+            [PSCustomObject]@{ name = $_.stampName; key = Get-StampReconcileKey -Name $_.stampName }
+        })
+        $sdsKeySet   = [System.Collections.Generic.HashSet[string]]::new([string[]]@($sdsKeyed   | ForEach-Object { $_.key }), [System.StringComparer]::OrdinalIgnoreCase)
+        $kustoKeySet = [System.Collections.Generic.HashSet[string]]::new([string[]]@($kustoKeyed | ForEach-Object { $_.key }), [System.StringComparer]::OrdinalIgnoreCase)
+        $sdsOnly   = @($sdsKeyed   | Where-Object { -not $kustoKeySet.Contains($_.key) } | ForEach-Object { $_.name } | Sort-Object -Unique)
+        $kustoOnly = @($kustoKeyed | Where-Object { -not $sdsKeySet.Contains($_.key) }   | ForEach-Object { $_.name } | Sort-Object -Unique)
+        $matchedCount = @($kustoKeyed | Where-Object { $sdsKeySet.Contains($_.key) }).Count
         $tolerance = if ($null -ne $config.inventory.driftToleranceCount) { [int]$config.inventory.driftToleranceCount } else { 0 }
         $driftCount = $sdsOnly.Count + $kustoOnly.Count
         $reconcile = [PSCustomObject]@{
@@ -655,8 +774,11 @@ if ($sdsReconcileEnabled) {
             source           = $sdsPath
             stampCount       = @($sdsInv.stamps).Count
             cloud            = $sdsCloudForReconcile
+            matchedBy        = 'reconcileKey {shortName}-{index} (inventory.stampNaming)'
+            matchedCount     = $matchedCount
             sdsOnly          = $sdsOnly
             kustoOnly        = $kustoOnly
+            kustoOutOfScope  = @($kustoOutScope)
             driftCount       = $driftCount
             toleranceCount   = $tolerance
             withinTolerance  = ($driftCount -le $tolerance)

@@ -711,6 +711,23 @@
           "minimum": 0,
           "default": 0
         },
+        "stampNaming": {
+          "type": "object",
+          "description": "How Get-StampInventory.ps1 normalizes stamp names before ASC validation and SDS reconciliation. Kusto StampName is '{shortName}-{layout}-{stampTag}{index}' (e.g. 'acl-pod01-coord1'), optionally with a per-partition suffix ('ecy-pod01-coord1-p1a'); SDS StampId is often the short form '{shortName}-{index}' ('acl-01'). Reconciliation pairs both on the cloud-local key '{shortName}-{index}' (numeric index unpadded) and only compares Kusto stamps that ASC resolved into the reconciled cloud. Sovereign-cloud SDS short ids are expanded to '{shortName}-{cloud layout}-{stampTag}{index}'.",
+          "additionalProperties": true,
+          "properties": {
+            "partitionSuffixPattern": {
+              "type": ["string", "null"],
+              "description": "OPT-IN regex (anchored at end by the script) matching a per-partition suffix on Kusto StampName, e.g. '-p[0-9]+[a-z]*'. Matching names fold into their base stamp, but only when the remainder is itself a valid stamp name. Omit / empty = no folding (partition names surface as grammar drift)."
+            },
+            "sdsStampIdPattern": {
+              "type": "string",
+              "description": "Regex with named groups 'shortName' and 'index' that recognises an SDS short StampId. Default '^(?<shortName>[a-z0-9]+)-(?<index>[0-9]+)$'.",
+              "default": "^(?<shortName>[a-z0-9]+)-(?<index>[0-9]+)$"
+            },
+            "notes": { "type": "string", "description": "Evidence / free-text memo for the chosen patterns." }
+          }
+        },
         "production": {
           "type": "object",
           "description": "Production inventory gate settings.",

@@ -501,6 +501,8 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 
 **Revert bits during the canary BVT:** with `CONFIG[revertBits.prepareDuringCanaryBvt]` (BCM) start the revert bits at **Step 6 entry** (7a Plan + selection email; 7b Prepare + PR on `revert-bits preserve`) but arm no directive for them — `scripts/Invoke-RevertBitsTrack.ps1` (watcher side-channel) follows the PR, reuses/queues the revert build and sets `phase = "ready"`. On `approve-bvt` Step 7 rolls back with the ready build at once (pinned to `state.revertBits.buildId`) or waits for `ready`; Step 8 BVT is the revert bits BVT — no `approve-revert`. When the watcher invokes you with `revert bits <event> for release <id>`, send that email (and continue Step 7 if it was waiting for `revert-bits-ready`). See `step-behaviors.md → Step 7 — Revert bits → Prepared during the canary BVT`.
 
+**Release names:** with `CONFIG[releaseNaming]` (BCM: prefix `BCM`) a service ships several releases per month — `BCM2610`, `BCM2610_2`, `BCM2610_3`. `setup` asks the release name first (`scripts/Resolve-ReleaseName.ps1 -Action Suggest` / `-Action Validate`) and that name **is** the release id everywhere: `.zed-agent/releases/<name>/`, every `| {releaseId}` subject, the watcher, `{{releaseName}}` / `{{releaseNameLower}}` in config templates (commit tracker sheet `BCM2610_2`, revert branch `releases/bcm2610_2revert`, RI/FI branches `zed/bcm2610_2-…`, SafeFly `{releaseName}`). Never derive a month by parsing the id — use `release.json → releaseMonth` (scripts: `lib/ReleaseNameLib.ps1`). ZED drives one active release at a time; `setup` offers to stop a still-active earlier release.
+
 # Step Execution Loop
 
 When invoked (by release owner or watcher), follow this loop:

@@ -121,6 +121,8 @@ $shortYear   = $now.ToString("yy")
 $title       = $cfg.safefly.titleTemplate `
     -replace '\{serviceName\}', $cfg.service.name `
     -replace '\{serviceDisplayName\}', $cfg.service.displayName `
+    -replace '\{releaseName\}', $ReleaseId `
+    -replace '\{releaseId\}', $ReleaseId `
     -replace '\{month\}', $monthName `
     -replace '\{yy\}', $shortYear
 $description = if ($CommitExcelUrl) {

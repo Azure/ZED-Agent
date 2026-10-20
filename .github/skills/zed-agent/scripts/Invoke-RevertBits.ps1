@@ -97,11 +97,9 @@ function Get-BuildSourceVersion($BuildId) {
 }
 
 function Expand-Template([string]$Template, $Release) {
-    if ($ReleaseId -notmatch '^(\d{4})-(\d{2})') { throw "ReleaseId '$ReleaseId' is not YYYY-MM." }
-    $yymm = $Matches[1].Substring(2) + $Matches[2]
-    $leaf = if ($Release -and $Release.PSObject.Properties['releaseTag'] -and $Release.releaseTag) { [string]$Release.releaseTag } elseif ($Release -and $Release.currentBranch) { ([string]$Release.currentBranch).Split('/')[-1] } else { $yymm }
-    $alias = if ($OwnerAlias) { $OwnerAlias } elseif ($Release -and $Release.releaseOwner -and $Release.releaseOwner.alias) { [string]$Release.releaseOwner.alias } else { 'zed' }
-    return $Template.Replace('{{YYMM}}', $yymm).Replace('{{releaseId}}', $ReleaseId).Replace('{{releaseTag}}', $leaf).Replace('{ownerAlias}', $alias).Replace('{{ownerAlias}}', $alias)
+    # {{YYMM}} {{releaseId}} {{releaseName}} {{releaseNameLower}} {{releaseTag}} {ownerAlias} — lib\ReleaseNameLib.ps1
+    . (Join-Path $PSScriptRoot 'lib\ReleaseNameLib.ps1')
+    return Expand-ReleaseTokens $Template $ReleaseId $Release $OwnerAlias
 }
 
 function Format-Plan($Changes, $PrevSha, $CurSha, $RevertBranch) {
@@ -171,7 +169,13 @@ try {
     if (-not $prev) {
         $rels = Join-Path $RepoPath '.zed-agent/releases'
         if (Test-Path $rels) {
-            $older = Get-ChildItem $rels -Directory | Where-Object { $_.Name -match '^\d{4}-\d{2}$' -and $_.Name -lt $ReleaseId } | Sort-Object Name -Descending | Select-Object -First 1
+            # previous ZED release = newest other (non-test) release created before this one
+            $myCreated = if ($release -and $release.dates -and $release.dates.created) { [datetime]$release.dates.created } else { [datetime]::MaxValue }
+            $older = Get-ChildItem $rels -Directory | Where-Object { $_.Name -ne $ReleaseId -and (Test-Path (Join-Path $_.FullName 'release.json')) } | ForEach-Object {
+                $r = Get-Content (Join-Path $_.FullName 'release.json') -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+                $c = if ($r -and $r.dates -and $r.dates.created) { [datetime]$r.dates.created } else { $null }
+                if ($r -and -not $r.testMode -and $c -and $c -lt $myCreated) { [pscustomobject]@{ FullName = $_.FullName; Created = $c } }
+            } | Sort-Object Created -Descending | Select-Object -First 1
             if ($older) {
                 $pr = Get-Content (Join-Path $older.FullName 'release.json') -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
                 if ($pr -and $pr.PSObject.Properties['buildId'] -and -not $pr.testMode) { $sv = Get-BuildSourceVersion $pr.buildId; if ($sv) { $prev = Resolve-Commit $sv } }

@@ -20,10 +20,10 @@ function Test-SheetName([string]$Name) {
     return $null
 }
 
-function Expand-SheetName([string]$Template, [string]$ReleaseId) {
-    if ($ReleaseId -notmatch '^(\d{4})-(\d{2})') { throw "ReleaseId '$ReleaseId' is not YYYY-MM." }
-    $yymm = $Matches[1].Substring(2) + $Matches[2]
-    return $Template.Replace('{{YYMM}}', $yymm).Replace('{{YYYY}}', $Matches[1]).Replace('{{MM}}', $Matches[2]).Replace('{{releaseId}}', $ReleaseId)
+function Expand-SheetName([string]$Template, [string]$ReleaseId, $Release) {
+    # Tokens: {{YYMM}} {{YYYY}} {{MM}} {{releaseId}} {{releaseName}} {{releaseNameLower}} (lib\ReleaseNameLib.ps1)
+    . (Join-Path $PSScriptRoot 'ReleaseNameLib.ps1')
+    return Expand-ReleaseTokens $Template $ReleaseId $Release
 }
 
 # Maps configured columns to their 0-based position in a header row. Returns

@@ -212,6 +212,8 @@ Describe 'deploy-base wiring' {
         $c = Get-Content (Join-Path $PSScriptRoot '..\scripts\Invoke-RevertBits.ps1') -Raw
         $c | Should -Match "release\.PSObject\.Properties\['previousCommit'\]"
         $c | Should -Match "release\.PSObject\.Properties\['currentCommit'\]"
-        $c | Should -Match "Release\.PSObject\.Properties\['releaseTag'\]"
+        # branch-name tokens ({{releaseTag}} from release.json) come from the shared helper
+        $c | Should -Match 'Expand-ReleaseTokens'
+        Get-Content (Join-Path $PSScriptRoot '..\scripts\lib\ReleaseNameLib.ps1') -Raw | Should -Match "Release\.PSObject\.Properties\['releaseTag'\]"
     }
 }

@@ -199,7 +199,7 @@ The chain check **never** mutates `readiness.json` except to set the relevant `o
 
 **Then proceed with the normal run flow:**
 
-1. Verify a release directory exists for the current month (format: `YYYY-MM`). If **no release exists** → tell the release owner: *"No release initialized for this month. Run `setup` first."* and **HALT**.
+1. Verify the active release exists: the release directory under `.zed-agent/releases/` whose `state.json → status` is not `completed` / `stopped` (`releaseNaming` services — BCM: the release name, e.g. `BCM2610_2`, several per month; otherwise `YYYY-MM` for the current month). If **no release exists** → tell the release owner: *"No active release. Run `setup` first."* and **HALT**.
 2. Load state from `state.json`, resume from current step
 3. Execute steps in order following the Step Execution Loop above
 4. For async steps: write `watcherDirective` to state, start watcher process, exit

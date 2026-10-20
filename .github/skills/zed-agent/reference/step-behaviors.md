@@ -69,7 +69,7 @@ Runs only when `CONFIG[ado.integration.enabled] == true` (e.g. BCM, which keeps 
 ```
 On first entry to Step 2, if `state.integration` is absent, initialize it with `phase: "ri"` and both sub-objects `status: "pending"`. Every later entry dispatches on `state.integration.phase`. Also mirror the PR ids into `release.json` as `riPrId` / `fiPrId`.
 
-**Branch names**: expand `CONFIG[ado.integration.riBranchTemplate]` / `fiBranchTemplate` (defaults `zed/{releaseTag}-ri-master-to-develop`, `zed/{releaseTag}-fi-develop-to-master`). `{releaseId}` = `release.releaseId`; `{releaseTag}` = `release.releaseTag` when set (deploy-base always sets it, e.g. `bcm-2611` — the leaf of `master` would collide month to month), else the leaf of `release.currentBranch` after the last `/` (e.g. `releases/bcm-2611` → `bcm-2611`).
+**Branch names**: expand `CONFIG[ado.integration.riBranchTemplate]` / `fiBranchTemplate` (defaults `zed/{releaseTag}-ri-master-to-develop`, `zed/{releaseTag}-fi-develop-to-master`). `{releaseId}` = `release.releaseId`; `{releaseTag}` = `release.releaseTag` when set (deploy-base always sets it, e.g. `bcm-2611` — the leaf of `master` would collide month to month; with `CONFIG[releaseNaming]` it is the lowercased release name, e.g. `bcm2610_2` → `zed/bcm2610_2-ri-master-to-develop`), else the leaf of `release.currentBranch` after the last `/` (e.g. `releases/bcm-2611` → `bcm-2611`).
 
 ### 2a — Reverse Integration (`phase == "ri"`)
 1. If `ri.status == "pr-open"` and `ri.prId` is set (resume / cold start): do NOT re-merge. GET the PR; if `completed` go to step 7, if `abandoned` go to **Failure**, else re-arm the watcher (step 6) and EXIT.
@@ -196,7 +196,7 @@ Run 2a and 2b back-to-back **without `-Push`**: the merge + resolution is comput
    Before sending, verify the rendered body contains no `{{` substring; if any remain, fix the variable map and re-render rather than sending a broken message.
 
 **Tracker mode (`CONFIG[commitExcel.mode] == "tracker"`, e.g. BCM)** — the team keeps ONE shared workbook (`CONFIG[commitExcel.tracker.url]`) with one sheet per release. Actions 1–5 are unchanged; **replace Actions 6–9** with:
-- 6T. Run `Invoke-CommitTracker.ps1 -Action Publish -ReleaseId <id> -CommitsJsonPath <commits.json> -ReleaseFile <release.json>`. It works on the sheet named `CONFIG[commitExcel.sheetNameTemplate]` (e.g. `BCM{{YYMM}}` → `BCM2611`):
+- 6T. Run `Invoke-CommitTracker.ps1 -Action Publish -ReleaseId <id> -CommitsJsonPath <commits.json> -ReleaseFile <release.json>`. It works on the sheet named `CONFIG[commitExcel.sheetNameTemplate]` (e.g. `BCM{{YYMM}}` → `BCM2611`; with `CONFIG[releaseNaming]` use `{{releaseName}}` → one sheet per release: `BCM2610`, `BCM2610_2`):
   - sheet missing → created at the end of the workbook with the configured header row, styling and column widths;
   - sheet present (e.g. the team created it) → **adopted** if its row 1 has every configured column (matching ignores spaces/case; `aliases` accepted), otherwise Publish throws and writes nothing;
   - then **appends** one row per commit not already on the sheet (matched by PR id / commit sha in the link column), sorted by date: `Date`, `Author`, `PR/Commit Link` (`=HYPERLINK(<PR url>, "Pull Request <id>: <title>")`, or `Commit <sha>: <subject>` for a direct push), `Description of Changes` (the Comments line from Action 4 — authors may rewrite it), and empty team-filled columns. `excludeAuthors` are dropped.
@@ -519,7 +519,7 @@ The helper records `creationVariables` from the actual serialized POST and rejec
 
 ## Step 7 — Revert bits (7a–7d)
 
-Runs only when `CONFIG[revertBits.enabled] == true` (BCM), immediately after the canary BVT sign-off (`approve-bvt`) — or, with `CONFIG[revertBits.prepareDuringCanaryBvt]` (BCM), already during Step 6 (see "Prepared during the canary BVT" below). Produces a **revert build** kept on hand for a regression rollback: branch `CONFIG[revertBits.branchTemplate]` (BCM: `releases/bcm{{YYMM}}revert`, e.g. `releases/bcm2610revert`) = the **previous release commit** + only the settings the owner chooses to keep from **this release**. This matches how the team built `releases/rollback2610` by hand (2609 release commit + 2610's `BCMTeeWorkflowVersion`). All git work goes through `scripts/Invoke-RevertBits.ps1` (never hand-edit the settings file); `releases/*` branches have blocking policies, so the kept settings reach the revert branch through a PR that the owner completes.
+Runs only when `CONFIG[revertBits.enabled] == true` (BCM), immediately after the canary BVT sign-off (`approve-bvt`) — or, with `CONFIG[revertBits.prepareDuringCanaryBvt]` (BCM), already during Step 6 (see "Prepared during the canary BVT" below). Produces a **revert build** kept on hand for a regression rollback: branch `CONFIG[revertBits.branchTemplate]` (BCM: `releases/{{releaseNameLower}}revert`, e.g. `releases/bcm2610revert`, `releases/bcm2610_2revert`; work branch `users/<owner>/{{releaseNameLower}}revert-config`) = the **previous release commit** + only the settings the owner chooses to keep from **this release**. This matches how the team built `releases/rollback2610` by hand (2609 release commit + 2610's `BCMTeeWorkflowVersion`). All git work goes through `scripts/Invoke-RevertBits.ps1` (never hand-edit the settings file); `releases/*` branches have blocking policies, so the kept settings reach the revert branch through a PR that the owner completes.
 
 State: `state.revertBits = { phase, previousCommit, currentCommit, revertBranch, topicBranch, planPath, preserved[], prId, prUrl, headSha, buildId, buildNumber, buildUrl, signedOffAt, signedOffBy, skippedReason, rollbackSource }`, written with `Update-ReleaseState -Action update-step -StepNumber 7 ... -StateProperties @{ revertBits = <obj> }`. Mirror `revertBranch`, `revertPrId`, `revertBuildId` into `release.json`. Dispatch on `phase`:
 
@@ -796,7 +796,7 @@ This step uses the SafeFly skill to create the R2D request. Most payload paramet
      | SafeFly URL          | {safeFlyUrl}                                |
      | Release              | {releaseId}                                 |
      | Branch               | {branchName}                                |
-     | Title                | CONFIG[safefly.titleTemplate] for {Month}-{YY} |
+     | Title                | CONFIG[safefly.titleTemplate] — tokens {releaseName} (= release id, e.g. BCM2610_2), {Month}-{YY} |
      | SDP Type             | {sdpType}                                   |
      | Deployment Nature    | {nature1}, {nature2}, ...                   |
      | Targeted Regions     | {count} regions (CCOA exclusions applied)   |

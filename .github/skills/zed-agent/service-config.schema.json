@@ -166,7 +166,7 @@
             },
             "riBranchTemplate": {
               "type": "string",
-              "description": "Name of the RI integration branch. Tokens: {releaseId} (e.g. 2026-11), {releaseTag} (leaf of release.currentBranch, e.g. bcm-2611).",
+              "description": "Name of the RI integration branch. Tokens: {releaseId} (e.g. 2026-11 or, with releaseNaming, BCM2610_2), {releaseTag} (release.json → releaseTag: the lowercased release name with releaseNaming, e.g. bcm2610_2; else e.g. bcm-2611).",
               "default": "zed/{releaseTag}-ri-master-to-develop"
             },
             "fiBranchTemplate": {
@@ -288,6 +288,18 @@
       }
     },
 
+    "releaseNaming": {
+      "type": "object",
+      "description": "Optional. Explicit release names for services that ship several releases per month (BCM: BCM2610, BCM2610_2, BCM2610_3). setup asks for the name (suggesting the next free one) and it becomes the release id everywhere: .zed-agent/releases/<name>/, state, email/Teams subjects, the watcher, and the {{releaseName}} / {{releaseNameLower}} template tokens (commit tracker sheet, revert branch, RI/FI branches, SafeFly {releaseName}). release.json keeps releaseMonth (YYYY-MM) so {{YYMM}} still works. Without it the release id is YYYY-MM. Script: scripts/Resolve-ReleaseName.ps1.",
+      "required": ["prefix"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "prefix": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$", "description": "Name prefix, e.g. 'BCM' → BCM<YYMM>." },
+        "sequenceSeparator": { "type": "string", "enum": ["_", ".", "-"], "default": "_", "description": "Separator before the 2nd, 3rd … release of a month: BCM2610_2." },
+        "notes": { "type": "string" }
+      }
+    },
     "revertBits": {
       "type": "object",
       "description": "Optional revert bits, built as a Step 7 pre-phase right after the canary BVT sign-off (approve-bvt): <branchTemplate> is forked from the PREVIOUS release commit and, through a PR, receives only the settings the release owner chooses to keep from THIS release (preserveAlways keys are always kept). ZED then builds it, waits for the owner's BVT sign-off (approve-revert), and — when useForRollback — Step 7 rolls canary back with that build instead of release.previousBranch. Script: scripts/Invoke-RevertBits.ps1.",
@@ -295,7 +307,7 @@
       "additionalProperties": true,
       "properties": {
         "enabled": { "type": "boolean", "default": false },
-        "branchTemplate": { "type": "string", "default": "releases/{{releaseTag}}revert", "description": "Revert branch name. Tokens: {{YYMM}}, {{releaseId}}, {{releaseTag}} (leaf of release.currentBranch). BCM: releases/bcm{{YYMM}}revert." },
+        "branchTemplate": { "type": "string", "default": "releases/{{releaseTag}}revert", "description": "Revert branch name. Tokens: {{YYMM}}, {{releaseId}}, {{releaseName}}, {{releaseNameLower}}, {{releaseTag}}. With releaseNaming use {{releaseNameLower}} — BCM: releases/{{releaseNameLower}}revert (releases/bcm2610revert, releases/bcm2610_2revert)." },
         "topicBranchTemplate": { "type": "string", "default": "users/{ownerAlias}/{{releaseTag}}-revert-config", "description": "Work branch that carries the kept settings; the PR goes from here into the revert branch. Extra token: {ownerAlias}." },
         "files": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Repo-relative settings files to compare (every '.../Properties' object: defaults, per cloud, per stamp)." },
         "preserveAlways": { "type": "array", "items": { "type": "string" }, "description": "Setting keys always kept from this release when they changed (any scope), e.g. 'BCMAppConfig->BCMTeeWorkflowVersion'." },
@@ -354,7 +366,7 @@
         },
         "sheetNameTemplate": {
           "type": "string",
-          "description": "Template for the Excel sheet tab name. Supports {{YYMM}} placeholder.",
+          "description": "Template for the Excel sheet tab name. Supports {{YYMM}}, {{YYYY}}, {{MM}}, {{releaseId}}, {{releaseName}} (with releaseNaming several releases share a month — use {{releaseName}}, e.g. BCM2610_2).",
           "minLength": 1
         },
         "sharePointFolder": {
@@ -455,7 +467,7 @@
       "properties": {
         "titleTemplate": {
           "type": "string",
-          "description": "Template for SafeFly CR title. Supports {serviceName}, {serviceDisplayName}, {month}, {yy} placeholders.",
+          "description": "Template for SafeFly CR title. Supports {serviceName}, {serviceDisplayName}, {releaseName} / {releaseId} (e.g. BCM2610_2), {month}, {yy} placeholders.",
           "minLength": 1
         },
         "descriptionTemplate": {

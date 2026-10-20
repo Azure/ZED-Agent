@@ -129,7 +129,8 @@ try {
 
     if (-not $SheetName) {
         $tmpl = if ($ce.sheetNameTemplate) { [string]$ce.sheetNameTemplate } else { '{{YYMM}}' }
-        $SheetName = Expand-SheetName $tmpl $ReleaseId
+        $relForName = if ($ReleaseFile -and (Test-Path -LiteralPath $ReleaseFile)) { Get-Content -LiteralPath $ReleaseFile -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+        $SheetName = Expand-SheetName $tmpl $ReleaseId $relForName
     }
     $bad = Test-SheetName $SheetName
     if ($bad) { throw $bad }

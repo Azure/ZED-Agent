@@ -44,6 +44,8 @@ When the release owner says `setup`:
 
    Only after all four gates are green does `setup` proceed. Auto-remediation of broken environment state is now the responsibility of `test-preflight` — do NOT attempt fixes inside `setup` itself. The only auto-remediation `setup` still triggers is the `setup-service` resume cascade (Behavior Rule 13) when the readiness file says `setupService.status` is `incomplete` and the owner asks to continue.
 
+1a. **Release name (only when `CONFIG[releaseNaming]` is set — BCM)**: ask it NOW, before anything else, exactly as described in step 11a (`Resolve-ReleaseName.ps1 -Action Suggest` → `ask_user` with the suggestion → `-Action Validate`). From here on the validated name (e.g. `BCM2610_2`) is the release id for every later sub-step and message of `setup`, and **"the current month" means the release month of the name** (`ReleaseMonth`, e.g. a `BCM2611` set up on 29 Oct uses November for the CCOA check). Step 11a then reuses this answer — do not ask twice.
+
 2. **CCOA region exclusion (auto-detect)**: Automatically check the CCOA (Critical Changes Only Advisory) schedule to determine which Azure regions are blocked for the current month.
    a. Use the Engineering Hub MCP tool (`es_search`) to query the CCOA schedule:
       - Search with keywords: `CCOASchedule "Critical Change Only Advisory Schedule" "Planned CCOA" 2026 regions`
@@ -169,7 +171,9 @@ When the release owner says `setup`:
        - Tool returns any other error → halt setup, surface the full error message verbatim, instruct the release owner to fix the Mail MCP installation and re-run `setup`.
 
 11. **Release initialization**: Set up the release for the current month.
-    a. Auto-detect release ID from current date (format: `YYYY-MM`, e.g., `2026-04`)
+    a. **Release id**:
+       - **`CONFIG[releaseNaming]` set** (several releases per month — BCM: `BCM2610`, `BCM2610_2`, `BCM2610_3`): use the name from step 1a (if setup was entered without it — e.g. `setup skip` — ask it here). How to ask: run `scripts/Resolve-ReleaseName.ps1 -Action Suggest` and ask with `ask_user`: *"Release name? (this month so far: {Existing or 'none'})"* — choices `{Suggested} (Recommended)` + freeform. Validate the answer with `-Action Validate -Name <answer>`: invalid → show the error and ask again; `Available == $false` → *"{Name} already exists — pick another name"*. If `Active` lists another release that is still running, say *"{id} is still active — ZED drives one release at a time; finish or `stop` it first"* and ask whether to stop it now (`stop` → its state `status = "stopped"`, watcher removed) or cancel setup. The validated **canonical name** (`Name`, e.g. `BCM2610_2`) is the release id: folder, state, every email / Teams subject (`| BCM2610_2`), the watcher and the `{{releaseName}}` tokens. Store `releaseName = Name`, `releaseMonth = ReleaseMonth` (YYYY-MM, drives `{{YYMM}}`, CCOA month and dates) and `releaseSequence = Sequence` in release.json.
+       - **Otherwise**: auto-detect the release id from the current date (format: `YYYY-MM`, e.g., `2026-04`).
     b. You MUST ask the release owner for each of these values and STOP AND WAIT for their response before proceeding. Do NOT auto-fill, assume, or use defaults without the release owner explicitly confirming. If the release owner does not respond, do NOT continue — keep waiting.
        **If `CONFIG[ado.releaseMode] == "deploy-base"`** (no release branch is cut — the base branch itself is deployed, e.g. BCM deploys master), ask instead, one question at a time with `ask_user`:
        - **Deployment branch** — *"Which branch should this release deploy? (default: `CONFIG[ado.baseBranch]`)"* — choices `CONFIG[ado.baseBranch] (Recommended)` + freeform. Validate it exists on origin (`git ls-remote --heads origin <branch>`). → `currentBranch`.
@@ -187,10 +191,13 @@ When the release owner says `setup`:
        ```json
        {
          "releaseId": "{id}",
+         "releaseName": "<releaseNaming only — same as releaseId, e.g. BCM2610_2>",
+         "releaseMonth": "<releaseNaming only — YYYY-MM of the name, e.g. 2026-10>",
+         "releaseSequence": "<releaseNaming only — 1 for BCM2610, 2 for BCM2610_2, …>",
          "releaseOwner": { "alias": "<from az account user.name>", "email": "<alias>@microsoft.com", "name": "<from: az ad signed-in-user show --query displayName -o tsv>" },
          "dates": { "created": "<now>", "branchCut": "<release owner input>" },
          "releaseMode": "<CONFIG[ado.releaseMode] or 'cut-branch'>",
-         "releaseTag": "<leaf of CONFIG[ado.branchPrefix] + YYMM — e.g. 'bcm-2611'>",
+         "releaseTag": "<releaseNaming: the release name lowercased — e.g. 'bcm2610_2' | otherwise leaf of CONFIG[ado.branchPrefix] + YYMM — e.g. 'bcm-2611'>",
          "currentBranch": "<cut-branch: release owner input — e.g., {CONFIG[ado.branchPrefix]}2502_sbc | deploy-base: the deployment branch, e.g. master>",
          "previousBranch": "<cut-branch only: release owner input — e.g., {CONFIG[ado.branchPrefix]}2411>",
          "previousCommit": "<deploy-base only>", "previousBuildId": "<deploy-base only>", "previousBuildNumber": "<deploy-base only>",

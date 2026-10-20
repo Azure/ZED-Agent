@@ -207,12 +207,24 @@ if ($rmProp -and $rmProp.Value) {
     }
 }
 
+# --- Optional releaseNaming (several releases per month: BCM2610, BCM2610_2, …) ---
+$rnProp = $cfg.PSObject.Properties['releaseNaming']
+$perReleaseNames = $false
+if ($rnProp -and $rnProp.Value -and -not ($rnProp.Value.PSObject.Properties['enabled'] -and $rnProp.Value.enabled -eq $false)) {
+    . (Join-Path $PSScriptRoot 'lib\ReleaseNameLib.ps1')
+    $null = Get-ReleaseNamingConfig $cfg   # validates prefix / separator
+    $perReleaseNames = $true
+}
+
 # --- Optional revertBits (Step 7 pre-phase) ---
 $rbProp = $cfg.PSObject.Properties['revertBits']
 if ($rbProp -and $rbProp.Value -and $rbProp.Value.PSObject.Properties['enabled'] -and $rbProp.Value.enabled -eq $true) {
     $rb = $rbProp.Value
-    if ([string]$rb.branchTemplate -notmatch '\{\{(YYMM|releaseId|releaseTag)\}\}') {
-        throw "revertBits.branchTemplate '$($rb.branchTemplate)' must contain {{YYMM}}, {{releaseId}} or {{releaseTag}} so each release gets its own revert branch."
+    if ([string]$rb.branchTemplate -notmatch '\{\{(YYMM|releaseId|releaseTag|releaseName|releaseNameLower)\}\}') {
+        throw "revertBits.branchTemplate '$($rb.branchTemplate)' must contain {{releaseNameLower}}, {{releaseName}}, {{YYMM}}, {{releaseId}} or {{releaseTag}} so each release gets its own revert branch."
+    }
+    if ($perReleaseNames -and [string]$rb.branchTemplate -notmatch '\{\{(releaseId|releaseTag|releaseName|releaseNameLower)\}\}') {
+        throw "revertBits.branchTemplate '$($rb.branchTemplate)' uses only {{YYMM}} but releaseNaming allows several releases per month — use {{releaseNameLower}} (e.g. 'releases/{{releaseNameLower}}revert')."
     }
     if (@($rb.files | Where-Object { $_ }).Count -eq 0) { throw "Required config field is empty: 'revertBits.files'." }
     if ($rb.PSObject.Properties['topicBranchTemplate'] -and $rb.topicBranchTemplate -and [string]$rb.topicBranchTemplate -eq [string]$rb.branchTemplate) {
@@ -238,8 +250,11 @@ if ($ceProp -and $ceProp.Value -and $ceProp.Value.PSObject.Properties['mode'] -a
         if (@($cols | Where-Object { $_.PSObject.Properties['required'] -and $_.required -eq $true }).Count -eq 0) {
             throw "commitExcel.tracker.columns has no 'required: true' column — Step 4 would complete immediately."
         }
-        if ([string]$ce.sheetNameTemplate -notmatch '\{\{(YYMM|releaseId)\}\}') {
-            throw "commitExcel.sheetNameTemplate '$($ce.sheetNameTemplate)' must contain {{YYMM}} (or {{releaseId}}) so each release gets its own sheet."
+        if ([string]$ce.sheetNameTemplate -notmatch '\{\{(YYMM|releaseId|releaseName|releaseNameLower)\}\}') {
+            throw "commitExcel.sheetNameTemplate '$($ce.sheetNameTemplate)' must contain {{releaseName}}, {{YYMM}} or {{releaseId}} so each release gets its own sheet."
+        }
+        if ($perReleaseNames -and [string]$ce.sheetNameTemplate -notmatch '\{\{(releaseId|releaseName|releaseNameLower)\}\}') {
+            throw "commitExcel.sheetNameTemplate '$($ce.sheetNameTemplate)' uses only {{YYMM}} but releaseNaming allows several releases per month — use {{releaseName}} (one sheet per release, e.g. BCM2610_2)."
         }
     }
 }

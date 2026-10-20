@@ -3,7 +3,7 @@
 > Updated: 2026-08-24 -- **SafeFly V2 GraphQL is now the write path.** V1 REST write endpoint
 > (`https://www.safefly.azure.com/api/RequestCreation/v1/requests`) is in permanent read-only mode
 > (HTTP 410). All R2D creation uses the V2 GraphQL API at `https://safeflyv2.live.azure.com/api/v1.0/graphql`.
-> V1 REST **read** endpoints (approval state, leases, request details) remain operational.
+> V1 REST **read** endpoints were said to remain operational; on 2026-10-20 the V1 `approvalstate` read also returned HTTP 410 — approval state is read from V2 (see "V2 approval state").
 
 ---
 
@@ -68,7 +68,7 @@ Configure via `safefly.tokenAudience` + `safefly.graphQlEndpoint` +
 | `franchiseId` | `b52a8292-9c66-4139-9086-acb61009fad6` |
 | `serviceId` | `fb10185a-465d-42cd-b339-7d0d9331c340` |
 | `changeTypeId` | `1bdba704-213b-4239-8dd7-691457341440` ("App deployment") |
-| `formId` | `3cc72aed-0ecf-432e-92f2-133fee60a542` |
+| `formId` | `9561b383-3538-46c2-849f-e2756292d665` (active since 13.14983; 13.12038 used `3cc72aed-…`) |
 
 ### GraphQL Queries
 
@@ -132,6 +132,25 @@ mutation SubmitRequest($input: SaveRequestRequestBaseInput!) {
 
 ### Answer Assembly Rules
 
+#### Value encoding (verified against stored requests 13.14983 / 13.12038, 2026-10)
+
+| Question kind | Encoding | Example |
+|---------------|----------|---------|
+| `isMultiSelect: true` (`core.regions`, `ev2.servicegroup`, …) | JSON array string | `["microsoft.azure.backup.cntl.bcm.active"]` |
+| option-based single select | the option **value** (not the label) | `core.sdp` label `Standard SDP (Normal Rollout)` → `Standard SDP`; `ado.build_na` `Applicable` → `False` |
+| free text | plain string | `ev2.build` = `Release-2610-1` (the production pipeline run's buildNumber) |
+
+- `core.regions` values come from `getRegionsWithActiveCCOACoverage` (127 CamelCase ids on 2026-10-20). There is **no** hard-coded drop list — targeted regions not in the live list go to `core.other_regions`.
+- `tagIds` are **tag GUIDs**. `tags(name:)` is a case-insensitive *contains* match — keep the exact-name hit only. A configured tag that does not exist (e.g. `BCM_Regular_Rollout`) is skipped with a warning; never send names.
+- The config `formId` must equal the active form's id (question ids come from the active form) — `New-SafeFlyRequest.ps1` fails closed on a mismatch.
+
+#### V2 approval state (read)
+
+`requests(filter: { objectId: { equalTo: <id> } }) { data { currentState } }` — the V1
+`/api/SafeFlyRequest/approvalstate` read returns **HTTP 410** (2026-10). V2 `currentState` values:
+`Approved`; `Draft`, `Submitted`, `Engineering Director Reviewed`, `R2D Reviewed` (pending);
+`Rejected`; `Abandoned`. `Get-SafeFlyApproval.ps1` uses this when `safefly.graphQlEndpoint` is set.
+
 #### SDP Mapping (V1 -> V2 option labels)
 
 | V1 value | V2 option label |
@@ -174,7 +193,7 @@ throw with the list of unanswered required question names. Never submit an incom
 
 ## V1 REST API (Legacy -- Read-Only)
 
-> V1 **write** endpoint returns HTTP 410 permanently. V1 **read** endpoints remain working.
+> V1 **write** endpoint returns HTTP 410 permanently. As of 2026-10 the V1 `approvalstate` **read** also returns HTTP 410 — use the V2 approval-state read above.
 
 ### V1 Authentication
 

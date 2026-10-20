@@ -890,14 +890,13 @@ Describe 'SafeFly V2 — D5 regression: dynamic region resolution (CamelCase ide
         (& $normalize 'Southeast Asia')  | Should -Be 'southeastasia'
     }
 
-    It 'matched regions are sent as comma-separated CamelCase in a single answer value' {
-        # Validate the join pattern: multiple identifiers joined by comma, no space
+    It 'matched regions are sent as a JSON array (multi-select shape), not comma-joined' {
+        # Regression (2026-10, BCM2610_2): SafeFly stores core.regions as a JSON array string
+        # (13.14983: ["APACSoutheast2","Arlem",...]). The old comma-joined value did not match.
         $identifiers = @('EastAsia', 'SoutheastAsia', 'WestUS2')
-        $value = $identifiers -join ','
-        $value | Should -Be 'EastAsia,SoutheastAsia,WestUS2'
-        $value | Should -Not -Match '\s'        # no spaces in the joined value
-        $value | Should -Not -Match ';'         # not semicolon-separated
-        ($value -split ',').Count | Should -Be 3
+        $value = ConvertTo-Json -InputObject ([string[]]$identifiers) -Compress
+        $value | Should -Be '["EastAsia","SoutheastAsia","WestUS2"]'
+        (ConvertTo-Json -InputObject ([string[]]@('EastAsia')) -Compress) | Should -Be '["EastAsia"]'
     }
 
     It 'Add-Answer resolves option label to option value (generic encoder)' {
@@ -929,5 +928,177 @@ Describe 'SafeFly V2 — D5 regression: dynamic region resolution (CamelCase ide
         # The encoder checks label or value match and uses opt.value
         $script | Should -Match '\$_\.label\s*-eq\s*\$value\s*-or\s*\$_\.value\s*-eq\s*\$value'
         $script | Should -Match '\$opt\.value'
+    }
+}
+
+# =============================================================================
+# 2026-10 BCM2610_2 payload regressions — behavioral: the real New-SafeFlyRequest.ps1 /
+# Get-SafeFlyApproval.ps1 run in a staged copy whose GraphQL / form / config helpers are stubs.
+# =============================================================================
+Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
+    BeforeAll {
+        $script:Stage = Join-Path $TestDrive 'zed'
+        $sfDir = Join-Path $script:Stage 'scripts\SafeFly'
+        New-Item -ItemType Directory -Path $sfDir -Force | Out-Null
+        Copy-Item (Join-Path $SafeFlyDir 'New-SafeFlyRequest.ps1')  $sfDir
+        Copy-Item (Join-Path $SafeFlyDir 'Get-SafeFlyApproval.ps1') $sfDir
+        Copy-Item (Join-Path $PSScriptRoot 'fixtures\SafeFly\Invoke-SafeFlyGraphQL.stub.ps1') (Join-Path $sfDir 'Invoke-SafeFlyGraphQL.ps1')
+        Set-Content (Join-Path $script:Stage 'scripts\Load-ServiceConfig.ps1') -Value 'param($ServiceConfigPath) Get-Content $ServiceConfigPath -Raw | ConvertFrom-Json'
+        Set-Content (Join-Path $sfDir 'Get-SafeFlyForm.ps1') -Value 'param($ServiceConfigPath) Get-Content (Join-Path $PSScriptRoot "form.json") -Raw | ConvertFrom-Json'
+
+        function script:New-Q([string]$Name, [bool]$Req = $false, $Multi = $null, $Opts = @(), $Cond = $null) {
+            [pscustomobject]@{ id = [guid]::NewGuid().ToString(); name = $Name; label = $Name; isRequired = $Req; isMultiSelect = $Multi
+                renderType = 'x'; conditionalRule = $Cond
+                options = @($Opts | ForEach-Object { [pscustomobject]@{ id = [guid]::NewGuid().ToString(); label = $_[0]; value = $_[1] } }) }
+        }
+        function script:New-Cond([string]$Trigger, [string]$Op, [string]$Val) {
+            [pscustomobject]@{ operator = 'AND'; actionSet = [pscustomobject]@{ require = $true }
+                conditions = @([pscustomobject]@{ triggerQuestionName = $Trigger; comparisonOperator = $Op; comparisonValue = $Val }) }
+        }
+        $script:FormId = '9561b383-3538-46c2-849f-e2756292d665'
+        $script:Questions = @(
+            (New-Q 'core.orchestrator_name' $true $false @(,@('EV2','EV2')))
+            (New-Q 'core.sdp' $true $false @(@('Standard SDP (Normal Rollout)','Standard SDP'), @('Conservative SDP','Conservative SDP')))
+            (New-Q 'core.rollback_strategy' $true $false @(@('Manual (TSG)','Manual (TSG)'), @('DRI determines rollback or rollforward in real time based on the issue','DRI determines rollback or rollforward in real time based on the issue')))
+            (New-Q 'core.health_monitoring' $true $null @(@('Yes','True'), @('No','False')))
+            (New-Q 'core.team_assessed_risk' $false $false @(@('Low','Low'), @('Medium','Medium')))
+            (New-Q 'ev2.servicegroup' $true $true @() (New-Cond 'core.orchestrator_name' 'ContainsAny' 'ev2'))
+            (New-Q 'ev2.build' $true $false @() (New-Cond 'core.orchestrator_name' 'ContainsAny' 'ev2'))
+            (New-Q 'ado.build_na' $true $null @(@('Applicable','False'), @('Not Applicable','True')))
+            (New-Q 'ado.build' $true $null @() (New-Cond 'ado.build_na' 'Equals' 'False'))
+            (New-Q 'core.regions' $false $true @())
+            (New-Q 'core.other_regions' $false $null @())
+            (New-Q 'ccoa.is_ccoa_request' $false $null @(@('No','False'), @('Yes','True')))
+            (New-Q 'ccoa.justification' $true $null @() (New-Cond 'ccoa.is_ccoa_request' 'Equals' 'True'))
+        )
+        function script:Write-Fixture([string[]]$Tags = @('BCM_Regular_Rollout', 'App Deployment'), [string]$FormId = $script:FormId, $Questions = $script:Questions, [hashtable]$Extra = @{}) {
+            $sf = [ordered]@{ graphQlEndpoint = 'https://stub.invalid/graphql'; tokenAudience = 'api://stub'; franchiseId = 'b52a8292-9c66-4139-9086-acb61009fad6'
+                changeTypeId = '1bdba704-213b-4239-8dd7-691457341440'; formId = $script:FormId; serviceId = 'fb10185a-465d-42cd-b339-7d0d9331c340'
+                serviceGroupName = 'microsoft.azure.backup.cntl.bcm.active'; titleTemplate = '[MAB][{serviceName}] release {releaseName}'
+                descriptionTemplate = '{serviceName} release {releaseId}'; tags = @($Tags) }
+            foreach ($k in $Extra.Keys) { $sf[$k] = $Extra[$k] }
+            @{ safefly = $sf; service = @{ name = 'BCM'; displayName = 'Backup Coordinator' }; serviceTreeIds = @{ safefly = 'fb10185a-465d-42cd-b339-7d0d9331c340' } } |
+                ConvertTo-Json -Depth 8 | Set-Content (Join-Path $script:Stage 'service-config.json')
+            [pscustomobject]@{ formId = $FormId; questions = @($Questions) } | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $script:Stage 'scripts\SafeFly\form.json')
+            @{ regions = @('APACSoutheast2','DenmarkEast','EastAsia','SouthwestUS','WestUS2','UAENortheast(Ajman)')
+               tags = @(@{ id = '4868c011-1488-4035-87a8-0fb2c216af52'; name = 'App Deployment' }, @{ id = '11111111-1111-1111-1111-111111111111'; name = 'App Deployment Extra' })
+               requests = @(@{ id = 'aaaaaaaa-0000-0000-0000-000000000001'; displayId = '13.1'; currentState = 'Submitted' },
+                            @{ id = 'aaaaaaaa-0000-0000-0000-000000000002'; displayId = '13.2'; currentState = 'Approved' },
+                            @{ id = 'aaaaaaaa-0000-0000-0000-000000000003'; displayId = '13.3'; currentState = 'Rejected' },
+                            @{ id = 'aaaaaaaa-0000-0000-0000-000000000004'; displayId = '13.4'; currentState = 'Abandoned' },
+                            @{ id = 'aaaaaaaa-0000-0000-0000-000000000005'; displayId = '13.5'; currentState = 'R2D Reviewed' }) } |
+                ConvertTo-Json -Depth 6 | Set-Content (Join-Path $script:Stage 'scripts\SafeFly\fixture.json')
+            Remove-Item (Join-Path $script:Stage 'scripts\SafeFly\calls.log') -ErrorAction SilentlyContinue
+        }
+        function script:Invoke-DryRun([hashtable]$Extra = @{}) {
+            $p = @{ BuildId = '186664606'; BuildNumber = 'Release-2610-9'; ReleaseId = 'BCM2610_2'; ReleaseOwnerAlias = 'agarwala'
+                    SDPType = 'Standard SDP'; TargetedRegions = @('Denmark East', 'East Asia', 'Southwest US', 'West US 2', 'Atlantis Central')
+                    ServiceConfigPath = (Join-Path $script:Stage 'service-config.json'); DryRun = $true }
+            foreach ($k in $Extra.Keys) { $p[$k] = $Extra[$k] }
+            $out = & (Join-Path $script:Stage 'scripts\SafeFly\New-SafeFlyRequest.ps1') @p 3>$null 6>$null
+            $res = @($out) | Where-Object { $_ -is [pscustomobject] -and $_.PSObject.Properties['requestStatus'] } | Select-Object -Last 1
+            $payload = $res.payload | ConvertFrom-Json
+            $qs = (Get-Content (Join-Path $script:Stage 'scripts\SafeFly\form.json') -Raw | ConvertFrom-Json).questions
+            $byName = @{}
+            foreach ($a in $payload.answers) { $q = $qs | Where-Object id -eq $a.questionId; $byName[$q.name] = $a.value }
+            return [pscustomobject]@{ Result = $res; Payload = $payload; Answers = $byName }
+        }
+    }
+
+    BeforeEach { Write-Fixture }
+
+    It 'resolves tag names to V2 GUIDs (exact name only) and skips a tag missing in V2 with a warning' {
+        $r = Invoke-DryRun
+        @($r.Payload.tagIds) | Should -Be @('4868c011-1488-4035-87a8-0fb2c216af52')
+        ($r.Result.tagWarnings -join ';') | Should -Match 'BCM_Regular_Rollout.*does not exist'
+        $r.Payload.tagIds | Should -Not -Contain 'BCM_Regular_Rollout'
+    }
+
+    It 'sends an empty tagIds list when no configured tag exists' {
+        Write-Fixture -Tags @('BCM_Regular_Rollout')
+        $r = Invoke-DryRun
+        $r.Result.payload | Should -Match '"tagIds":\s*\[\s*\]'
+        @($r.Result.tagWarnings).Count | Should -Be 1
+    }
+
+    It 'encodes multi-select answers (ev2.servicegroup, core.regions) as JSON arrays like real requests' {
+        $r = Invoke-DryRun
+        $r.Answers['ev2.servicegroup'] | Should -Be '["microsoft.azure.backup.cntl.bcm.active"]'
+        $regions = $r.Answers['core.regions'] | ConvertFrom-Json
+        @($regions) | Should -Be @('DenmarkEast', 'EastAsia', 'SouthwestUS', 'WestUS2')
+        $r.Answers['core.regions'] | Should -Match '^\["'
+    }
+
+    It 'keeps single-select answers as plain option values' {
+        $r = Invoke-DryRun
+        $r.Answers['core.sdp'] | Should -Be 'Standard SDP'
+        $r.Answers['core.orchestrator_name'] | Should -Be 'EV2'
+        $r.Answers['ev2.build'] | Should -Be 'Release-2610-9'
+        $r.Answers['core.team_assessed_risk'] | Should -Be 'Low'
+        $r.Answers['ccoa.is_ccoa_request'] | Should -Be 'False'
+    }
+
+    It 'uses the live V2 region list — no hard-coded V1 drop list; unmatched regions go to core.other_regions' {
+        $r = Invoke-DryRun
+        $r.Result.regionsSubmitted | Should -Be 4
+        @($r.Result.regionsUnmatched) | Should -Be @('Atlantis Central')
+        $r.Answers['core.other_regions'] | Should -Be 'Atlantis Central'
+        $src = Get-Content (Join-Path $SafeFlyDir 'New-SafeFlyRequest.ps1') -Raw
+        $src | Should -Not -Match 'safeFlyUnsupportedRegions'
+        $src | Should -Not -Match "'Denmark East'"
+    }
+
+    It 'answers the ADO build question with the given link (Applicable)' {
+        $url = 'https://dev.azure.com/msazure/One/_build/results?buildId=186664606'
+        $r = Invoke-DryRun @{ AdoBuildUrl = $url }
+        $r.Answers['ado.build_na'] | Should -Be 'False'
+        $r.Answers['ado.build'] | Should -Be $url
+    }
+
+    It 'answers Not Applicable without an ADO build link' {
+        $r = Invoke-DryRun
+        $r.Answers['ado.build_na'] | Should -Be 'True'
+        $r.Answers.ContainsKey('ado.build') | Should -BeFalse
+    }
+
+    It 'takes the rollback strategy from service-config (Manual (TSG)); the old DRI default stays when unset' {
+        Write-Fixture -Extra @{ rollbackStrategy = 'Manual (TSG)' }
+        (Invoke-DryRun).Answers['core.rollback_strategy'] | Should -Be 'Manual (TSG)'
+        Write-Fixture
+        (Invoke-DryRun).Answers['core.rollback_strategy'] | Should -Be 'DRI determines rollback or rollforward in real time based on the issue'
+    }
+
+    It 'rejects an invalid rollback strategy option (fail closed)' {
+        Write-Fixture -Extra @{ rollbackStrategy = 'Roll the dice' }
+        { Invoke-DryRun } | Should -Throw '*invalid option value*Roll the dice*'
+    }
+
+    It 'evaluates conditions on a multi-select trigger against every selected value' {
+        $q = @($script:Questions) + @(New-Q 'x.ea_note' $true $null @() (New-Cond 'core.regions' 'ContainsAny' 'EastAsia'))
+        Write-Fixture -Questions $q
+        { Invoke-DryRun } | Should -Throw '*FAIL-CLOSED*x.ea_note*'
+    }
+
+    It 'fails closed when the configured formId is not the active form' {
+        Write-Fixture -FormId '3cc72aed-0ecf-432e-92f2-133fee60a542'
+        { Invoke-DryRun } | Should -Throw '*FORM MISMATCH*'
+    }
+
+    It 'DryRun never calls a mutation' {
+        $null = Invoke-DryRun
+        $calls = Get-Content (Join-Path $script:Stage 'scripts\SafeFly\calls.log') -Raw
+        $calls | Should -Not -Match 'mutation'
+        $calls | Should -Match 'getRegionsWithActiveCCOACoverage'
+    }
+
+    It 'Get-SafeFlyApproval classifies V2 currentState values (the V1 approvalstate API returns HTTP 410)' {
+        $cfgPath = Join-Path $script:Stage 'service-config.json'
+        $ap = Join-Path $script:Stage 'scripts\SafeFly\Get-SafeFlyApproval.ps1'
+        (& $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-000000000001' -ServiceConfigPath $cfgPath 6>$null).classification | Should -Be 'Pending'
+        (& $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-000000000005' -ServiceConfigPath $cfgPath 6>$null).classification | Should -Be 'Pending'
+        (& $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-000000000002' -ServiceConfigPath $cfgPath 6>$null).classification | Should -Be 'Approved'
+        (& $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-000000000003' -ServiceConfigPath $cfgPath 6>$null).classification | Should -Be 'Rejected'
+        (& $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-000000000004' -ServiceConfigPath $cfgPath 6>$null).classification | Should -Be 'Invalidated'
+        { & $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-00000000dead' -ServiceConfigPath $cfgPath 6>$null } | Should -Throw '*not found*'
     }
 }

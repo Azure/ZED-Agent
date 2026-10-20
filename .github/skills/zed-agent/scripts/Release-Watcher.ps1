@@ -5,6 +5,7 @@ $lockFile  = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/watcher.lo
 $stateLock = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/state.json.lock"
 
 . (Join-Path $PSScriptRoot 'Invoke-WithStateLock.ps1')
+. (Join-Path $PSScriptRoot 'lib\RunCompletionWaitLib.ps1')
 
 # Load service config once for watcher-tunable settings (test-mode interval, etc.)
 $cfg = $null
@@ -434,7 +435,23 @@ while ($true) {
             $headers = @{ Authorization = "Bearer $token" }
             $allDone = $true; $anyFailed = $false
             $ev2Rules = Get-DeploymentDoneRules
-            foreach ($t in $dir.targets) {
+            # waitForRunCompletion (serialization waits, e.g. "EV2 one rollout at a time" before
+            # Steps 7/10/13/15): done ONLY when every ADO run has status 'completed' (any result) —
+            # no deploymentDoneWhen 'deployed' shortcut, a foreign run's failed result is not a
+            # failure of this release. See scripts/lib/RunCompletionWaitLib.ps1.
+            $waitForCompletion = $dir.PSObject.Properties['waitForRunCompletion'] -and $dir.waitForRunCompletion -eq $true
+            if ($waitForCompletion) {
+                $rc = Update-RunCompletionTargets -Targets @($dir.targets) -GetRun {
+                    param($tt) Invoke-RestMethod -Uri $tt.url -Headers $headers -TimeoutSec 60 -ErrorAction Stop
+                }
+                $allDone = $rc.AllDone
+                foreach ($ct in $rc.Completed) {
+                    $auditRc = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+                    @{ ts = (Get-Date -Format 'o'); event = 'run-completed'; url = $ct.url; label = $ct.label; result = $ct.result; finishTime = $ct.finishTime; reason = 'waitForRunCompletion' } |
+                        ConvertTo-Json -Compress | Add-Content $auditRc -Encoding UTF8
+                }
+            }
+            foreach ($t in $(if ($waitForCompletion) { @() } else { $dir.targets })) {
                 if ($t.status -in @('completed','failed','deployed')) { continue }
                 $resp = Invoke-RestMethod -Uri $t.url -Headers $headers -TimeoutSec 60 -ErrorAction Stop
                 if ($resp.status -eq 'completed') {

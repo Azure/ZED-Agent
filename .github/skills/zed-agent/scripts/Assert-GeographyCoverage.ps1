@@ -100,6 +100,36 @@ foreach ($r in $regionMappings) {
     $regionToGeography[$r.RegionShortName.ToLower()] = $r.Ev2Geography
 }
 
+# `regions(*)` = every region of the parameter's cloud. The expected set above is the
+# Public cloud (Get-RegionMapping default), so a wildcard counts only when it belongs to
+# that cloud: a flat `Regions` parameter, or a partition whose name is prefix-compatible
+# with 'Public' (e.g. PubRegions). A wildcard of another partition (MCRegions, FFRegions)
+# covers nothing here, and a partition whose <P>Script flag is not true is off. Its
+# <P>ExcludeRegions entries are subtracted. Anything unrecognised under-reports (safe side).
+$expectedCloudName = 'Public'
+function Test-PrefixCompatible([string]$A, [string]$B) {
+    if ([string]::IsNullOrEmpty($A) -or [string]::IsNullOrEmpty($B)) { return $false }
+    return $A.StartsWith($B, [System.StringComparison]::OrdinalIgnoreCase) -or $B.StartsWith($A, [System.StringComparison]::OrdinalIgnoreCase)
+}
+function Expand-RegionWildcard {
+    param([string]$ParamName, $Params, [string[]]$ParamNames)
+    $partition = if ($ParamName -match '^(?<p>.*?)Regions$') { $Matches['p'] } else { $null }
+    if ($null -eq $partition) { return @() }
+    if ($partition -ne '' -and -not (Test-PrefixCompatible $partition $expectedCloudName)) { return @() }
+    # Cloud switch (<P>Script, possibly spelled with the longer/shorter partition name)
+    foreach ($sn in @($ParamNames | Where-Object { $_ -match '^(?<p>.+?)Script$' -and ($partition -eq '' -or (Test-PrefixCompatible $Matches['p'] $partition)) })) {
+        if ($partition -eq '' -and $sn -ne 'Script') { continue }
+        if ("$($Params.$sn)".Trim() -notmatch '^(?i:true)$') { return @() }
+    }
+    $all = @($regionMappings | ForEach-Object { "$($_.RegionShortName)".ToLower() } | Where-Object { $_ } | Select-Object -Unique)
+    $exclName = @($ParamNames | Where-Object { $_ -match '^(?<p>.*?)ExcludeRegions$' -and ($Matches['p'] -eq $partition -or ($partition -ne '' -and (Test-PrefixCompatible $Matches['p'] $partition))) }) | Select-Object -First 1
+    if ($exclName) {
+        $excl = @(Parse-RegionList "$($Params.$exclName)" | ForEach-Object { $_.ToLower() })
+        $all = @($all | Where-Object { $excl -notcontains $_ })
+    }
+    return $all
+}
+
 $pipelineCoverageMap = @{}  # pipelineKey -> @{ regions = @(); geographies = HashSet }
 # Every regions-facet parameter actually seen, so the remedy can name the real
 # parameter(s) for THIS service rather than assuming a fixed name.
@@ -117,7 +147,11 @@ foreach ($key in $PipelineParams.Keys) {
     $paramNames = if ($params -is [System.Collections.IDictionary]) { @($params.Keys) }
                   else { @($params.PSObject.Properties.Name) }
     foreach ($rn in @(Get-FacetParameterNames -ParameterNames $paramNames -Facet 'Regions')) {
-        $regions += Parse-RegionList $params.$rn
+        $parsed = @(Parse-RegionList $params.$rn)
+        if ($parsed.Count -eq 1 -and $parsed[0] -eq '*') {
+            $parsed = @(Expand-RegionWildcard -ParamName $rn -Params $params -ParamNames $paramNames)
+        }
+        $regions += $parsed
         [void]$discoveredRegionParams.Add($rn)
     }
     $regions = @($regions | Select-Object -Unique)
@@ -215,8 +249,9 @@ if (-not $SkipPersist -and $ReleaseId) {
         $updateScript = Join-Path $scriptDir 'Update-ReleaseState.ps1'
         . $updateScript
         $stateProps = @{ geographyCoverage = $coverageReport }
-        Update-ReleaseState -ReleaseId $ReleaseId -Action 'update-step' `
-            -StepNumber 15 -StepStatus 'in-progress' `
+        # Persist the report only — never change a step's status as a side effect (the gate also runs
+        # at Step 13 pre-trigger and in dry runs; flipping Step 15 to in-progress there corrupted state).
+        Update-ReleaseState -ReleaseId $ReleaseId -Action 'write' `
             -StateProperties $stateProps `
             -AuditEntry (@{
                 ts    = (Get-Date).ToUniversalTime().ToString('o')

@@ -328,7 +328,13 @@ switch ($currentStep.status) {
                     if ($dir.targets) {
                         $allDone = $true
                         $anyFailed = $false
+                        # waitForRunCompletion (serialization wait): only a real ADO 'completed' counts.
+                        $waitForCompletion = $dir.PSObject.Properties['waitForRunCompletion'] -and $dir.waitForRunCompletion -eq $true
                         foreach ($t in $dir.targets) {
+                            if ($waitForCompletion) {
+                                if ($t.status -ne 'completed') { $allDone = $false }
+                                continue
+                            }
                             # 'deployed' = EV2 deployment done, run still in its managed validation (deploymentDoneWhen)
                             if ($t.status -notin @('completed', 'failed', 'deployed')) { $allDone = $false }
                             if ($t.status -eq 'failed') { $anyFailed = $true }

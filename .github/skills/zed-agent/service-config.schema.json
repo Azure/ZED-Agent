@@ -483,7 +483,7 @@
         },
         "tags": {
           "type": "array",
-          "description": "Tags applied to the SafeFly change request.",
+          "description": "Tags applied to the SafeFly change request — V2 tag names (or tag GUIDs). New-SafeFlyRequest resolves names with tags(name:) to tag GUIDs; a name that does not exist in SafeFly V2 is skipped with a warning (never sent as a name).",
           "items": { "type": "string" },
           "minItems": 1
         },
@@ -499,8 +499,60 @@
         },
         "serviceGroupName": {
           "type": "string",
-          "description": "SafeFly DeploymentToolInputs ServiceGroupName — the service's registered EV2/SafeFly deployment-tool service group (e.g. 'Backup (MAB)'). Service-specific; ZED reads this from config and must never hard-code it.",
+          "description": "EV2 service group sent as the SafeFly V2 'ev2.servicegroup' answer (e.g. 'microsoft.azure.backup.cntl.bcm.active'). Must be one of getEV2Payload(serviceTreeId).serviceGroups — NOT the SafeFly service name (e.g. 'Backup (MAB)'). Service-specific; ZED reads this from config and must never hard-code it.",
           "minLength": 1
+        },
+        "graphQlEndpoint": {
+          "type": "string",
+          "description": "SafeFly V2 GraphQL endpoint used for R2D creation (V1 write API returns HTTP 410). E.g. https://safeflyv2.live.azure.com/api/v1.0/graphql. Required by Step 13.",
+          "format": "uri"
+        },
+        "tokenAudience": {
+          "type": "string",
+          "description": "AAD audience for SafeFly V2 tokens, e.g. api://f6f1426c-4d1b-44d8-8e36-db5824a21fe2. Required by Step 13."
+        },
+        "franchiseId": {
+          "type": "string",
+          "description": "SafeFly V2 franchise GUID (the request's franchiseId — e.g. Compute-Host-Franchise b52a8292-...). Required by Step 13.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "serviceId": {
+          "type": "string",
+          "description": "SafeFly V2 serviceId (Service Tree id). Optional — defaults to serviceTreeIds.safefly.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "changeTypeId": {
+          "type": "string",
+          "description": "SafeFly V2 change type GUID for a service code deployment (category 'codedeployment', e.g. 'App deployment'). Not 'Production touch' (ACIS/JIT changes). List with changeTypes(franchiseId). Required by Step 13.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "changeTypeName": {
+          "type": "string",
+          "description": "Display name of changeTypeId (e.g. 'App deployment'); used in messages only."
+        },
+        "formId": {
+          "type": "string",
+          "description": "SafeFly V2 form GUID — the change type's activeFormId. Forms are versioned; re-check with changeTypes(franchiseId) when SafeFly rejects it. Required by Step 13.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "rollbackStrategy": {
+          "type": "string",
+          "description": "Option (label or value) for the R2D 'core.rollback_strategy' question, e.g. 'Manual (TSG)'. Default: 'DRI determines rollback or rollforward in real time based on the issue'. Validated against the live form options."
+        },
+        "adoBuildLink": {
+          "type": "boolean",
+          "default": false,
+          "description": "true: Step 13 answers the R2D ADO build question ('ado.build_na' = Applicable, 'ado.build' = release.json buildUrl). false: 'Not Applicable'."
+        },
+        "r2dBuildSource": {
+          "type": "string",
+          "enum": ["releaseBuild", "productionRun"],
+          "default": "releaseBuild",
+          "description": "What the R2D 'ev2.build' answer carries. releaseBuild: release.json buildNumber. productionRun: Step 13 first triggers the Step 15 production pipeline(s) (all Step 15 gates; only pipelines with a verified pipeline-catalog approvalGate) and uses the run's buildNumber (e.g. Release-2610-1); Step 15 then reuses that run instead of triggering again."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Evidence / free-text memo for the SafeFly values (where each id was verified)."
         }
       }
     },

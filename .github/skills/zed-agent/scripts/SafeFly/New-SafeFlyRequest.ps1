@@ -17,7 +17,9 @@
     ADO Build ID from the CloudBuild pipeline run (Step 2).
 
 .PARAMETER BuildNumber
-    Build number from the PROD pipeline run. Format: <BranchName>-<RunCount>.
+    Value for the 'ev2.build' answer. With service-config safefly.r2dBuildSource =
+    "productionRun" this is the production pipeline run's buildNumber (e.g. Release-2610-1,
+    Step 13 triggers production first); otherwise the release build number.
 
 .PARAMETER ReleaseId
     Release identifier, e.g. "2026-04".
@@ -44,6 +46,15 @@
 
 .PARAMETER CommitExcelUrl
     SharePoint URL to the commit Excel file. Used in changeDescription.
+
+.PARAMETER AdoBuildUrl
+    ADO build link for the 'ado.build' question. When set, 'ado.build_na' is answered
+    'Applicable' and 'ado.build' gets this URL; when empty, 'ado.build_na' = 'Not Applicable'.
+    Step 13 passes release.json → buildUrl when service-config safefly.adoBuildLink is true.
+
+.PARAMETER RollbackStrategy
+    Option for 'core.rollback_strategy' (label or value). Default: service-config
+    safefly.rollbackStrategy, else 'DRI determines rollback or rollforward in real time based on the issue'.
 
 .PARAMETER DryRun
     REQUIRED for test runs. Assembles and prints the payload without calling
@@ -75,6 +86,8 @@ param(
     [string[]] $TargetedRegions,
     [int]    $AnticipatedEndDays = 0,
     [string] $CommitExcelUrl = "",
+    [string] $AdoBuildUrl = "",
+    [string] $RollbackStrategy = "",
     [switch] $DryRun,
 
     [Parameter()]
@@ -138,16 +151,18 @@ if ([string]::IsNullOrWhiteSpace($serviceGroupName)) {
     throw "safefly.serviceGroupName is missing from service-config.json. It is the EV2 service group (e.g. 'Backup (MAB)'). ZED must not assume a service group."
 }
 
-# --- Region unsupported filter ---
-$safeFlyUnsupportedRegions = @(
-    'Denmark East', 'India South Central', 'Northeast US 5', 'Saudi Arabia East',
-    'Southeast Asia 3', 'Southeast US 5', 'Southwest US', 'USSec West Central',
-    'West Central US FRE'
-)
-$filteredRegions = @($TargetedRegions | Where-Object { $safeFlyUnsupportedRegions -notcontains $_ })
-$droppedCount = @($TargetedRegions).Count - $filteredRegions.Count
-if ($droppedCount -gt 0) {
-    Write-Host "  [SafeFly] dropped $droppedCount region(s) not in SafeFly's enum (submitting $($filteredRegions.Count))" -ForegroundColor DarkYellow
+# --- Regions ---
+# No hard-coded region filter: the valid set is SafeFly V2's live list
+# (getRegionsWithActiveCCOACoverage, see Build-SafeFlyRegionMap). Targeted regions
+# (ASC minus CCOA exclusions, computed by the caller) that are not in the live
+# list go to core.other_regions instead of being dropped.
+$filteredRegions = @($TargetedRegions | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+
+# --- Rollback strategy ---
+if ([string]::IsNullOrWhiteSpace($RollbackStrategy)) {
+    $RollbackStrategy = if ($cfg.safefly.PSObject.Properties['rollbackStrategy'] -and -not [string]::IsNullOrWhiteSpace("$($cfg.safefly.rollbackStrategy)")) {
+        "$($cfg.safefly.rollbackStrategy)"
+    } else { 'DRI determines rollback or rollforward in real time based on the issue' }
 }
 
 # --- SDP mapping ---
@@ -182,6 +197,24 @@ function Assert-OptionValid {
     }
 }
 
+function Test-ConditionValue {
+    # One V2 condition against the current answer. Multi-select answers are arrays:
+    # positive operators match when ANY selected value matches; NotEqualTo/NotIn when NONE does.
+    param($currentVal, [string]$compOp, $compVal)
+    $vals = @($currentVal | ForEach-Object { "$_" })
+    $list = @($compVal -split ',\s*')
+    switch ($compOp) {
+        'EqualTo'     { return [bool](@($vals | Where-Object { $_ -eq $compVal }).Count) }
+        'Equals'      { return [bool](@($vals | Where-Object { $_ -eq $compVal }).Count) }
+        'NotEqualTo'  { return -not [bool](@($vals | Where-Object { $_ -eq $compVal }).Count) }
+        'Contains'    { return [bool](@($vals | Where-Object { $_ -like "*$compVal*" }).Count) }
+        'ContainsAny' { return [bool](@($vals | Where-Object { $list -contains $_ }).Count) }
+        'In'          { return [bool](@($vals | Where-Object { $list -contains $_ }).Count) }
+        'NotIn'       { return -not [bool](@($vals | Where-Object { $list -contains $_ }).Count) }
+        default       { return $true }  # Unknown operator: do not gate
+    }
+}
+
 function Test-ConditionalRule {
     param($rule, [hashtable]$currentAnswersByName)
     # No rule: unconditionally required when isRequired=true
@@ -211,16 +244,7 @@ function Test-ConditionalRule {
                 $results += $false
                 continue
             }
-            $condResult = switch ($compOp) {
-                'EqualTo'     { $currentVal -eq $compVal }
-                'Equals'      { $currentVal -eq $compVal }
-                'NotEqualTo'  { $currentVal -ne $compVal }
-                'Contains'    { $currentVal -like "*$compVal*" }
-                'ContainsAny' { @($compVal -split ',\s*') -contains $currentVal }
-                'In'          { @($compVal -split ',\s*') -contains $currentVal }
-                'NotIn'       { @($compVal -split ',\s*') -notcontains $currentVal }
-                default       { $true }  # Unknown operator: do not gate
-            }
+            $condResult = Test-ConditionValue $currentVal $compOp $compVal
             $results += $condResult
         }
 
@@ -279,6 +303,39 @@ function Resolve-RegionToSafeFlyId {
     return $regionMap[$key]   # Returns $null if not found
 }
 
+function Resolve-SafeFlyTagIds {
+    # SaveRequestRequestBaseInput.tagIds is [Guid] — config holds tag NAMES (or GUIDs).
+    # Names are looked up with tags(name:) (server does a case-insensitive contains match,
+    # so keep only the exact case-insensitive name). A tag that does not exist in V2 is
+    # skipped with a warning — never sent as a name (SafeFly would reject the request).
+    param([string[]]$TagNames, [string]$ServiceConfigPath)
+    $ids = [System.Collections.Generic.List[string]]::new()
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @($TagNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if ("$name" -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+            if (-not $ids.Contains("$name")) { $ids.Add("$name") }
+            continue
+        }
+        $found = $null
+        try {
+            $tagData = & (Join-Path $PSScriptRoot 'Invoke-SafeFlyGraphQL.ps1') `
+                -Query 'query GetTags($name: String) { tags(name: $name) { id name } }' `
+                -Variables @{ name = "$name" } -ServiceConfigPath $ServiceConfigPath
+            $found = @($tagData.tags | Where-Object { "$($_.name)" -ieq "$name" }) | Select-Object -First 1
+        } catch {
+            $warnings.Add("tag '$name' lookup failed ($($_.Exception.Message)) - not sent")
+            continue
+        }
+        if ($found -and $found.id) {
+            if (-not $ids.Contains("$($found.id)")) { $ids.Add("$($found.id)") }
+        } else {
+            $warnings.Add("tag '$name' does not exist in SafeFly V2 - not sent")
+        }
+    }
+    foreach ($w in $warnings) { Write-Warning "  [SafeFly] $w" }
+    return [pscustomobject]@{ ids = @($ids); warnings = @($warnings) }
+}
+
 
 function Resolve-EffectiveRequired {
     param($questions, [hashtable]$currentAnswersByName)
@@ -302,6 +359,11 @@ Write-Host "  [SafeFly] Fetching V2 form for change type '$($cfg.safefly.changeT
 $formResult = & (Join-Path $PSScriptRoot 'Get-SafeFlyForm.ps1') -ServiceConfigPath $ServiceConfigPath
 $questions  = $formResult.questions
 Write-Host "  [SafeFly] Form $($formResult.formId): $(@($questions).Count) question(s)" -ForegroundColor Gray
+# Question ids come from the live active form; the payload's formId comes from config.
+# A rotated form would pair one form's question ids with another form's id — fail closed.
+if ($formResult.formId -and "$($formResult.formId)" -ne "$formId") {
+    throw "SafeFly V2 FORM MISMATCH: service-config safefly.formId '$formId' is not the active form '$($formResult.formId)' for change type '$changeTypeId'. Update safefly.formId (setup-service group 6) before filing."
+}
 
 # =============================================================================
 # STEP 2 — Build answers
@@ -315,17 +377,31 @@ function Add-Answer {
     # Generic encoder: for option-based questions, use the option's .value (not the display label).
     # SafeFly stores and validates the option value field, not the label.
     # e.g. ccoa.is_ccoa_request label="No" → value="False"; we must send "False".
-    $resolvedValue = "$value"
-    if ($q.options -and @($q.options).Count -gt 0) {
-        $opt = @($q.options | Where-Object { $_.label -eq $value -or $_.value -eq $value }) | Select-Object -First 1
-        if ($opt) { $resolvedValue = "$($opt.value)" }
+    # Multi-select questions (isMultiSelect = true: core.regions, ev2.servicegroup, …) are
+    # stored by SafeFly as a JSON array string, e.g. ["EastAsia","WestUS2"] — the same shape
+    # the UI and REST clients write (see 13.14983). Never comma-join them.
+    $isMulti = $q.PSObject.Properties['isMultiSelect'] -and $q.isMultiSelect -eq $true
+    $items = foreach ($v in @($value)) {
+        $resolved = "$v"
+        if ($q.options -and @($q.options).Count -gt 0) {
+            $opt = @($q.options | Where-Object { $_.label -eq $v -or $_.value -eq $v }) | Select-Object -First 1
+            if ($opt) { $resolved = "$($opt.value)" }
+        }
+        $resolved
+    }
+    $items = @($items)
+    if ($isMulti) {
+        $resolvedValue = ConvertTo-Json -InputObject ([string[]]$items) -Compress
+        $currentAnswersByName[$q.name] = $items
+    } else {
+        $resolvedValue = $items -join ','
+        $currentAnswersByName[$q.name] = $resolvedValue
     }
     $answers.Add([pscustomobject]@{
         id         = [System.Guid]::NewGuid().ToString()
         questionId = $q.id
         value      = $resolvedValue
     }) | Out-Null
-    $currentAnswersByName[$q.name] = $resolvedValue
 }
 
 # Orchestrator
@@ -338,11 +414,17 @@ $qSdp = Get-QuestionByName $questions 'core.sdp'
 Assert-OptionValid $qSdp $sdpV2Value
 Add-Answer $qSdp $sdpV2Value
 
-# Rollback
-$rollbackV2 = 'DRI determines rollback or rollforward in real time based on the issue'
+# Rollback (service-config safefly.rollbackStrategy or -RollbackStrategy; BCM: "Manual (TSG)")
 $qRollback  = Get-QuestionByName $questions 'core.rollback_strategy'
-Assert-OptionValid $qRollback $rollbackV2
-Add-Answer $qRollback $rollbackV2
+Assert-OptionValid $qRollback $RollbackStrategy
+Add-Answer $qRollback $RollbackStrategy
+
+# Team-assessed risk (optional question; -TeamAssessedRisk, default Low)
+$qTeamRisk = Get-QuestionByName $questions 'core.team_assessed_risk'
+if ($qTeamRisk -and -not [string]::IsNullOrWhiteSpace($TeamAssessedRisk)) {
+    Assert-OptionValid $qTeamRisk $TeamAssessedRisk
+    Add-Answer $qTeamRisk $TeamAssessedRisk
+}
 
 # Health monitoring — always Yes for a production service with health signals
 $qHealthMon = Get-QuestionByName $questions 'core.health_monitoring'
@@ -359,9 +441,18 @@ Add-Answer $qSvcGroup $serviceGroupName
 $qBuild = Get-QuestionByName $questions 'ev2.build'
 Add-Answer $qBuild $BuildNumber
 
-# ADO build not applicable (EV2 uses ev2.build, not ADO build links)
+# ADO build link: 'Applicable' + ado.build = -AdoBuildUrl when given, else 'Not Applicable'.
 $qAdoBuildNa = Get-QuestionByName $questions 'ado.build_na'
-if ($qAdoBuildNa) {
+$qAdoBuild   = Get-QuestionByName $questions 'ado.build'
+if (-not [string]::IsNullOrWhiteSpace($AdoBuildUrl)) {
+    if ($AdoBuildUrl -notmatch '^https://') { throw "SafeFly V2: -AdoBuildUrl must be an https URL (got '$AdoBuildUrl')." }
+    if ($qAdoBuildNa) {
+        Assert-OptionValid $qAdoBuildNa 'Applicable'
+        Add-Answer $qAdoBuildNa 'Applicable'
+    }
+    if (-not $qAdoBuild) { throw "SafeFly V2: -AdoBuildUrl was given but the active form has no 'ado.build' question." }
+    Add-Answer $qAdoBuild $AdoBuildUrl
+} elseif ($qAdoBuildNa) {
     Assert-OptionValid $qAdoBuildNa 'Not Applicable'
     Add-Answer $qAdoBuildNa 'Not Applicable'
 }
@@ -369,30 +460,31 @@ if ($qAdoBuildNa) {
 # Regions — core.regions is a dynamic-source CheckboxGroup (isMultiSelect=true, allowManualEntry=false).
 # Its valid values come from getRegionsWithActiveCCOACoverage (CamelCase identifiers: "EastAsia",
 # "WestUS2", etc.) — NOT Azure display names. The static options list is always empty for this question.
-# SafeFly accepts comma-separated identifiers in a single answer for multi-select.
+# Add-Answer encodes the multi-select answer as a JSON array (["EastAsia","WestUS2"]).
 $qRegions      = Get-QuestionByName $questions 'core.regions'
 $qOtherRegions = Get-QuestionByName $questions 'core.other_regions'
+$matchedSafeFlyIds = [System.Collections.Generic.List[string]]::new()
+$unmatchedRegions  = [System.Collections.Generic.List[string]]::new()
 if ($qRegions) {
     $regionMap = Build-SafeFlyRegionMap -ServiceConfigPath $ServiceConfigPath
-    $matchedSafeFlyIds = [System.Collections.Generic.List[string]]::new()
-    $unmatchedRegions  = [System.Collections.Generic.List[string]]::new()
 
     foreach ($region in $filteredRegions) {
         $sfId = Resolve-RegionToSafeFlyId -displayName $region -regionMap $regionMap
         if ($sfId) {
-            $matchedSafeFlyIds.Add($sfId)
+            if (-not $matchedSafeFlyIds.Contains($sfId)) { $matchedSafeFlyIds.Add($sfId) }
         } else {
             $unmatchedRegions.Add($region)
         }
     }
 
     if ($matchedSafeFlyIds.Count -gt 0) {
-        Add-Answer $qRegions ($matchedSafeFlyIds -join ',')
+        Add-Answer $qRegions @($matchedSafeFlyIds)
     } else {
         Write-Warning "  [SafeFly] None of the $($filteredRegions.Count) input region(s) matched SafeFly's dynamic list. All sent to core.other_regions."
     }
-    if ($unmatchedRegions.Count -gt 0 -and $qOtherRegions) {
-        Add-Answer $qOtherRegions ($unmatchedRegions -join ', ')
+    if ($unmatchedRegions.Count -gt 0) {
+        Write-Warning "  [SafeFly] $($unmatchedRegions.Count) targeted region(s) not in SafeFly's live region list: $($unmatchedRegions -join ', ')"
+        if ($qOtherRegions) { Add-Answer $qOtherRegions ($unmatchedRegions -join ', ') }
     }
 }
 
@@ -434,7 +526,9 @@ $requestId = $null
 # was a cargo-cult workaround — the real root cause was wrong value format (display names
 # instead of SafeFly CamelCase identifiers). Removed to avoid confusion.
 $orderedAnswers = @($answers)
-$tagsVal   = if ($cfg.safefly.PSObject.Properties['tags']) { @($cfg.safefly.tags) } else { @() }
+$tagNames      = if ($cfg.safefly.PSObject.Properties['tags']) { @($cfg.safefly.tags) } else { @() }
+$tagResolution = Resolve-SafeFlyTagIds -TagNames $tagNames -ServiceConfigPath $ServiceConfigPath
+$tagsVal       = @($tagResolution.ids)
 
 $changeRequest = [ordered]@{
     changeTitle             = $title
@@ -474,6 +568,10 @@ if ($DryRun) {
         payload                = $payloadJson
         effectiveRequiredCount = @($effectiveRequired).Count
         totalFormQuestions     = @($questions).Count
+        regionsSubmitted       = $matchedSafeFlyIds.Count
+        regionsUnmatched       = @($unmatchedRegions)
+        tagIds                 = @($tagsVal)
+        tagWarnings            = @($tagResolution.warnings)
     }
 }
 
@@ -534,6 +632,11 @@ $result = [PSCustomObject]@{
     safeFlyRequestNumber = $resp.displayId
     safeFlyUrl           = $resp.requestUrl
     requestStatus        = $resp.status
+    displayStatus        = $resp.displayStatus
+    regionsSubmitted     = $matchedSafeFlyIds.Count
+    regionsUnmatched     = @($unmatchedRegions)
+    tagIds               = @($tagsVal)
+    tagWarnings          = @($tagResolution.warnings)
 }
 Write-Host "✅ SafeFly V2 R2D request #$($result.safeFlyRequestNumber) created" -ForegroundColor Green
 Write-Host "   URL: $($result.safeFlyUrl)" -ForegroundColor Gray

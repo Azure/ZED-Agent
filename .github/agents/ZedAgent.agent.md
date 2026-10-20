@@ -505,6 +505,8 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 
 **Default skipped steps:** `CONFIG[defaultSkippedSteps]` (BCM: 11 and 12) lists steps a service never runs; `setup` writes them as `skipped` (reason `service-default`) in every release, so the loop goes Step 10 → Step 13 (R2D) directly — the roll-forward run must still succeed, and Step 13's other joins (Step 4, private stamp sign-off) still apply. `modify reset N` runs one anyway in a given release.
 
+**Production run before the R2D:** with `CONFIG[safefly.r2dBuildSource] == "productionRun"` (BCM) Step 13 triggers the Step 15 production pipeline(s) first — all Step 15 gates, exactly once, only pipelines whose `pipeline-catalog.json → production.<key>.approvalGate.verified` proves no stamp is deployed before a human approval — and files the R2D with the run's buildNumber as `ev2.build`. The run waits on its Approval Service / ManualValidation gates; Step 14 (non-overridable) is still what authorizes approving them, and Step 15 reuses the run (`state.productionPreTrigger`) instead of triggering again. An EV2 serialization block arms `poll-ado-pipelines` with `waitForRunCompletion: true`. See `step-behaviors.md → Step 13 → Production run first`.
+
 # Step Execution Loop
 
 When invoked (by release owner or watcher), follow this loop:
@@ -538,7 +540,7 @@ When invoked (by release owner or watcher), follow this loop:
     - `onSuccess`: prompt text passed to `copilot --agent=ZedAgent -p` when condition met
     - `onFailure`: prompt text passed on failure after max retries
     - `pollIntervalSeconds`: polling interval in **seconds** (not minutes)
-    - Additional per-action fields: `safeFlyId`, `startedAt`, `timeoutHours`, `targets[]`, `waitUntil`/`scheduledAt`
+    - Additional per-action fields: `safeFlyId`, `startedAt`, `timeoutHours`, `targets[]`, `waitUntil`/`scheduledAt`, `waitForRunCompletion` (`poll-ado-pipelines` serialization waits: done only when every run's ADO status is `completed`, any result, no `deployed` shortcut)
     ⚠️ Do NOT use `type` (use `action`), `condition` (use `action`), `buildId` (use `target` with full URL), or `pollInterval` (use `pollIntervalSeconds`).
 
     ### Reading `watcher.lock` (mandatory format)

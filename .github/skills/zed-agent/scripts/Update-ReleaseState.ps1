@@ -57,7 +57,7 @@ function Update-ReleaseState {
                 }
                 if (-not (Test-Path $stateFile)) { throw "State file not found: $stateFile" }
                 $state = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                $stateProps = if ($StateProperties -is [hashtable]) { $StateProperties.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
+                $stateProps = if ($StateProperties -is [System.Collections.IDictionary]) { $StateProperties.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
                               else { $StateProperties.PSObject.Properties | ForEach-Object { @{ Name = $_.Name; Value = $_.Value } } }
                 foreach ($sp in $stateProps) {
                     if ($state.PSObject.Properties[$sp.Name]) { $state.($sp.Name) = $sp.Value }
@@ -80,7 +80,7 @@ function Update-ReleaseState {
             if ($StepStatus -eq 'in-progress') { Add-Member -InputObject $step -MemberType NoteProperty -Name startedAt -Value $now -Force }
             if ($StepStatus -in @('completed','failed','skipped') -or $StepStatus -like 'failed-*') { Add-Member -InputObject $step -MemberType NoteProperty -Name completedAt -Value $now -Force }
             if ($null -ne $StepPayload) {
-                $payloadProps = if ($StepPayload -is [hashtable]) { $StepPayload.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
+                $payloadProps = if ($StepPayload -is [System.Collections.IDictionary]) { $StepPayload.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
                                 else { $StepPayload.PSObject.Properties | ForEach-Object { @{ Name = $_.Name; Value = $_.Value } } }
                 foreach ($p in $payloadProps) {
                     if ($step.PSObject.Properties[$p.Name]) { $step.($p.Name) = $p.Value }
@@ -89,7 +89,7 @@ function Update-ReleaseState {
             }
             # Merge top-level StateProperties (atomicity: pipelineTriggerTimestamps, triggeredPipelines, etc.)
             if ($null -ne $StateProperties) {
-                $stateProps = if ($StateProperties -is [hashtable]) { $StateProperties.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
+                $stateProps = if ($StateProperties -is [System.Collections.IDictionary]) { $StateProperties.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Value = $_.Value } } }
                               else { $StateProperties.PSObject.Properties | ForEach-Object { @{ Name = $_.Name; Value = $_.Value } } }
                 foreach ($sp in $stateProps) {
                     if ($state.PSObject.Properties[$sp.Name]) { $state.($sp.Name) = $sp.Value }

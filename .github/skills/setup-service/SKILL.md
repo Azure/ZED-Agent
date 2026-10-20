@@ -1036,6 +1036,12 @@ Ask for:
 - `safefly.tags` — SafeFly tags array (e.g., ["Prot_Regular_Rollout"])
 - `safefly.additionalNotifiers` — Extra emails notified on SafeFly changes (array)
 - `safefly.monitoringLink` — Monitoring link (e.g., Geneva MDM dashboard URL)
+- **SafeFly V2 (Step 13 R2D creation — the V1 write API returns HTTP 410).** Ask for the display id of one of the team's past **code deployment** R2Ds (e.g. `13.14983`), then read everything from the SafeFly V2 GraphQL API with `scripts/SafeFly/Invoke-SafeFlyGraphQL.ps1` (read-only queries only — never `saveRequest` / `submitRequest`):
+  - `safefly.graphQlEndpoint` — default `https://safeflyv2.live.azure.com/api/v1.0/graphql`; `safefly.tokenAudience` — default `api://f6f1426c-4d1b-44d8-8e36-db5824a21fe2`. Verify with a token (`az account get-access-token --resource <audience>`) and a trivial query.
+  - `safefly.franchiseId`, `safefly.serviceId` — from `requestByDisplayId(displayId)` (`serviceId` must equal `serviceTreeIds.safefly`).
+  - `safefly.changeTypeId` / `safefly.changeTypeName` / `safefly.formId` — list `changeTypes(franchiseId) { id name category activeFormId isEnabled }` and propose the enabled `codedeployment` type the past releases used (e.g. `App deployment`), with its **current** `activeFormId`. Do NOT take them from a sample whose change type is `Production touch` (ACIS / JIT / RBAC) — show the owner the type name and category and confirm.
+  - `safefly.serviceGroupName` — the EV2 service group sent as `ev2.servicegroup`; must be one of `getEV2Payload(serviceTreeId).serviceGroups` (e.g. `microsoft.azure.backup.cntl.bcm.active`), not the SafeFly service name.
+  - Write the evidence (display ids and queries used) to `safefly.notes`. Then dry-run Step 13 (`New-SafeFlyRequest.ps1 … -DryRun`) to prove the form resolves.
 
 **Group 7 — Commit Excel**
 Ask for:

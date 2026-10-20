@@ -219,6 +219,23 @@ function Find-Approvals([long]$RunId) {
     return @{ pending = $pending; ended = $ended }
 }
 
+function Get-PreTriggerHold($Req) {
+    $st = $script:StateForMessage
+    if (-not $st -or -not $st.PSObject.Properties['productionPreTrigger'] -or -not $st.productionPreTrigger) { return $null }
+    $hit = @($st.productionPreTrigger.runs | Where-Object { $_ -and [long]$_.runId -eq [long]$Req.runId })
+    if (-not $hit.Count) { return $null }
+    $s14 = @($st.steps | Where-Object { $_.number -eq 14 }) | Select-Object -First 1
+    if ($s14 -and $s14.status -in @('completed', 'skipped')) { return $null }
+    $txt = 'This production run was triggered at Step 13 only to obtain the build number for the SafeFly R2D. Approve it only after Step 14 (SafeFly R2D approval + CRB) is complete and the release owner'
+    $txt += $(if ($st.releaseOwner) { " ($([System.Net.WebUtility]::HtmlEncode([string]$st.releaseOwner)))" } else { '' })
+    $txt += ' confirms.'
+    if ($st.PSObject.Properties['ev2SerializationOverride'] -and $st.ev2SerializationOverride -and $st.ev2SerializationOverride.inProgressRunOverridden) {
+        $o = $st.ev2SerializationOverride.inProgressRunOverridden
+        $txt += " Also wait until $([System.Net.WebUtility]::HtmlEncode([string]$o.pipeline)) run $([long]$o.runId) ($([System.Net.WebUtility]::HtmlEncode([string]$o.buildNumber))) has completed: its EV2 rollouts are still active and EV2 allows one rollout per service group."
+    }
+    return $txt
+}
+
 function New-Message($Req, [string]$Event, $Release) {
     $now = Get-UtcNow
     $waitedH = if ($Req.waitingSince) { [math]::Round(($now - (ConvertTo-UtcDate $Req.waitingSince)).TotalHours, 1) } else { $null }
@@ -256,6 +273,14 @@ function New-Message($Req, [string]$Event, $Release) {
     }
     $html = Expand-Template -TemplatePath $script:Template -Variables $vars
     $subject = "$headline — $($Req.pipelineName) | $($script:ServiceName) $($script:ReleaseIdValue)"
+    # Step 13 pre-trigger hold (safefly.r2dBuildSource = productionRun): the production run exists before
+    # the R2D is approved; step-behaviors Step 13 requires every message to say it MUST NOT be approved
+    # before Step 14 (SafeFly + CRB) completes. Also name any run the owner overrode EV2 serialization for.
+    $hold = Get-PreTriggerHold $Req
+    if ($hold -and $Event -ne 'approval-failed') {
+        $html = "<div style=`"border:2px solid #c50f1f; background:#fde7e9; padding:8px; font-family:Segoe UI,Arial,sans-serif;`"><b>⛔ DO NOT APPROVE YET.</b> $hold</div><br>" + $html
+        $subject = "⛔ HOLD — do not approve yet — $subject"
+    }
     $eventKey = if ($Event -eq 'approval-failed') { 'approval-failed' } else { $Event }
     return [pscustomobject]@{ event = $Event; eventKey = $eventKey; subject = $subject; html = $html; at = (Get-NowIso) }
 }
@@ -275,6 +300,7 @@ try {
     $script:Template = $TemplatePath
     if (-not (Test-Path -LiteralPath $StateFile)) { throw "State file not found: $StateFile" }
     $state = Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $script:StateForMessage = $state
     $release = if (Test-Path -LiteralPath $ReleaseFile) { Get-Content -LiteralPath $ReleaseFile -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
 
     if ($Action -eq 'Get') {

@@ -407,7 +407,7 @@ BCM-CANARY's run (`Managed SDP Deployment` → `Ev2Agentless` / `Rollout Progres
 - `completed` + not succeeded → the step is `failed`: "EV2 {validationStep} failed for {pipelineKey} run {runId} ({portalUrl}) — canary health validation did not pass", Rule 11 failure email, halt for `ack` (in addition to any BVT failures).
 - still in progress → run `Get-Ev2DeploymentProgress.ps1` and state "EV2 {validationStep} still running since {validationStartedAt}" in the BVT email; the next deployment waits for it (below).
 
-**Before triggering Steps 7, 10, 15**: EV2 runs one rollout per service group at a time. If any run in `state.ev2DeployedRuns.*` is still in progress, do not trigger — arm `{ action: "poll-ado-pipelines", targets: [<those runs>], onSuccess: "continue release {id}" }` and tell the owner "waiting for EV2 {validationStep} of run {runId} to finish (started {validationStartedAt})"; a failed run there halts the step as above.
+**Before triggering Steps 7, 10, 15** (and Step 13 with `safefly.r2dBuildSource == "productionRun"`): EV2 runs one rollout per service group at a time. If any run in `state.ev2DeployedRuns.*` — or any other in-progress run of this service's canary/production pipelines (a manual or previous-release run) — is still in progress, do not trigger — arm `{ action: "poll-ado-pipelines", waitForRunCompletion: true, targets: [{ url, label }], onSuccess: "continue release {id}" }` and tell the owner "waiting for EV2 {validationStep} of run {runId} to finish (started {validationStartedAt})". **`waitForRunCompletion: true` is mandatory here**: it disables the `deploymentDoneWhen` → `deployed` shortcut (which would end the wait at once and re-invoke the agent in a loop) and completes only when every run's ADO `status` is `completed`, whatever its result (`scripts/lib/RunCompletionWaitLib.ps1`). On `continue release` re-check the results: a failed run of *this* release halts the step as above; a foreign run's result is reported, not a halt.
 
 **Test mode**: runs are cancelled at trigger, no EV2 rollout exists — nothing to do.
 
@@ -663,6 +663,16 @@ Read `state.privateStampUpgrade.status` (missing track ⇒ run `Invoke-PrivateSt
 
 If both checks pass, proceed with the actions below.
 
+**Production run first (`CONFIG[safefly.r2dBuildSource] == "productionRun"` — BCM):** the R2D's `ev2.build` answer is the production pipeline run's buildNumber (e.g. `Release-2610-1`, as in 13.14983), so Step 13 triggers the Step 15 production pipeline(s) **before** filing the R2D. Order — every item is a hard gate, any failure halts Step 13 `failed`:
+1. **Idempotency**: if `state.productionPreTrigger.runs` (or `state.triggeredPipelines.15`) already holds a run for a resolved pipeline key, do NOT trigger again — reuse it (re-read its `buildNumber` from the ADO build API). Also list the pipeline's runs queued by the owner since `state.setupCompletedAt` with this release's pinned build; reuse such a run rather than queueing a second one.
+2. **Approval-gate safety**: every resolved production pipeline must carry `pipeline-catalog.json → production.<key>.approvalGate.verified == true` (evidence that no stamp is deployed before a human approval — e.g. OneBranch Approval Service + ManualValidation ahead of every EV2 job). Missing → halt `failed` ("cannot trigger production ahead of the R2D: approval gate not verified for <key>"); never trigger on assumption.
+3. **Step 15 Phase 1 gates** (action 0 inventory gate, EV2 one-rollout-at-a-time, action 1 resolver + parameters + payload/geography gates, deploy-base `PinResources`) exactly as Step 15 runs them.
+   - **EV2 serialization blocked** (any run of the same EV2 service group — `state.ev2DeployedRuns.*`, or another in-progress run of the production/canary pipelines — is still running): do not trigger. Set Step 13 `waiting` (`waitingOn: "ev2-serialization"`), arm `{ action: "poll-ado-pipelines", waitForRunCompletion: true, targets: [{ url: "<_apis/build/builds/<runId>>", label }], pollIntervalSeconds: CONFIG[operational.watcherPollIntervalSeconds], onSuccess: "continue release {id}", onFailure: "release {id} step 13 ev2 serialization wait failed" }`, send one `⏸ Step 13 waiting on EV2 serialization` email (EventKey `step-13-waiting`, owner-only) and EXIT. `waitForRunCompletion` completes only when every run's ADO status is `completed` (any result) — never on the canary `deployed` shortcut.
+4. **Trigger exactly once** per pipeline (pinned `resources.builds`), write `pipelineTriggerTimestamps.step15.<key>` BEFORE the POST, then `triggeredPipelines.15 = [runId]` and `state.productionPreTrigger = { triggeredAtStep: 13, runs: [{ pipelineKey, runId, buildNumber, url, triggeredAt }] }`. Audit `production-pre-trigger`.
+5. File the R2D (actions below) with `-BuildNumber <run buildNumber>` (several pipelines → `", "`-joined). The run is now parked on its approval gates; the approval side-channel mails the Approval Service link (`approval-needed`) — it MUST NOT be approved before Step 14 completes (state this in every email of Steps 13/14).
+
+If both checks pass (and, with `productionRun`, the production run exists), proceed with the actions below.
+
 **Skill**: `.github/skills/zed-agent/scripts/SafeFly/New-SafeFlyRequest.ps1`
 **API Reference**: `.github/skills/zed-agent/scripts/SafeFly/SAFEFLY-API-REFERENCE.md` — full schema, all enums, valid values for every field (sourced from [SafeFly OpenAPI spec](https://www.safefly.azure.com/swagger/v1/swagger.json))
 
@@ -762,9 +772,12 @@ This step uses the SafeFly skill to create the R2D request. Most payload paramet
        -DeploymentNature  $derivedNatures `
        -SDPType           $derivedSDPType `
        -TargetedRegions   $targetedRegions `
-       -CommitExcelUrl    "{release.json → commitExcelUrl}"
+       -CommitExcelUrl    "{release.json → commitExcelUrl}" `
+       -AdoBuildUrl       "{release.json → buildUrl, only when CONFIG[safefly.adoBuildLink]}"
    ```
-   The skill handles: token acquisition, full payload construction (all 45+ fields), POST to SafeFly API, response parsing.
+   `-BuildNumber` is the `ev2.build` answer: the production run's buildNumber when `CONFIG[safefly.r2dBuildSource] == "productionRun"` (see above), else `release.json → buildNumber`. `core.rollback_strategy` comes from `CONFIG[safefly.rollbackStrategy]` (BCM: `Manual (TSG)`). Payload rules (enforced by the script, see SAFEFLY-API-REFERENCE.md): `CONFIG[safefly.tags]` names → V2 tag GUIDs (missing tag → skipped + warning, `tagIds: []`); multi-select answers (`core.regions`, `ev2.servicegroup`) are JSON arrays; regions = targeted regions ∩ live `getRegionsWithActiveCCOACoverage` (unmatched → `core.other_regions`, no hard-coded drop list); config `formId` must equal the active form. **Always dry-run first** (`-DryRun`) and record its summary in the audit, then file for real.
+   **Idempotency**: before the real call, look for a request this release already created (`requests(filter: { serviceId, owner })` created since Step 13 started, title = rendered `titleTemplate`) — reuse it (a `saveRequest` draft left by a failed `submitRequest` included) instead of filing a duplicate.
+   The skill handles: token acquisition, full payload construction, `saveRequest` → `submitRequest`, response parsing. **Verify** after creation: read the request back (`requestByDisplayId`) and check status, `ev2.build`, `ev2.servicegroup`, `core.regions` count, rollback and ADO build answers.
 
 5. **Handle the result**:
    - **Success**: `$result` contains `safeFlyId`, `safeFlyRequestNumber`, `safeFlyUrl`, `requestStatus`
@@ -835,10 +848,13 @@ This step polls SafeFly approval via the skill and waits for the release owner's
        "pollIntervalSeconds": 3600,
        "timeoutHours": 72,
        "startedAt": "<current UTC ISO 8601>",
+       "onSuccess": "SafeFly request <safeFlyId> approved for release {id}",
        "onTimeout": "safefly approval timeout for release {id}"
      }
    }
    ```
+   `Get-SafeFlyApproval.ps1` reads SafeFly **V2** (`requests(filter: { objectId })` → `currentState`) whenever `CONFIG[safefly.graphQlEndpoint]` is set — the V1 `approvalstate` API returns HTTP 410. V2 states: `Approved` → Approved; `Draft` / `Submitted` / `Engineering Director Reviewed` / `R2D Reviewed` → Pending; `Rejected`; `Abandoned` → Invalidated.
+   With `CONFIG[safefly.r2dBuildSource] == "productionRun"` the production run already exists (Step 13) and is parked on its Approval Service / ManualValidation gates; Step 14 is what authorizes approving them.
    The watcher tracks `startedAt + timeoutHours` and, when the timeout elapses without an `Approved` classification, re-invokes the agent with the `onTimeout` prompt. The agent then runs the timeout-handling action below (action 5) and re-arms the same directive to keep polling.
 
 2. **On each watcher poll**, run the approval skill:
@@ -883,6 +899,7 @@ This step polls SafeFly approval via the skill and waits for the release owner's
 ## Step 15: Production Rollout (EV2 Managed) + Rollout Diagnostics
 
 **Trigger**: Step 14 approved
+**Production run already triggered at Step 13** (`CONFIG[safefly.r2dBuildSource] == "productionRun"`): when `state.productionPreTrigger.runs` exists, do NOT trigger again (actions 0–2 already ran at Step 13). Re-read each run: if it is no longer in progress before its approval gates were passed (cancelled/failed/approval expired), halt `failed` and ask the owner (`ack retry` re-triggers it and the R2D `ev2.build` must then be updated); otherwise go straight to action 3 (timer) and action 4 (email: "approve the Approval Service request / resume Pre-Deployment validation now").
 **EV2 one-rollout-at-a-time**: before triggering, if any run in `state.ev2DeployedRuns.*` is still in progress (EV2 post-deployment validation), wait for it instead — see "EV2 deployment done → Before triggering Steps 7, 10, 15".
 **Approval requests**: record every production run id in `state.triggeredPipelines.15` at trigger time — the approval side-channel watches them and mails/Teams the Approval Service links (see "Approval requests"). The Step 15 directive is `poll-ev2-rollout`, which does not scan approvals itself.
 **Deploy-base**: every production run request carries `resources.builds` pinned to `release.buildId` — see Step 5 Action 2 "Deploy-base build pinning". Before triggering, re-run `PinResources`: if the release build has dropped out of the artifact feed's listed versions (busy branch, long CRB), stop with `failed` rather than deploy something else.

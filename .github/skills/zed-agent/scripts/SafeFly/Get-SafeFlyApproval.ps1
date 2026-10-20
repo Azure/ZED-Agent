@@ -22,10 +22,36 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $SafeFlyId,
-    [string] $OrgName = "r2d"
+    [string] $OrgName = "r2d",
+    [string] $ServiceConfigPath = (Join-Path $PSScriptRoot '..\..\service-config.json')
 )
 
 $ErrorActionPreference = "Stop"
+
+# --- Classification vocabulary ---
+# V1 states (and V1-migrated requests still listed by V2) plus the SafeFly V2 currentState
+# values seen on live requests (2026-10: Approved, Draft, Submitted, Engineering Director
+# Reviewed, R2D Reviewed, Rejected, Abandoned).
+$approvedStates    = @("ApprovedForDeployment", "AutoApproved", "DeploymentInProgress", "DeploymentCompleted", "Approved")
+$pendingStates     = @("Unsubmitted", "Draft", "EngineeringDirectorPending", "ServiceManagerPending", "BuddyPending", "ReadyToDeployPending", "CvpPending",
+                       "Submitted", "Engineering Director Reviewed", "R2D Reviewed")
+$rejectedStates    = @("EngineeringDirectorRejected", "ServiceManagerRejected", "BuddyRejected", "CvpRejected", "Rejected")
+$invalidatedStates = @("Archived", "Deleted", "DeploymentCancelled", "Abandoned", "Cancelled")
+
+# --- SafeFly V2 (preferred): the V1 approvalstate read API returns HTTP 410 since 2026-10 ---
+$cfg = $null
+try { $cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath } catch { $cfg = $null }
+$useV2 = $cfg -and $cfg.safefly -and $cfg.safefly.PSObject.Properties['graphQlEndpoint'] -and -not [string]::IsNullOrWhiteSpace("$($cfg.safefly.graphQlEndpoint)")
+
+if ($useV2) {
+    $query = 'query GetRequestState($f: RequestFilterOptionsBaseInput!) { requests(pageSize: 1, filter: $f) { totalCount data { id displayId currentState activeStageNames buildVersion } } }'
+    $data = & (Join-Path $PSScriptRoot 'Invoke-SafeFlyGraphQL.ps1') -Query $query `
+        -Variables @{ f = @{ objectId = @{ equalTo = $SafeFlyId } } } -ServiceConfigPath $ServiceConfigPath
+    $req = @($data.requests.data) | Select-Object -First 1
+    if (-not $req) { throw "SafeFly V2: request '$SafeFlyId' not found (requests(filter: objectId) returned no rows)." }
+    $response = $req
+    $state = "$($req.currentState)"
+} else {
 
 $SafeFlyEndpoint   = "https://www.safefly.azure.com"
 $SafeFlyResourceId = "api://6bca76ac-6a99-4b70-bb47-23ae8bc1f0f6"
@@ -54,13 +80,9 @@ if ($contentType -eq 'text/html' -or $rawResp.Content -match '^\s*<!DOCTYPE') {
 $response = $rawResp.Content | ConvertFrom-Json
 
 $state = $response.currentRequestState
+}
 
 # --- Classify the state ---
-$approvedStates    = @("ApprovedForDeployment", "AutoApproved", "DeploymentInProgress", "DeploymentCompleted")
-$pendingStates     = @("Unsubmitted", "Draft", "EngineeringDirectorPending", "ServiceManagerPending", "BuddyPending", "ReadyToDeployPending", "CvpPending")
-$rejectedStates    = @("EngineeringDirectorRejected", "ServiceManagerRejected", "BuddyRejected", "CvpRejected")
-$invalidatedStates = @("Archived", "Deleted", "DeploymentCancelled")
-
 $classification = if ($state -in $approvedStates)    { "Approved" }
                   elseif ($state -in $pendingStates)  { "Pending" }
                   elseif ($state -in $rejectedStates) { "Rejected" }

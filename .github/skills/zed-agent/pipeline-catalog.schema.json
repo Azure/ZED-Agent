@@ -282,6 +282,19 @@
             "cancelForeignRuns": { "type": "boolean", "default": false, "description": "While guarded (ZED's Step 5 run succeeded → Step 6 signed off), cancel queued/running runs of this pipeline that ZED did not queue (manual runs, cron runs). A run queued before ZED's Step 5 run is cancelled only once it starts. The owner and the person who queued the run are emailed. Checked every operational.scheduleGuardPollIntervalSeconds (default 300)." }
           }
         },
+        "approvalGate": {
+          "type": "object",
+          "description": "Production pipelines only. Evidence that a run cannot deploy to any stamp before a human approval (OneBranch Approval Service and/or ManualValidation / environment approval ahead of every EV2 rollout job). Required (verified=true) for every resolved production pipeline before Step 13 may trigger production ahead of the R2D (service-config safefly.r2dBuildSource = productionRun). Re-verify when the pipeline YAML changes.",
+          "required": ["verified", "evidence"],
+          "properties": {
+            "verified": { "type": "boolean" },
+            "verifiedAt": { "type": "string" },
+            "verifiedBy": { "type": "string" },
+            "gates": { "type": "array", "items": { "type": "string" } },
+            "evidence": { "type": "string", "minLength": 1 },
+            "caveat": { "type": "string" }
+          }
+        },
         "deploymentDoneWhen": {
           "type": "object",
           "description": "Canary pipelines whose run stays in progress through a long EV2 post-deployment step (BCM-CANARY: 'Canary-ManagedValidation', ~24 h). ZED reads the EV2 portal link from the run (task <portalLinkTask>) and asks the EV2 API; once a nonempty set of '<prefix>.<region>' deployment stages all succeeded, the run counts as deployed (watcher target status 'deployed') and Step 5 (Step 7 for rollback) completes without waiting for managed validation to start or finish. Failed/pending region stages remain blockers; validation status stays separate and the run's final result is re-checked when the following BVT window ends. Prod cloud only (gov-cloud EV2 APIs are not reachable — those runs are tracked by the pipeline result). Script: scripts/EV2/Get-Ev2DeploymentProgress.ps1.",

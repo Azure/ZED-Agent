@@ -165,3 +165,34 @@ Describe 'Load-ServiceConfig — releaseNaming guards' {
         { & $script:Loader -ServiceConfigPath (Write-Cfg @{ releaseNaming = @{ prefix = 'B C' } }) } | Should -Throw '*prefix*'
     }
 }
+
+Describe 'Load-ServiceConfig — defaultSkippedSteps' {
+    BeforeAll {
+        function Write-Cfg2([hashtable]$Extra) {
+            $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            $cfg = [ordered]@{
+                service = @{ name = 'BCM'; displayName = 'BCM' }; serviceTreeIds = @{ safefly = 'x' }
+                ado = @{ organization = 'o'; project = 'p'; repository = 'r'; branchPrefix = 'b'; baseBranch = 'master' }
+                kusto = @{ bvt = @{ cluster = 'c' }; canary = @{ cluster = 'c' } }; sharepoint = @{ sitePath = '/s' }
+                notifications = @{ groups = @{ permanent = @('a@b.c') }; routing = @{} }; stepGates = @{ x = $false }
+            }
+            foreach ($k in $Extra.Keys) { $cfg[$k] = $Extra[$k] }
+            $cfg | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $dir 'service-config.json')
+            '{}' | Set-Content (Join-Path $dir 'pipeline-catalog.json')
+            return (Join-Path $dir 'service-config.json')
+        }
+    }
+    It 'accepts BCM 11/12 with reasons' {
+        { & $script:Loader -ServiceConfigPath (Write-Cfg2 @{ defaultSkippedSteps = @{ '11' = 'BVT after roll-forward not needed'; '12' = 'no sign-off' } }) } | Should -Not -Throw
+    }
+    It 'rejects <case>' -ForEach @(
+        @{ case = 'production steps'; ds = @{ '15' = 'x' }; msg = '*always run*' }
+        @{ case = 'the R2D'; ds = @{ '13' = 'x' }; msg = '*always run*' }
+        @{ case = 'a non-step key'; ds = @{ 'eleven' = 'x' }; msg = '*1-16*' }
+        @{ case = 'step 17'; ds = @{ '17' = 'x' }; msg = '*1-16*' }
+        @{ case = 'a missing reason'; ds = @{ '11' = '' }; msg = '*reason*' }
+    ) {
+        { & $script:Loader -ServiceConfigPath (Write-Cfg2 @{ defaultSkippedSteps = $ds }) } | Should -Throw $msg
+    }
+}

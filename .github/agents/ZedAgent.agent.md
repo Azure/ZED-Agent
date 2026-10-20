@@ -480,7 +480,7 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 | 10 | 9 |
 | 11 | 10 |
 | 12 | 11 |
-| 13 | 12, 4 |
+| 13 | 12, 4 (12 `skipped` → 10) |
 | 14 | 13 |
 | 15 | 14 |
 | 16 | 15 |
@@ -497,11 +497,13 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 
 **EV2 deployment done:** canary pipelines with `deploymentDoneWhen` in the catalog (BCM-CANARY → `Canary-ManagedValidation`) stay in progress ~24 h after deploying. The watcher marks such a run `deployed` once `scripts/EV2/Get-Ev2DeploymentProgress.ps1` reports every canary regional deployment stage succeeded: do NOT wait for `*-ManagedValidation` to start or finish. Pending or failed regional stages still block completion; validation status is reported separately. The legacy `ev2StepStarted` config key selects the validation action/regional prefix, not a start gate. Step 5/7 completes then and BVT starts in parallel with validation. On completion record `state.ev2DeployedRuns.<step>`; when the BVT window ends check how those runs finished; never trigger Steps 7/10/15 while one is still running (see `step-behaviors.md → EV2 deployment done`). When resuming a step yourself, use the same script for runs of such pipelines that are still in progress.
 
-**BVT releases:** when `pipeline-catalog.json → bvtReleases.steps` contains the BVT step (BCM: 6, 8, 11), do NOT arm the 24 h timer. Run `scripts/Invoke-BvtReleases.ps1 -Action Start -Step <N>` (creates the configured releases — BCM 40785 + 47437 with `MABIsOfficial="True"` — exact case-sensitive string, never Boolean `true` or string `"true"`), email the owner the release links and arm `poll-bvt-releases`. When the watcher continues the release, run the step's BVT actions and put the releases table (`-Action Get` → `.Summary`) in the BVT email; a release that ended rejected fails the step (`ack retry` → `-Action Start -Rerun`). Never create these releases by hand. See `step-behaviors.md → BVT releases`.
+**BVT releases:** when `pipeline-catalog.json → bvtReleases.steps` contains the BVT step (BCM: 6, 8 — BCM skips 11/12), do NOT arm the 24 h timer. Run `scripts/Invoke-BvtReleases.ps1 -Action Start -Step <N>` (creates the configured releases — BCM 40785 + 47437 with `MABIsOfficial="True"` — exact case-sensitive string, never Boolean `true` or string `"true"`), email the owner the release links and arm `poll-bvt-releases`. When the watcher continues the release, run the step's BVT actions and put the releases table (`-Action Get` → `.Summary`) in the BVT email; a release that ended rejected fails the step (`ack retry` → `-Action Start -Rerun`). Never create these releases by hand. See `step-behaviors.md → BVT releases`.
 
 **Revert bits during the canary BVT:** with `CONFIG[revertBits.prepareDuringCanaryBvt]` (BCM) start the revert bits at **Step 6 entry** (7a Plan + selection email; 7b Prepare + PR on `revert-bits preserve`) but arm no directive for them — `scripts/Invoke-RevertBitsTrack.ps1` (watcher side-channel) follows the PR, reuses/queues the revert build and sets `phase = "ready"`. On `approve-bvt` Step 7 rolls back with the ready build at once (pinned to `state.revertBits.buildId`) or waits for `ready`; Step 8 BVT is the revert bits BVT — no `approve-revert`. When the watcher invokes you with `revert bits <event> for release <id>`, send that email (and continue Step 7 if it was waiting for `revert-bits-ready`). See `step-behaviors.md → Step 7 — Revert bits → Prepared during the canary BVT`.
 
 **Release names:** with `CONFIG[releaseNaming]` (BCM: prefix `BCM`) a service ships several releases per month — `BCM2610`, `BCM2610_2`, `BCM2610_3`. `setup` asks the release name first (`scripts/Resolve-ReleaseName.ps1 -Action Suggest` / `-Action Validate`) and that name **is** the release id everywhere: `.zed-agent/releases/<name>/`, every `| {releaseId}` subject, the watcher, `{{releaseName}}` / `{{releaseNameLower}}` in config templates (commit tracker sheet `BCM2610_2`, revert branch `releases/bcm2610_2revert`, RI/FI branches `zed/bcm2610_2-…`, SafeFly `{releaseName}`). Never derive a month by parsing the id — use `release.json → releaseMonth` (scripts: `lib/ReleaseNameLib.ps1`). ZED drives one active release at a time; `setup` offers to stop a still-active earlier release.
+
+**Default skipped steps:** `CONFIG[defaultSkippedSteps]` (BCM: 11 and 12) lists steps a service never runs; `setup` writes them as `skipped` (reason `service-default`) in every release, so the loop goes Step 10 → Step 13 (R2D) directly — the roll-forward run must still succeed, and Step 13's other joins (Step 4, private stamp sign-off) still apply. `modify reset N` runs one anyway in a given release.
 
 # Step Execution Loop
 

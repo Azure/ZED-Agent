@@ -288,6 +288,12 @@
       }
     },
 
+    "defaultSkippedSteps": {
+      "type": "object",
+      "description": "Optional. Steps this service never runs: setup writes them as 'skipped' (reason 'service-default') in every new release; the owner can still run one in a release with 'modify reset N'. Keys are step numbers, values the reason. Steps 13-15 (R2D, SafeFly/CRB, production) cannot be skipped this way. BCM: { \"11\": \"…\", \"12\": \"…\" } — roll-forward (Step 10) goes straight to the R2D (Step 13).",
+      "propertyNames": { "pattern": "^([1-9]|1[0-2]|16)$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
     "releaseNaming": {
       "type": "object",
       "description": "Optional. Explicit release names for services that ship several releases per month (BCM: BCM2610, BCM2610_2, BCM2610_3). setup asks for the name (suggesting the next free one) and it becomes the release id everywhere: .zed-agent/releases/<name>/, state, email/Teams subjects, the watcher, and the {{releaseName}} / {{releaseNameLower}} template tokens (commit tracker sheet, revert branch, RI/FI branches, SafeFly {releaseName}). release.json keeps releaseMonth (YYYY-MM) so {{YYMM}} still works. Without it the release id is YYYY-MM. Script: scripts/Resolve-ReleaseName.ps1.",

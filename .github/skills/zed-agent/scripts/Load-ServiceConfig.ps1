@@ -259,5 +259,15 @@ if ($ceProp -and $ceProp.Value -and $ceProp.Value.PSObject.Properties['mode'] -a
     }
 }
 
+# --- Optional defaultSkippedSteps (steps a service never runs, e.g. BCM 11/12) ---
+$dsProp = $cfg.PSObject.Properties['defaultSkippedSteps']
+if ($dsProp -and $dsProp.Value) {
+    foreach ($p in $dsProp.Value.PSObject.Properties) {
+        if ($p.Name -notmatch '^\d+$' -or [int]$p.Name -lt 1 -or [int]$p.Name -gt 16) { throw "defaultSkippedSteps key '$($p.Name)' must be a step number 1-16." }
+        if ([int]$p.Name -in @(13, 14, 15)) { throw "defaultSkippedSteps cannot skip Step $($p.Name) — the R2D, SafeFly/CRB approval and production rollout always run." }
+        if ([string]::IsNullOrWhiteSpace([string]$p.Value)) { throw "defaultSkippedSteps.$($p.Name) needs a reason (shown to the owner and in audit.jsonl)." }
+    }
+}
+
 # --- Return composed object ---
 return $cfg

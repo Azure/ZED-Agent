@@ -207,11 +207,11 @@ When the release owner says `setup`:
        }
        ```
        Every step keys on `release.json → releaseMode` (not on the live config), so a release keeps its mode even if the config changes mid-release.
-    e. Write `state.json` with 16 steps all `pending`, status `not-started`. **deploy-base**: write Step 16 (`merge-back`) as `skipped` with `skipReason: "deploy-base — the release is the deployment branch itself, nothing to merge back"`.
+    e. Write `state.json` with 16 steps all `pending`, status `not-started`. **deploy-base**: write Step 16 (`merge-back`) as `skipped` with `skipReason: "deploy-base — the release is the deployment branch itself, nothing to merge back"`. **Service default skips** (`CONFIG[defaultSkippedSteps]`, e.g. BCM `{ "11": "…", "12": "…" }` — roll-forward goes straight to R2D): write each listed step as `skipped` with `reason: "service-default"`, `skipReason: <the configured text>`, `skippedAt`, `skippedBy: "service-config"`, and append `{"action":"setup-skip-step","step":N,"source":"service-config","reason":"<text>"}` to `audit.jsonl`. Tell the owner: *"Steps {list} are skipped for {service} by default ({reasons}). To run one in this release anyway: `modify reset N`."*
     f. **Optional step skipping (per-release)**: Ask the release owner whether any steps should be skipped for THIS release only. Use `ask_user` with two choices: `Run all 16 steps (recommended)` and `Skip some steps`.
        - If they pick **Run all 16 steps** → continue to sub-step g. No state changes.
        - If they pick **Skip some steps**:
-         1. Display the full 16-step table (same format as `status`):
+         1. Display the full 16-step table (same format as `status`; steps already skipped by deploy-base / `CONFIG[defaultSkippedSteps]` show `⊘ skipped (<reason>)`):
             ```
             Step 1  send-reminder              ⬚ pending
             Step 2  cut-branch                 ⬚ pending

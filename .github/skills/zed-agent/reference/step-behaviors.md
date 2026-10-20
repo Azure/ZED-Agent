@@ -462,11 +462,11 @@ BCM-CANARY's run (`Managed SDP Deployment` → `Ev2Agentless` / `Rollout Progres
 
 ## BVT releases (Steps 6, 8, 11)
 
-Configured in `pipeline-catalog.json` (BCM: both canary test releases, for all three BVT steps):
+Configured in `pipeline-catalog.json` (BCM: both canary test releases, for Steps 6 and 8 — BCM skips Steps 11–12 via `CONFIG[defaultSkippedSteps]`, so roll-forward goes straight to the R2D):
 
 ```json
 "bvtReleases": {
-  "steps": [6, 8, 11],
+  "steps": [6, 8],
   "timeoutHours": 12,
   "releases": {
     "IaaSVM-CloudTest":     { "definitionId": 40785, "variables": { "MABIsOfficial": "True" } },
@@ -629,7 +629,7 @@ BCM. The revert build does not depend on the canary BVT result — only on the p
 
 ## Step 13: Create SafeFly R2D Request
 
-**Trigger**: Step 12 approved AND Step 4 completed (commit data) AND — when `CONFIG[pipelines.privateStampUpgrade.enabled]` — the private stamp upgrade test is `signed-off` or `skipped`
+**Trigger**: Step 12 approved — or, when Steps 11–12 are `skipped` (e.g. BCM `CONFIG[defaultSkippedSteps]`: roll-forward goes straight to R2D), Step 10 completed — AND Step 4 completed (commit data) AND — when `CONFIG[pipelines.privateStampUpgrade.enabled]` — the private stamp upgrade test is `signed-off` or `skipped`
 
 **Prerequisite check (Step 4 join point — see Step Dependency Matrix parallelism note):**
 

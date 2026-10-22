@@ -141,6 +141,27 @@ Describe 'Invoke-ApprovalWatch' {
         (Get-Req $d).lastMessage.html | Should -Match 'Step 15 · Production rollout'
     }
 
+    It 'puts the Step 13 pre-trigger hold banner on a production run unless the owner accepted its early rollout' {
+        $mk = {
+            param([bool]$Accepted)
+            $d = New-Env -Triggered @{ '15' = @(186266333) }
+            $sf = Join-Path $d 'state.json'
+            $st = Get-Content $sf -Raw | ConvertFrom-Json
+            $st | Add-Member -NotePropertyName productionPreTrigger -NotePropertyValue ([pscustomobject]@{ triggeredAtStep = 13; runs = @([pscustomobject]@{ pipelineKey = 'BCM-PROD'; runId = 186266333 }) })
+            $st.steps = @([pscustomobject]@{ number = 14; status = 'waiting-approval' })
+            if ($Accepted) { $st | Add-Member -NotePropertyName productionEarlyRolloutAccepted -NotePropertyValue ([pscustomobject]@{ runId = 186266333; ownerWords = 'Let the ev2 rollout continue.' }) }
+            $st | ConvertTo-Json -Depth 6 | Set-Content $sf
+            $null = Invoke-AW $d -Extra @{ Now = [datetime]'2026-10-17T06:00:00Z' }
+            Get-Req $d
+        }
+        $held = & $mk $false
+        $held.lastMessage.subject | Should -BeLike '⛔ HOLD — do not approve yet*'
+        $held.lastMessage.html | Should -Match 'DO NOT APPROVE YET'
+        $ok = & $mk $true
+        $ok.lastMessage.subject | Should -Not -BeLike '*HOLD*'
+        $ok.lastMessage.html | Should -Not -Match 'DO NOT APPROVE YET'
+    }
+
     It 'does nothing in test mode' {
         Mock Invoke-RestMethod -ParameterFilter { $true } -MockWith { throw 'no calls in test mode' }
         $d = New-Env -TestMode $true

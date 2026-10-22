@@ -943,6 +943,8 @@ Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
         Copy-Item (Join-Path $SafeFlyDir 'New-SafeFlyRequest.ps1')  $sfDir
         Copy-Item (Join-Path $SafeFlyDir 'Get-SafeFlyApproval.ps1') $sfDir
         Copy-Item (Join-Path $PSScriptRoot 'fixtures\SafeFly\Invoke-SafeFlyGraphQL.stub.ps1') (Join-Path $sfDir 'Invoke-SafeFlyGraphQL.ps1')
+        New-Item -ItemType Directory -Path (Join-Path $script:Stage 'scripts\lib') -Force | Out-Null
+        Copy-Item (Join-Path $SafeFlyDir '..\lib\ReleaseNameLib.ps1') (Join-Path $script:Stage 'scripts\lib')
         Set-Content (Join-Path $script:Stage 'scripts\Load-ServiceConfig.ps1') -Value 'param($ServiceConfigPath) Get-Content $ServiceConfigPath -Raw | ConvertFrom-Json'
         Set-Content (Join-Path $sfDir 'Get-SafeFlyForm.ps1') -Value 'param($ServiceConfigPath) Get-Content (Join-Path $PSScriptRoot "form.json") -Raw | ConvertFrom-Json'
 
@@ -962,6 +964,7 @@ Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
             (New-Q 'core.rollback_strategy' $true $false @(@('Manual (TSG)','Manual (TSG)'), @('DRI determines rollback or rollforward in real time based on the issue','DRI determines rollback or rollforward in real time based on the issue')))
             (New-Q 'core.health_monitoring' $true $null @(@('Yes','True'), @('No','False')))
             (New-Q 'core.team_assessed_risk' $false $false @(@('Low','Low'), @('Medium','Medium')))
+            (New-Q 'core.team_risk.justification' $false $null @())
             (New-Q 'ev2.servicegroup' $true $true @() (New-Cond 'core.orchestrator_name' 'ContainsAny' 'ev2'))
             (New-Q 'ev2.build' $true $false @() (New-Cond 'core.orchestrator_name' 'ContainsAny' 'ev2'))
             (New-Q 'ado.build_na' $true $null @(@('Applicable','False'), @('Not Applicable','True')))
@@ -981,6 +984,9 @@ Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
                 ConvertTo-Json -Depth 8 | Set-Content (Join-Path $script:Stage 'service-config.json')
             [pscustomobject]@{ formId = $FormId; questions = @($Questions) } | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $script:Stage 'scripts\SafeFly\form.json')
             @{ regions = @('APACSoutheast2','DenmarkEast','EastAsia','SouthwestUS','WestUS2','UAENortheast(Ajman)')
+               regionGroups = @(@{ name = 'United States'; displayOrder = 0; regions = @(@{ regionName = 'Southwest US' }, @{ regionName = 'West US 2' }) },
+                                @{ name = 'Asia Pacific'; displayOrder = 2; regions = @(@{ regionName = 'East Asia' }, @{ regionName = 'APAC Southeast 2' }) },
+                                @{ name = 'Airgap'; displayOrder = 12; regions = @(@{ regionName = 'USNat East' }) })
                tags = @(@{ id = '4868c011-1488-4035-87a8-0fb2c216af52'; name = 'App Deployment' }, @{ id = '11111111-1111-1111-1111-111111111111'; name = 'App Deployment Extra' })
                requests = @(@{ id = 'aaaaaaaa-0000-0000-0000-000000000001'; displayId = '13.1'; currentState = 'Submitted' },
                             @{ id = 'aaaaaaaa-0000-0000-0000-000000000002'; displayId = '13.2'; currentState = 'Approved' },
@@ -1100,5 +1106,129 @@ Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
         (& $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-000000000003' -ServiceConfigPath $cfgPath 6>$null).classification | Should -Be 'Rejected'
         (& $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-000000000004' -ServiceConfigPath $cfgPath 6>$null).classification | Should -Be 'Invalidated'
         { & $ap -SafeFlyId 'aaaaaaaa-0000-0000-0000-00000000dead' -ServiceConfigPath $cfgPath 6>$null } | Should -Throw '*not found*'
+    }
+
+    # --- 2026-10-20 owner correction: reference request 13.14103 "BCM September Payload" ---
+    It 'renders the title from the release month (not the filing date) with literal tokens' {
+        Write-Fixture -Extra @{ titleTemplate = '{serviceName} {month} Payload ({releaseName})' }
+        $r = Invoke-DryRun @{ ReleaseMonth = '2026-09' }
+        $r.Payload.changeTitle | Should -Be 'BCM September Payload (BCM2610_2)'
+        { Invoke-DryRun @{ ReleaseMonth = 'Sept-26' } } | Should -Throw "*ReleaseMonth must be 'yyyy-MM'*"
+    }
+
+    It 'renders an HTML description with an encoded change summary and appends the commit link' {
+        Write-Fixture -Extra @{ descriptionTemplate = '<p>Regular {serviceName} release ({releaseName}, EV2 build {buildNumber}).</p><p>{changeSummary}</p>' }
+        $r = Invoke-DryRun @{ ChangeSummary = @('Enable SDR in East US 2', 'Fix A<B & C'); CommitExcelUrl = 'https://contoso.sharepoint.com/x.xlsx' }
+        $r.Payload.changeDescription | Should -BeLike '<p>Regular BCM release (BCM2610_2, EV2 build Release-2610-9).</p><p>Enable SDR in East US 2<br>Fix A&lt;B &amp; C</p><p>Commit analysis: <a href="https://contoso.sharepoint.com/x.xlsx">*'
+        @($r.Result.contentWarnings).Count | Should -Be 0
+    }
+
+    It 'answers core.team_risk.justification from teamRiskJustificationTemplate' {
+        Write-Fixture -Extra @{ teamRiskJustificationTemplate = 'Monthly {serviceName} release ({releaseName}). {validationSummary}' }
+        $r = Invoke-DryRun @{ ValidationSummary = 'Config gated; canary + BVTs; rollback tested.' }
+        $r.Answers['core.team_risk.justification'] | Should -Be 'Monthly BCM release (BCM2610_2). Config gated; canary + BVTs; rollback tested.'
+        Write-Fixture
+        (Invoke-DryRun).Answers.ContainsKey('core.team_risk.justification') | Should -BeFalse
+    }
+
+    It 'flags missing change/validation content in DryRun and fails closed before any mutation for a real filing' {
+        Write-Fixture -Extra @{ descriptionTemplate = '<p>{changeSummary}</p>'; teamRiskJustificationTemplate = 'Monthly. {validationSummary}' }
+        $r = Invoke-DryRun
+        ($r.Result.contentWarnings -join ';') | Should -Match 'changeSummary.*;.*validationSummary'
+        $r.Answers['core.team_risk.justification'] | Should -Be 'Monthly. [validationSummary required]'
+        { Invoke-DryRun @{ DryRun = $false } } | Should -Throw '*CONTENT MISSING*'
+        (Get-Content (Join-Path $script:Stage 'scripts\SafeFly\calls.log') -Raw) | Should -Not -Match 'mutation'
+    }
+
+    It 'builds core.regions from safefly.regionGroups minus CCOA exclusions (no -TargetedRegions needed)' {
+        Write-Fixture -Extra @{ regionGroups = @('United States', 'Asia Pacific') }
+        $r = Invoke-DryRun @{ TargetedRegions = @(); ExcludedRegions = @('eastasia') }
+        $r.Result.regionSource | Should -Be 'regionGroups'
+        @($r.Answers['core.regions'] | ConvertFrom-Json) | Should -Be @('SouthwestUS', 'WestUS2', 'APACSoutheast2')
+        @($r.Result.regionsExcluded) | Should -Be @('East Asia')
+        $r.Answers['core.regions'] | Should -Not -Match 'USNat'
+    }
+
+    It 'fails closed on an unknown SafeFly region group, and without groups requires -TargetedRegions' {
+        Write-Fixture -Extra @{ regionGroups = @('United States', 'Atlantis') }
+        { Invoke-DryRun } | Should -Throw '*unknown group(s): Atlantis*'
+        Write-Fixture
+        { Invoke-DryRun @{ TargetedRegions = @() } } | Should -Throw '*no regions*'
+    }
+
+    # --- 2026-10-22 owner correction: reference request 13.12038 "BCM Monthly Release 2609: <themes>" ---
+    It 'renders the 13.12038 title: {releaseNumber} strips the releaseNaming prefix, {titleThemes} from -TitleThemes' {
+        Write-Fixture -Extra @{ titleTemplate = '{serviceName} Monthly Release {releaseNumber}: {titleThemes}' }
+        $cfgPath = Join-Path $script:Stage 'service-config.json'
+        $j = Get-Content $cfgPath -Raw | ConvertFrom-Json -AsHashtable; $j['releaseNaming'] = @{ prefix = 'BCM'; sequenceSeparator = '_' }
+        $j | ConvertTo-Json -Depth 8 | Set-Content $cfgPath
+        $r = Invoke-DryRun @{ TitleThemes = 'SDR expansion, Anti-SSRF hardening, and reliability fixes'; ReleaseMonth = '2026-10' }
+        $r.Payload.changeTitle | Should -Be 'BCM Monthly Release 2610_2: SDR expansion, Anti-SSRF hardening, and reliability fixes'
+        $r = Invoke-DryRun @{ ReleaseId = 'BCM2610'; TitleThemes = 'x'; ReleaseMonth = '2026-10' }
+        $r.Payload.changeTitle | Should -Be 'BCM Monthly Release 2610: x'
+        Write-Fixture -Extra @{ titleTemplate = '{serviceName} Monthly Release {releaseNumber}: {titleThemes}' }   # no releaseNaming -> yyMM
+        (Invoke-DryRun @{ TitleThemes = 'x'; ReleaseMonth = '2026-09' }).Payload.changeTitle | Should -Be 'BCM Monthly Release 2609: x'
+    }
+
+    It 'renders -ChangeSections as 13.12038 h4 sections in descriptionSections order with PR / work-item links, then the Payload and commit tracker links last' {
+        Write-Fixture -Extra @{
+            descriptionTemplate = '{changeSections}<p><strong>For more details, view the </strong><a href="{payloadUrl}"><strong>Payload</strong></a></p><p>Tracker {commitExcelSheet}: <a href="{commitExcelUrl}">{commitExcelUrl}</a></p>'
+            descriptionSections = @('Highlights', 'Features', 'Dependency Updates', 'Configuration Changes', 'Fixes')
+            prUrlTemplate = 'https://msazure.visualstudio.com/One/_git/Repo/pullrequest/{id}'
+            workItemUrlTemplate = 'https://msazure.visualstudio.com/One/_workitems/edit/{id}'
+            payloadUrlTemplate = 'https://msazure.visualstudio.com/One/_apps/buildhealth?definitionId=223537&buildId={buildId}&payloadBuildId={previousBuildId}&view=Payload' }
+        $sections = @(
+            @{ section = 'Fixes'; text = 'Fixed A<B & C.'; pr = 17558376 },
+            [pscustomobject]@{ section = 'highlights'; text = 'Enabled SDR in 5 regions.'; pr = 17484944 },
+            @{ section = 'Dependency Updates'; text = 'Took a CVE fix.'; workItem = 35580457 })
+        $r = Invoke-DryRun @{ ChangeSections = $sections; PreviousBuildId = '185093141'; CommitExcelUrl = 'https://contoso.sharepoint.com/:x:/t/T/abc'; CommitExcelSheet = 'BCM2610_1' }
+        $d = $r.Payload.changeDescription
+        $d | Should -BeLike '<h4>Highlights</h4><ul><li>Enabled SDR in 5 regions. <a href="https://msazure.visualstudio.com/One/_git/Repo/pullrequest/17484944">17484944</a></li></ul><h4>Dependency Updates</h4><ul><li>Took a CVE fix. <a href="https://msazure.visualstudio.com/One/_workitems/edit/35580457">35580457</a></li></ul><h4>Fixes</h4><ul><li>Fixed A&lt;B &amp; C. <a href=*'
+        $d | Should -Not -Match '<h4>Features</h4>'
+        $d | Should -Match ([regex]::Escape('buildId=186664606&amp;payloadBuildId=185093141&amp;view=Payload'))
+        $d | Should -Match '<p>Tracker BCM2610_1: <a href="https://contoso.sharepoint.com/:x:/t/T/abc">https://contoso.sharepoint.com/:x:/t/T/abc</a></p>$'
+        $d | Should -Not -Match 'Commit analysis'   # no duplicate auto-appended link when the template places it
+        @($r.Result.contentWarnings).Count | Should -Be 0
+    }
+
+    It 'fails closed on an unknown section, and flags missing themes / sections / previous build / tracker sheet before any mutation' {
+        Write-Fixture -Extra @{ titleTemplate = 'R {releaseNumber}: {titleThemes}'; descriptionTemplate = '{changeSections}<a href="{payloadUrl}">P</a>{commitExcelSheet}<a href="{commitExcelUrl}">x</a>'
+            descriptionSections = @('Highlights', 'Fixes'); prUrlTemplate = 'https://x/pullrequest/{id}'; payloadUrlTemplate = 'https://x/bh?b={buildId}&p={previousBuildId}' }
+        { Invoke-DryRun @{ ChangeSections = @(@{ section = 'Misc'; text = 't'; pr = 1 }) } } | Should -Throw "*section 'Misc' is not in safefly.descriptionSections*"
+        $r = Invoke-DryRun
+        ($r.Result.contentWarnings -join ';') | Should -Match 'titleThemes'
+        ($r.Result.contentWarnings -join ';') | Should -Match 'changeSections'
+        ($r.Result.contentWarnings -join ';') | Should -Match 'previousBuildId'
+        ($r.Result.contentWarnings -join ';') | Should -Match 'commitExcelSheet'
+        ($r.Result.contentWarnings -join ';') | Should -Match 'commitExcelUrl'
+        { Invoke-DryRun @{ DryRun = $false } } | Should -Throw '*CONTENT MISSING*'
+        (Get-Content (Join-Path $script:Stage 'scripts\SafeFly\calls.log') -Raw) | Should -Not -Match 'mutation'
+    }
+
+    It 'defaults {commitExcelSheet} to the release-named tracker sheet (ZED convention) when -CommitExcelSheet is not passed' {
+        Write-Fixture -Extra @{ descriptionTemplate = '<p>Tracker {commitExcelSheet}: <a href="{commitExcelUrl}">{commitExcelUrl}</a></p>' }
+        $cfgPath = Join-Path $script:Stage 'service-config.json'
+        $c = Get-Content $cfgPath -Raw | ConvertFrom-Json
+        $c | Add-Member -NotePropertyName commitExcel -NotePropertyValue ([pscustomobject]@{ mode = 'tracker'; sheetNameTemplate = '{{releaseName}}' })
+        $c | ConvertTo-Json -Depth 8 | Set-Content $cfgPath
+        $r = Invoke-DryRun @{ CommitExcelUrl = 'https://contoso.sharepoint.com/:x:/t/T/abc' }
+        $r.Payload.changeDescription | Should -Match '<p>Tracker BCM2610_2: '
+        ($r.Result.contentWarnings -join ';') | Should -Not -Match 'commitExcelSheet'
+        # an explicit sheet still wins
+        (Invoke-DryRun @{ CommitExcelUrl = 'https://contoso.sharepoint.com/:x:/t/T/abc'; CommitExcelSheet = 'Team Sheet' }).Payload.changeDescription | Should -Match '<p>Tracker Team Sheet: '
+    }
+
+    It 'BCM service-config renders the owner justification verbatim and the 13.12038 templates' {
+        # BCM-specific config check: runs only where the repo's service-config.json is BCM's
+        # (Mgmt-RecoverySvcs-IaaSCoord), skipped in the ZED-Agent engine repo or other services.
+        $cfgPath = Join-Path $SafeFlyDir '..\..\service-config.json'
+        if (-not (Test-Path $cfgPath)) { Set-ItResult -Skipped -Because 'no service-config.json in this repo (ZED-Agent engine repo)'; return }
+        $real = Get-Content $cfgPath -Raw | ConvertFrom-Json
+        if ([string]$real.service.name -ne 'BCM') { Set-ItResult -Skipped -Because "service-config.json is for '$($real.service.name)', not BCM"; return }
+        $real.safefly.referenceRequest.displayId | Should -Be '13.12038'
+        $real.safefly.titleTemplate | Should -Be '{serviceName} Monthly Release {releaseNumber}: {titleThemes}'
+        $real.safefly.descriptionTemplate | Should -Match '^\{changeSections\}.*\{payloadUrl\}.*\{commitExcelUrl\}</a></p>$'
+        $real.safefly.teamRiskJustificationTemplate | Should -BeLike "We have multiple layers of validation and monitoring in place to minimize deployment risk:`n- The changes are validated in Canary before broader rollout.`n*`nTogether, these controls provide both pre-deployment validation and post-deployment detection for potential regressions."
+        @($real.safefly.teamRiskJustificationTemplate -split "`n" | Where-Object { $_ -like '- *' }).Count | Should -Be 4
     }
 }

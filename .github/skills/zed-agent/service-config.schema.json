@@ -471,21 +471,58 @@
       "required": ["titleTemplate", "descriptionTemplate", "tags", "serviceGroupName"],
       "additionalProperties": true,
       "properties": {
+        "referenceRequest": {
+          "type": "object",
+          "description": "The owner-designated SafeFly request whose conventions R2Ds follow (title, description, team risk justification, regions, rollback, tags). Read it with requestByDisplayId before changing any safefly value.",
+          "properties": {
+            "displayId": { "type": "string", "pattern": "^\\d+\\.\\d+$" },
+            "id": { "type": "string" },
+            "title": { "type": "string" },
+            "url": { "type": "string" },
+            "note": { "type": "string" }
+          }
+        },
         "titleTemplate": {
           "type": "string",
-          "description": "Template for SafeFly CR title. Supports {serviceName}, {serviceDisplayName}, {releaseName} / {releaseId} (e.g. BCM2610_2), {month}, {yy} placeholders.",
+          "description": "Template for SafeFly CR title. Supports {serviceName}, {serviceDisplayName}, {releaseName} / {releaseId} (e.g. BCM2610_2), {releaseNumber} (release name without releaseNaming.prefix, e.g. 2610_2; else yyMM), {titleThemes} (-TitleThemes, per-release; fails closed on a real filing when empty), {month}, {yy}, {buildNumber}, {buildId}. {month}/{yy} are the release month (-ReleaseMonth = release.json releaseMonth), not the filing date. The SafeFly portal prefixes the service name ('Backup (MAB): ') — do not repeat it. BCM (reference 13.12038): '{serviceName} Monthly Release {releaseNumber}: {titleThemes}'.",
           "minLength": 1
         },
         "descriptionTemplate": {
           "type": "string",
-          "description": "Template for SafeFly CR description. Supports {serviceName}, {releaseId} placeholders.",
+          "description": "Template for SafeFly CR description (HTML allowed). Supports the titleTemplate tokens plus {changeSections} (-ChangeSections rendered as <h4>section</h4><ul><li>sentence <a>PR/work item</a></li></ul> in descriptionSections order), {payloadUrl} (payloadUrlTemplate with -PreviousBuildId), {commitExcelUrl} / {commitExcelSheet} (HTML-encoded) and the legacy {changeSummary} (-ChangeSummary lines, <br>-joined). A commit Excel URL not referenced by the template is appended as a link. A real filing fails closed when a used token is empty.",
           "minLength": 1
+        },
+        "descriptionSections": {
+          "type": "array",
+          "description": "Ordered h4 section names for {changeSections} (BCM reference 13.12038: Highlights, Features, Dependency Updates, Configuration Changes, Fixes). Empty sections are omitted; a -ChangeSections item with another section fails closed.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "prUrlTemplate": {
+          "type": "string",
+          "description": "PR link for a -ChangeSections item with 'pr' ({id} token), e.g. https://msazure.visualstudio.com/One/_git/<repo>/pullrequest/{id}. Link text is the PR number."
+        },
+        "workItemUrlTemplate": {
+          "type": "string",
+          "description": "Work item link for a -ChangeSections item with 'workItem' ({id} token), e.g. https://msazure.visualstudio.com/One/_workitems/edit/{id}."
+        },
+        "payloadUrlTemplate": {
+          "type": "string",
+          "description": "Payload link for {payloadUrl} (13.12038 'For more details, view the Payload'): ADO build-health Payload view with tokens {buildId} (release build) and {previousBuildId} (-PreviousBuildId = release.json previousBuildId), e.g. https://msazure.visualstudio.com/One/_apps/buildhealth?serviceId=<id>&definitionId=<official build definition>&buildId={buildId}&payloadBuildId={previousBuildId}&view=Payload&payloadType=PullRequests."
+        },
+        "teamRiskJustificationTemplate": {
+          "type": "string",
+          "description": "Template for the 'core.team_risk.justification' answer (what R2D reviewers judge). Plain text (the reference answers are plain text; '\\n' line breaks allowed). Supports the titleTemplate tokens plus {validationSummary} (-ValidationSummary). A real filing fails closed when {validationSummary} is used but empty. Unset: question not answered. BCM: the owner's multi-layer validation/monitoring statement (2026-10-22), verbatim."
+        },
+        "regionGroups": {
+          "type": "array",
+          "description": "SafeFly V2 regionGroups names whose regions make up 'core.regions' (minus -ExcludedRegions CCOA exclusions), e.g. United States, Europe, Asia Pacific, Americas (Excl. US), Middle East & Africa, Fairfax, Mooncake for a Public+Fairfax+Mooncake rollout. Unknown group names fail closed. Unset: -TargetedRegions is used.",
+          "items": { "type": "string", "minLength": 1 }
         },
         "tags": {
           "type": "array",
-          "description": "Tags applied to the SafeFly change request — V2 tag names (or tag GUIDs). New-SafeFlyRequest resolves names with tags(name:) to tag GUIDs; a name that does not exist in SafeFly V2 is skipped with a warning (never sent as a name).",
+          "description": "Tags applied to the SafeFly change request — V2 tag names (or tag GUIDs). New-SafeFlyRequest resolves names with tags(name:) to tag GUIDs; a name that does not exist in SafeFly V2 is skipped with a warning (never sent as a name). May be empty (the BCM reference 13.12038 has no tags).",
           "items": { "type": "string" },
-          "minItems": 1
+          "minItems": 0
         },
         "additionalNotifiers": {
           "type": "array",

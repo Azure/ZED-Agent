@@ -8,6 +8,9 @@ if ($Query -match 'mutation') { throw "STUB: mutation called: $Query" }
 if ($Query -match 'getRegionsWithActiveCCOACoverage') {
     return [pscustomobject]@{ getRegionsWithActiveCCOACoverage = [pscustomobject]@{ regions = @($fx.regions) } }
 }
+if ($Query -match 'regionGroups') {
+    return [pscustomobject]@{ regionGroups = @($fx.regionGroups) }
+}
 if ($Query -match 'tags\(') {
     # Server semantics: tags(name:) is a case-insensitive CONTAINS match.
     $n = "$($Variables.name)"

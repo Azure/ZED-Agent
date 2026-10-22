@@ -226,6 +226,10 @@ function Get-PreTriggerHold($Req) {
     if (-not $hit.Count) { return $null }
     $s14 = @($st.steps | Where-Object { $_.number -eq 14 }) | Select-Object -First 1
     if ($s14 -and $s14.status -in @('completed', 'skipped')) { return $null }
+    # Owner accepted this run's production rollout ahead of Step 14 (state.productionEarlyRolloutAccepted,
+    # step-behaviors Step 15) — a "do not approve yet" banner would contradict the owner's decision.
+    if ($st.PSObject.Properties['productionEarlyRolloutAccepted'] -and $st.productionEarlyRolloutAccepted -and
+        @($st.productionEarlyRolloutAccepted.runId) -contains [long]$Req.runId) { return $null }
     $txt = 'This production run was triggered at Step 13 only to obtain the build number for the SafeFly R2D. Approve it only after Step 14 (SafeFly R2D approval + CRB) is complete and the release owner'
     $txt += $(if ($st.releaseOwner) { " ($([System.Net.WebUtility]::HtmlEncode([string]$st.releaseOwner)))" } else { '' })
     $txt += ' confirms.'

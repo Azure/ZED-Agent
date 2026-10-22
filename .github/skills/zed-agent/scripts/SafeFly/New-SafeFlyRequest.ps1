@@ -39,7 +39,52 @@
     "Conservative SDP" stays as-is. Default: "Conservative SDP".
 
 .PARAMETER TargetedRegions
-    Azure regions for the deployment (display names).
+    Azure regions for the deployment (display names). Not used for core.regions when
+    service-config safefly.regionGroups is set (see -ExcludedRegions); required otherwise.
+
+.PARAMETER ExcludedRegions
+    CCOA-excluded region short names (release.json excludedRegions, e.g. "eastasia").
+    Removed from the safefly.regionGroups region set (case/space-insensitive match).
+
+.PARAMETER ReleaseMonth
+    Release month 'yyyy-MM' (release.json releaseMonth). Drives the {month}/{yy} title and
+    description tokens — the R2D names the payload month, not the filing date (13.14103
+    "BCM September Payload" was filed 2026-10-05). Default: current UTC month.
+
+.PARAMETER ChangeSummary
+    One line per notable change in the payload (HTML-encoded, joined with <br>) for the
+    {changeSummary} description token. Required for a real filing when the template uses it.
+
+.PARAMETER TitleThemes
+    Short comma-separated themes of the payload for the {titleThemes} title token
+    (13.12038 style: "BCM Monthly Release 2609: Expanded recovery capabilities, CVM/S2S
+    updates, pipeline hardening, and reliability fixes"). Required for a real filing when
+    the title template uses it.
+
+.PARAMETER ChangeSections
+    Payload changes for the {changeSections} description token, one object per change:
+    @{ section = 'Highlights'; text = '<one sentence>'; pr = 17484944 } (or workItem = <id>,
+    or url + label). Rendered as <h4>section</h4><ul><li>text <a href=url>label</a></li></ul>
+    in the order of safefly.descriptionSections (empty sections omitted; an unknown section
+    fails closed). pr / workItem links come from safefly.prUrlTemplate / workItemUrlTemplate.
+    Required for a real filing when the template uses it.
+
+.PARAMETER PreviousBuildId
+    ADO build id of the previous release build (release.json previousBuildId) for the
+    {payloadUrl} token (safefly.payloadUrlTemplate: build-health Payload view between
+    {previousBuildId} and {buildId}).
+
+.PARAMETER CommitExcelSheet
+    Commit tracker sheet holding this payload's rows (release.json commitExcelSheet) for the
+    {commitExcelSheet} description token. Empty + commitExcel.mode == "tracker" → the sheet ZED's
+    convention gives this release: commitExcel.sheetNameTemplate expanded for -ReleaseId
+    ({{releaseName}} → BCM2610_2).
+
+.PARAMETER ValidationSummary
+    How the payload was validated and is monitored, for the {validationSummary} token of
+    safefly.teamRiskJustificationTemplate ('core.team_risk.justification' — what R2D
+    reviewers judge; 13.14103 was rejected for missing validation/monitoring evidence).
+    Required for a real filing when the template uses it.
 
 .PARAMETER AnticipatedEndDays
     Days from now for AnticipatedEndTime. Default: end of current month.
@@ -82,8 +127,15 @@ param(
     [string[]] $DeploymentNature = @("New feature", "General bug fixes"),
     [ValidateSet("Standard SDP", "Conservative SDP")]
     [string]   $SDPType = "Conservative SDP",
-    [Parameter(Mandatory)]
-    [string[]] $TargetedRegions,
+    [string[]] $TargetedRegions = @(),
+    [string[]] $ExcludedRegions = @(),
+    [string]   $ReleaseMonth = "",
+    [string[]] $ChangeSummary = @(),
+    [string]   $TitleThemes = "",
+    [object[]] $ChangeSections = @(),
+    [string]   $PreviousBuildId = "",
+    [string]   $CommitExcelSheet = "",
+    [string]   $ValidationSummary = "",
     [int]    $AnticipatedEndDays = 0,
     [string] $CommitExcelUrl = "",
     [string] $AdoBuildUrl = "",
@@ -129,20 +181,137 @@ if ($AnticipatedEndDays -gt 0) {
 }
 
 # --- Derive title/description ---
-$monthName   = $now.ToString("MMMM")
-$shortYear   = $now.ToString("yy")
-$title       = $cfg.safefly.titleTemplate `
-    -replace '\{serviceName\}', $cfg.service.name `
-    -replace '\{serviceDisplayName\}', $cfg.service.displayName `
-    -replace '\{releaseName\}', $ReleaseId `
-    -replace '\{releaseId\}', $ReleaseId `
-    -replace '\{month\}', $monthName `
-    -replace '\{yy\}', $shortYear
-$description = if ($CommitExcelUrl) {
-    "Commit Analysis: $CommitExcelUrl"
-} else {
-    $tpl = if ($cfg.safefly.PSObject.Properties['descriptionTemplate']) { $cfg.safefly.descriptionTemplate } else { "Monthly release {releaseId} for {serviceName}" }
-    $tpl -replace '\{serviceName\}', $cfg.service.name -replace '\{releaseId\}', $ReleaseId
+# {month}/{yy} name the release (payload) month, not the filing date.
+$monthDate = $now
+if (-not [string]::IsNullOrWhiteSpace($ReleaseMonth)) {
+    if ($ReleaseMonth -notmatch '^\d{4}-\d{2}$') { throw "SafeFly V2: -ReleaseMonth must be 'yyyy-MM' (got '$ReleaseMonth')." }
+    $monthDate = [datetime]::ParseExact("$ReleaseMonth-01", 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+$monthName   = $monthDate.ToString("MMMM", [System.Globalization.CultureInfo]::InvariantCulture)
+$shortYear   = $monthDate.ToString("yy")
+
+# Content placeholders the owner must supply before a real filing (DryRun only warns).
+$contentWarnings = [System.Collections.Generic.List[string]]::new()
+function Get-SafeFlyText([string]$Value, [string]$Token) {
+    if (-not [string]::IsNullOrWhiteSpace($Value)) { return $Value }
+    $param = $Token.Substring(0,1).ToUpper() + $Token.Substring(1)
+    $contentWarnings.Add("{$Token} has no value (pass -$param)") | Out-Null
+    return "[$Token required]"
+}
+function Get-SafeFlyCfg([string]$Name) {
+    if ($cfg.safefly.PSObject.Properties[$Name] -and -not [string]::IsNullOrWhiteSpace("$($cfg.safefly.$Name)")) { return "$($cfg.safefly.$Name)" }
+    return ''
+}
+function Test-SafeFlyTemplateToken([string]$Name) {
+    # True when any SafeFly text template references {Name}.
+    foreach ($t in @((Get-SafeFlyCfg 'titleTemplate'), (Get-SafeFlyCfg 'descriptionTemplate'), (Get-SafeFlyCfg 'teamRiskJustificationTemplate'))) {
+        if ($t.Contains("{$Name}")) { return $true }
+    }
+    return $false
+}
+# {releaseNumber}: release name without the releaseNaming prefix (BCM2610_2 -> 2610_2); else yyMM.
+$releaseNumber = $monthDate.ToString("yyMM")
+$namingPrefix = if ($cfg.PSObject.Properties['releaseNaming'] -and $cfg.releaseNaming -and $cfg.releaseNaming.PSObject.Properties['prefix']) { "$($cfg.releaseNaming.prefix)" } else { '' }
+if ($namingPrefix -and $ReleaseId.StartsWith($namingPrefix, [StringComparison]::OrdinalIgnoreCase) -and $ReleaseId.Length -gt $namingPrefix.Length) {
+    $releaseNumber = $ReleaseId.Substring($namingPrefix.Length)
+}
+# {titleThemes} (plain text in the title)
+$titleThemesText = "$TitleThemes".Trim()
+if ([string]::IsNullOrWhiteSpace($titleThemesText) -and (Test-SafeFlyTemplateToken 'titleThemes')) { $titleThemesText = Get-SafeFlyText '' 'titleThemes' }
+# {payloadUrl}: build-health Payload view previous build -> this build (13.12038 "For more details, view the Payload")
+$payloadUrl = ''
+$payloadTpl = Get-SafeFlyCfg 'payloadUrlTemplate'
+if ($payloadTpl -and (Test-SafeFlyTemplateToken 'payloadUrl')) {
+    if ([string]::IsNullOrWhiteSpace($PreviousBuildId)) { $payloadUrl = Get-SafeFlyText '' 'previousBuildId' }
+    else { $payloadUrl = $payloadTpl.Replace('{buildId}', "$BuildId").Replace('{previousBuildId}', "$PreviousBuildId") }
+}
+$tokens = [ordered]@{
+    '{serviceName}'        = "$($cfg.service.name)"
+    '{serviceDisplayName}' = "$($cfg.service.displayName)"
+    '{releaseName}'        = $ReleaseId
+    '{releaseId}'          = $ReleaseId
+    '{releaseNumber}'      = $releaseNumber
+    '{titleThemes}'        = $titleThemesText
+    '{month}'              = $monthName
+    '{yy}'                 = $shortYear
+    '{buildNumber}'        = $BuildNumber
+    '{buildId}'            = $BuildId
+    '{commitExcelUrl}'     = $CommitExcelUrl
+}
+function Expand-SafeFlyTemplate([string]$Template) {
+    $s = "$Template"
+    foreach ($k in $tokens.Keys) { $s = $s.Replace($k, "$($tokens[$k])") }   # literal, no regex
+    return $s
+}
+$title = Expand-SafeFlyTemplate $cfg.safefly.titleTemplate
+
+function ConvertTo-SafeFlyChangeSections([object[]]$Items) {
+    # 13.12038 structure: <h4>Section</h4><ul><li>sentence <a href="link">id</a></li>...</ul>
+    $order = if ($cfg.safefly.PSObject.Properties['descriptionSections']) { @($cfg.safefly.descriptionSections | ForEach-Object { "$_" }) } else { @() }
+    $enc = { param($s) [System.Net.WebUtility]::HtmlEncode("$s") }
+    $bySection = [ordered]@{}
+    foreach ($it in @($Items | Where-Object { $_ })) {
+        $get = { param($n) if ($it -is [System.Collections.IDictionary]) { $it[$n] } elseif ($it.PSObject.Properties[$n]) { $it.$n } else { $null } }
+        $sec  = "$(& $get 'section')".Trim()
+        $text = "$(& $get 'text')".Trim()
+        if (-not $sec -or -not $text) { throw "SafeFly V2: every -ChangeSections item needs 'section' and 'text' (got section='$sec')." }
+        $matchSec = if ($order.Count) { @($order | Where-Object { $_ -ieq $sec }) | Select-Object -First 1 } else { $sec }
+        if (-not $matchSec) { throw "SafeFly V2: -ChangeSections section '$sec' is not in safefly.descriptionSections ($($order -join ', '))." }
+        $url = "$(& $get 'url')"; $label = "$(& $get 'label')"
+        $pr = "$(& $get 'pr')"; $wi = "$(& $get 'workItem')"
+        if (-not $url -and $pr) { $url = (Get-SafeFlyCfg 'prUrlTemplate').Replace('{id}', $pr); if (-not $label) { $label = $pr } }
+        if (-not $url -and $wi) { $url = (Get-SafeFlyCfg 'workItemUrlTemplate').Replace('{id}', $wi); if (-not $label) { $label = $wi } }
+        if (($pr -or $wi) -and -not $url.StartsWith('https://')) { throw "SafeFly V2: -ChangeSections item '$text' has a pr/workItem but safefly.prUrlTemplate / workItemUrlTemplate is not configured." }
+        $li = & $enc $text
+        if ($url) { $li += " <a href=`"$(& $enc $url)`">$(& $enc ($(if ($label) { $label } else { $url })))</a>" }
+        if (-not $bySection.Contains($matchSec)) { $bySection[$matchSec] = [System.Collections.Generic.List[string]]::new() }
+        $bySection[$matchSec].Add("<li>$li</li>")
+    }
+    $keys = if ($order.Count) { @($order | Where-Object { $bySection.Contains($_) }) } else { @($bySection.Keys) }
+    return (($keys | ForEach-Object { "<h4>$(& $enc $_)</h4><ul>$($bySection[$_] -join '')</ul>" }) -join '')
+}
+
+$descTpl = if ($cfg.safefly.PSObject.Properties['descriptionTemplate'] -and -not [string]::IsNullOrWhiteSpace("$($cfg.safefly.descriptionTemplate)")) { "$($cfg.safefly.descriptionTemplate)" } else { "Monthly release {releaseId} for {serviceName}" }
+# Description-only tokens are HTML (sections) or HTML-encoded (URLs / sheet name) before the generic expansion.
+$descWork = $descTpl
+if ($descWork.Contains('{changeSections}')) {
+    $sectionsHtml = ConvertTo-SafeFlyChangeSections $ChangeSections
+    $descWork = $descWork.Replace('{changeSections}', (Get-SafeFlyText $sectionsHtml 'changeSections'))
+}
+if ($descWork.Contains('{payloadUrl}')) { $descWork = $descWork.Replace('{payloadUrl}', [System.Net.WebUtility]::HtmlEncode($payloadUrl)) }
+if ($descWork.Contains('{commitExcelSheet}')) {
+    # ZED convention: the tracker sheet is named after the release (sheetNameTemplate {{releaseName}}).
+    if ([string]::IsNullOrWhiteSpace($CommitExcelSheet) -and $cfg.PSObject.Properties['commitExcel'] -and $cfg.commitExcel -and
+        "$($cfg.commitExcel.mode)" -eq 'tracker' -and -not [string]::IsNullOrWhiteSpace("$($cfg.commitExcel.sheetNameTemplate)")) {
+        . (Join-Path $PSScriptRoot '..\lib\ReleaseNameLib.ps1')
+        $CommitExcelSheet = Expand-ReleaseTokens "$($cfg.commitExcel.sheetNameTemplate)" $ReleaseId $null
+    }
+    $descWork = $descWork.Replace('{commitExcelSheet}', [System.Net.WebUtility]::HtmlEncode((Get-SafeFlyText "$CommitExcelSheet".Trim() 'commitExcelSheet')))
+}
+if ($descWork.Contains('{commitExcelUrl}')) {
+    $descWork = $descWork.Replace('{commitExcelUrl}', [System.Net.WebUtility]::HtmlEncode((Get-SafeFlyText "$CommitExcelUrl".Trim() 'commitExcelUrl')))
+}
+$description = Expand-SafeFlyTemplate $descWork
+if ($descTpl.Contains('{changeSummary}')) {
+    $lines = @($ChangeSummary | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [System.Net.WebUtility]::HtmlEncode("$_".Trim()) })
+    $description = $description.Replace('{changeSummary}', (Get-SafeFlyText ($lines -join '<br>') 'changeSummary'))
+}
+if ($CommitExcelUrl -and -not $descTpl.Contains('{commitExcelUrl}')) {
+    $enc = [System.Net.WebUtility]::HtmlEncode($CommitExcelUrl)
+    $description += "<p>Commit analysis: <a href=`"$enc`">$enc</a></p>"
+}
+
+# core.team_risk.justification (optional question, but it is what R2D reviewers judge)
+$teamRiskJustification = $null
+if ($cfg.safefly.PSObject.Properties['teamRiskJustificationTemplate'] -and -not [string]::IsNullOrWhiteSpace("$($cfg.safefly.teamRiskJustificationTemplate)")) {
+    $jTpl = "$($cfg.safefly.teamRiskJustificationTemplate)"
+    $teamRiskJustification = Expand-SafeFlyTemplate $jTpl
+    if ($jTpl.Contains('{validationSummary}')) {
+        $teamRiskJustification = $teamRiskJustification.Replace('{validationSummary}', (Get-SafeFlyText $ValidationSummary.Trim() 'validationSummary'))
+    }
+}
+if ($contentWarnings.Count -gt 0 -and -not $DryRun) {
+    throw "SafeFly V2 CONTENT MISSING: $($contentWarnings -join '; '). R2D reviewers judge the change summary and validation/monitoring evidence (13.14103 was rejected without it) — supply them before filing."
 }
 
 # --- Resolve SafeFly service group ---
@@ -157,6 +326,16 @@ if ([string]::IsNullOrWhiteSpace($serviceGroupName)) {
 # (ASC minus CCOA exclusions, computed by the caller) that are not in the live
 # list go to core.other_regions instead of being dropped.
 $filteredRegions = @($TargetedRegions | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+# safefly.regionGroups: core.regions = every region in the named SafeFly region groups (the
+# clouds the production pipeline deploys to — 13.14103 convention: United States, Europe,
+# Asia Pacific, Americas (Excl. US), Middle East & Africa, Fairfax, Mooncake) minus CCOA
+# exclusions. Replaces -TargetedRegions (ASC -AllClouds also returns USNat/USSec).
+$regionGroupNames = if ($cfg.safefly.PSObject.Properties['regionGroups']) { @($cfg.safefly.regionGroups | Where-Object { -not [string]::IsNullOrWhiteSpace("$_") } | ForEach-Object { "$_" }) } else { @() }
+$regionSource = if ($regionGroupNames.Count -gt 0) { 'regionGroups' } else { 'targetedRegions' }
+if ($regionSource -eq 'targetedRegions' -and $filteredRegions.Count -eq 0) {
+    throw "SafeFly V2: no regions — pass -TargetedRegions or configure safefly.regionGroups in service-config.json."
+}
+$excludedRegionsApplied = [System.Collections.Generic.List[string]]::new()
 
 # --- Rollback strategy ---
 if ([string]::IsNullOrWhiteSpace($RollbackStrategy)) {
@@ -426,6 +605,12 @@ if ($qTeamRisk -and -not [string]::IsNullOrWhiteSpace($TeamAssessedRisk)) {
     Add-Answer $qTeamRisk $TeamAssessedRisk
 }
 
+# Team-assessed risk justification (safefly.teamRiskJustificationTemplate)
+$qTeamRiskJust = Get-QuestionByName $questions 'core.team_risk.justification'
+if ($qTeamRiskJust -and -not [string]::IsNullOrWhiteSpace($teamRiskJustification)) {
+    Add-Answer $qTeamRiskJust $teamRiskJustification
+}
+
 # Health monitoring — always Yes for a production service with health signals
 $qHealthMon = Get-QuestionByName $questions 'core.health_monitoring'
 if ($qHealthMon) {
@@ -467,6 +652,27 @@ $matchedSafeFlyIds = [System.Collections.Generic.List[string]]::new()
 $unmatchedRegions  = [System.Collections.Generic.List[string]]::new()
 if ($qRegions) {
     $regionMap = Build-SafeFlyRegionMap -ServiceConfigPath $ServiceConfigPath
+
+    if ($regionSource -eq 'regionGroups') {
+        $grpData = & (Join-Path $PSScriptRoot 'Invoke-SafeFlyGraphQL.ps1') `
+            -Query 'query { regionGroups { name regions { regionName } } }' -ServiceConfigPath $ServiceConfigPath
+        $groups  = @($grpData.regionGroups)
+        $unknown = @($regionGroupNames | Where-Object { $n = $_; -not @($groups | Where-Object { "$($_.name)" -ieq $n }).Count })
+        if ($unknown.Count -gt 0) {
+            throw "SafeFly V2: safefly.regionGroups has unknown group(s): $($unknown -join ', '). SafeFly groups: $((@($groups.name)) -join ', ')"
+        }
+        $excludedKeys = @($ExcludedRegions | Where-Object { $_ } | ForEach-Object { ("$_" -replace '\s+', '').ToLower() })
+        $fromGroups = [System.Collections.Generic.List[string]]::new()
+        foreach ($g in @($groups | Where-Object { $gn = "$($_.name)"; @($regionGroupNames | Where-Object { $_ -ieq $gn }).Count })) {
+            foreach ($r in @($g.regions)) {
+                $rn = "$($r.regionName)"
+                if ([string]::IsNullOrWhiteSpace($rn) -or $fromGroups.Contains($rn)) { continue }
+                if ($excludedKeys -contains ($rn -replace '\s+', '').ToLower()) { $excludedRegionsApplied.Add($rn); continue }
+                $fromGroups.Add($rn)
+            }
+        }
+        $filteredRegions = @($fromGroups)
+    }
 
     foreach ($region in $filteredRegions) {
         $sfId = Resolve-RegionToSafeFlyId -displayName $region -regionMap $regionMap
@@ -570,6 +776,12 @@ if ($DryRun) {
         totalFormQuestions     = @($questions).Count
         regionsSubmitted       = $matchedSafeFlyIds.Count
         regionsUnmatched       = @($unmatchedRegions)
+        regionSource           = $regionSource
+        regionsExcluded        = @($excludedRegionsApplied)
+        title                  = $title
+        description            = $description
+        teamRiskJustification  = $teamRiskJustification
+        contentWarnings        = @($contentWarnings)
         tagIds                 = @($tagsVal)
         tagWarnings            = @($tagResolution.warnings)
     }

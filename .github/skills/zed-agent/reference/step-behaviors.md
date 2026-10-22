@@ -502,7 +502,7 @@ Configured in `pipeline-catalog.json` (BCM: both canary test releases, for Steps
 ```json
 "bvtReleases": {
   "steps": [6, 8],
-  "timeoutHours": 12,
+  "timeoutHours": 15,
   "releases": {
     "IaaSVM-CloudTest":     { "definitionId": 40785, "variables": { "MABIsOfficial": "True" } },
     "IaaSVM-LHT-CloudTest": { "definitionId": 47437, "variables": { "MABIsOfficial": "True" } }

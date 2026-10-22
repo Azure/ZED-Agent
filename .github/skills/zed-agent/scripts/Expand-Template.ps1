@@ -6,20 +6,22 @@ function Expand-Template {
         # instead of being silently sent to Teams/email. Default ON because a
         # half-rendered message is almost always a bug, not intentional.
         [bool]$StrictPlaceholders = $true,
-        # Source of the {{serviceName}} default (service.displayName → service.name).
+        # Source of the {{releaseLabel}} default (service.releaseLabel, else 'BDP').
         [string]$ServiceConfigPath = (Join-Path $PSScriptRoot '..\service-config.json')
     )
     $content = (Get-Content -Path $TemplatePath -Raw -Encoding UTF8).TrimEnd("`r`n")
-    # {{serviceName}} defaults to service-config.json → service.displayName (fallback service.name),
-    # so templates never hardcode a service and callers need not pass it.
-    if ($content -match '\{\{[#/]?serviceName\}\}' -and -not $Variables.ContainsKey('serviceName')) {
+    # {{releaseLabel}} — the name in release message titles ("<label> Release Branch Cut Reminder").
+    # Defaults to service-config.json → service.releaseLabel, else 'BDP' (the text these templates
+    # always carried), so existing services render exactly as before; callers need not pass it.
+    if ($content -match '\{\{[#/]?releaseLabel\}\}' -and -not $Variables.ContainsKey('releaseLabel')) {
+        $label = 'BDP'
         try {
             if ($ServiceConfigPath -and (Test-Path -LiteralPath $ServiceConfigPath)) {
                 $svc = (Get-Content -LiteralPath $ServiceConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json).service
-                $sn = if ($svc.displayName) { [string]$svc.displayName } else { [string]$svc.name }
-                if ($sn) { $Variables = $Variables.Clone(); $Variables['serviceName'] = $sn }
+                if ($svc -and $svc.PSObject.Properties['releaseLabel'] -and -not [string]::IsNullOrWhiteSpace([string]$svc.releaseLabel)) { $label = [string]$svc.releaseLabel }
             }
         } catch { }
+        $Variables = $Variables.Clone(); $Variables['releaseLabel'] = $label
     }
     # Handle conditional sections: {{#key}}...{{/key}}
     foreach ($key in $Variables.Keys) {

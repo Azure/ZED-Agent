@@ -201,8 +201,12 @@ Describe 'approval routing and wiring' {
         $w | Should -Match 'function Invoke-ApprovalSideChannel'
         ([regex]::Matches($w, '(?m)^\s+Invoke-ApprovalSideChannel\s*$')).Count | Should -BeGreaterOrEqual 2
         $w | Should -Match 'approval \$\(\$ev\.event\) \$\(\$ev\.id\) for release'
-        $w | Should -Not -Match 'postedApprovalUrls'
-        Get-Content (Join-Path $PSScriptRoot '..\scripts\Invoke-ColdResume.ps1') -Raw | Should -Match 'ApprovalSideChannel'
+        # Opt-in: the side-channel returns early unless operational.approvalWatchEnabled; the original
+        # Teams approval-link post (postedApprovalUrls) runs only when it is off.
+        $w | Should -Match "approvalWatchEnabled'\] -and \`$svcCfgOp\.approvalWatchEnabled -eq \`$true\) \{ \`$script:approvalWatchEnabled = \`$true \}"
+        $w | Should -Match 'if \(-not \$script:approvalWatchEnabled\) \{ return \}'
+        $w | Should -Match '(?s)if \(-not \$script:approvalWatchEnabled\).{0,400}postedApprovalUrls'
+        Get-Content (Join-Path $PSScriptRoot '..\scripts\Invoke-ColdResume.ps1') -Raw | Should -Match '(?s)approvalWatchEnabled.{0,800}ApprovalSideChannel|(?s)approvalWatchEnabled.{0,800}Invoke-ApprovalWatch'
     }
 
     It 'the loader accepts an approval-requests routing row' {

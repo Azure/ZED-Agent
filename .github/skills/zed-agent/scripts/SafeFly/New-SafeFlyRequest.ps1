@@ -148,6 +148,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --- Request builder selection ---
+# The extended builder below (templated title/description, change sections, regionGroups, tag-ID
+# lookup, JSON multi-select answers, form-id check, team-risk answers, ADO build link, request reuse)
+# runs only when service-config safefly.extendedRequest is true (BCM). Every other service keeps
+# the original builder unchanged: New-SafeFlyRequest.Legacy.ps1 (identical to the pre-BCM script).
+$__sfCfg = $null
+try { $__sfCfg = Get-Content -LiteralPath $ServiceConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+if (-not ($__sfCfg -and $__sfCfg.safefly -and $__sfCfg.safefly.PSObject.Properties['extendedRequest'] -and $__sfCfg.safefly.extendedRequest -eq $true)) {
+    $__legacy = Join-Path $PSScriptRoot 'New-SafeFlyRequest.Legacy.ps1'
+    $__known = @((Get-Command $__legacy).Parameters.Keys)
+    $__fwd = @{}
+    foreach ($__k in $PSBoundParameters.Keys) { if ($__known -contains $__k) { $__fwd[$__k] = $PSBoundParameters[$__k] } }
+    if (-not $__fwd.ContainsKey('ServiceConfigPath')) { $__fwd['ServiceConfigPath'] = $ServiceConfigPath }
+    return & $__legacy @__fwd
+}
+
 # --- Load service config ---
 $cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath
 

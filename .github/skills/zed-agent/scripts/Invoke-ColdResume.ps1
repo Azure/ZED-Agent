@@ -198,9 +198,15 @@ try {
 }
 
 # ── Step 3d: Approval requests (OneBranch Approval Service / ADO approvals) on any watched run ──
+# Opt-in: service-config operational.approvalWatchEnabled (default off — legacy watcher Teams post).
 try {
     $awScript = Join-Path $PSScriptRoot 'Invoke-ApprovalWatch.ps1'
-    if (Test-Path $awScript) {
+    $awEnabled = $false
+    try {
+        $awCfg = Get-Content (Join-Path $PSScriptRoot '..\service-config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $awEnabled = [bool]($awCfg.operational -and $awCfg.operational.PSObject.Properties['approvalWatchEnabled'] -and $awCfg.operational.approvalWatchEnabled -eq $true)
+    } catch { }
+    if ($awEnabled -and (Test-Path $awScript)) {
         $verdict.ApprovalSideChannel = & $awScript -Action Sync `
             -ReleaseId $activeRelease.ReleaseId `
             -StateFile $activeRelease.StateFile `

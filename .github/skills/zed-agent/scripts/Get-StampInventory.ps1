@@ -200,6 +200,9 @@ $stampRegex = "^(?<shortName>[a-z0-9]+)-(?<layout>[a-z0-9]+)-(?<serviceTag>[a-z]
 # service-family specific; the SDS short-id pattern ships as a default because
 # StampId is Phobos 2022 vocabulary. Both are overridable.
 $stampNaming = if ($config.inventory -and $config.inventory.PSObject.Properties['stampNaming'] -and $config.inventory.stampNaming) { $config.inventory.stampNaming } else { $null }
+# Without inventory.stampNaming the inventory behaves exactly as before (exact-name SDS
+# reconciliation across clouds, SDS stamp names used as-is) — the normalization is opt-in.
+$useStampNaming = [bool]$stampNaming
 $partitionSuffixPattern = if ($stampNaming -and $stampNaming.PSObject.Properties['partitionSuffixPattern'] -and $stampNaming.partitionSuffixPattern) {
     [string]$stampNaming.partitionSuffixPattern
 } else { $null }
@@ -447,7 +450,7 @@ elseif ($isSovereignCloud) {
         $sovLayout = "$(($ascData.Clouds | Where-Object { $_.Name -eq $Cloud } | Select-Object -First 1).Layout)"
         $sovName = if ($s.stampName) { "$($s.stampName)" } else { "$($s.stampId)" }
         $rawStamps.Add([PSCustomObject]@{
-            stampName   = ConvertFrom-SdsStampId -Name $sovName -Layout $sovLayout
+            stampName   = $(if ($useStampNaming) { ConvertFrom-SdsStampId -Name $sovName -Layout $sovLayout } else { "$($s.stampName)".ToLowerInvariant() })
             clusterType = $null
             cloudHint   = $Cloud
             layoutHint  = $null
@@ -745,6 +748,28 @@ if ($sdsReconcileEnabled) {
         $sdsCloudForReconcile = if ($Cloud) { $Cloud } elseif ($isSovereignCloud) { $Cloud } else { $defaultCommercialCloud }
         if ($sdsCloudForReconcile) { $sdsArgs.Cloud = $sdsCloudForReconcile }
         $sdsInv = & $sdsScript @sdsArgs
+        $tolerance = if ($null -ne $config.inventory.driftToleranceCount) { [int]$config.inventory.driftToleranceCount } else { 0 }
+        if (-not $useStampNaming) {
+            # Default (no inventory.stampNaming): exact stamp-name match, unchanged behaviour.
+            $sdsNames   = @($sdsInv.stamps | ForEach-Object { "$($_.stampName)".ToLowerInvariant() }) | Sort-Object -Unique
+            $kustoNames = @($stampsOut | ForEach-Object { $_.stampName }) | Sort-Object -Unique
+            $sdsSet   = [System.Collections.Generic.HashSet[string]]::new([string[]]@($sdsNames), [System.StringComparer]::OrdinalIgnoreCase)
+            $kustoSet = [System.Collections.Generic.HashSet[string]]::new([string[]]@($kustoNames), [System.StringComparer]::OrdinalIgnoreCase)
+            $sdsOnly   = @($sdsNames   | Where-Object { -not $kustoSet.Contains($_) })
+            $kustoOnly = @($kustoNames | Where-Object { -not $sdsSet.Contains($_) })
+            $driftCount = $sdsOnly.Count + $kustoOnly.Count
+            $reconcile = [PSCustomObject]@{
+                hash             = $sdsInv.hash
+                source           = $sdsPath
+                stampCount       = @($sdsInv.stamps).Count
+                cloud            = $sdsCloudForReconcile
+                sdsOnly          = $sdsOnly
+                kustoOnly        = $kustoOnly
+                driftCount       = $driftCount
+                toleranceCount   = $tolerance
+                withinTolerance  = ($driftCount -le $tolerance)
+            }
+        } else {
         # Compare like with like: only Kusto stamps that ASC resolved into the
         # SDS cloud being reconciled. Kusto stamps in other clouds (e.g. a
         # Canary-cloud stamp visible in the same Kusto table) are reported
@@ -767,7 +792,6 @@ if ($sdsReconcileEnabled) {
         $sdsOnly   = @($sdsKeyed   | Where-Object { -not $kustoKeySet.Contains($_.key) } | ForEach-Object { $_.name } | Sort-Object -Unique)
         $kustoOnly = @($kustoKeyed | Where-Object { -not $sdsKeySet.Contains($_.key) }   | ForEach-Object { $_.name } | Sort-Object -Unique)
         $matchedCount = @($kustoKeyed | Where-Object { $sdsKeySet.Contains($_.key) }).Count
-        $tolerance = if ($null -ne $config.inventory.driftToleranceCount) { [int]$config.inventory.driftToleranceCount } else { 0 }
         $driftCount = $sdsOnly.Count + $kustoOnly.Count
         $reconcile = [PSCustomObject]@{
             hash             = $sdsInv.hash
@@ -782,6 +806,7 @@ if ($sdsReconcileEnabled) {
             driftCount       = $driftCount
             toleranceCount   = $tolerance
             withinTolerance  = ($driftCount -le $tolerance)
+        }
         }
         $result | Add-Member -NotePropertyName sdsReconciliation -NotePropertyValue $reconcile
         foreach ($n in $sdsOnly)   { $driftOut += [PSCustomObject]@{ stampName = $n; side = 'sdsOnly';   reason = "present in SDS but not in Kusto result" } }

@@ -941,6 +941,7 @@ Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
         $sfDir = Join-Path $script:Stage 'scripts\SafeFly'
         New-Item -ItemType Directory -Path $sfDir -Force | Out-Null
         Copy-Item (Join-Path $SafeFlyDir 'New-SafeFlyRequest.ps1')  $sfDir
+        Copy-Item (Join-Path $SafeFlyDir 'New-SafeFlyRequest.Legacy.ps1') $sfDir
         Copy-Item (Join-Path $SafeFlyDir 'Get-SafeFlyApproval.ps1') $sfDir
         Copy-Item (Join-Path $PSScriptRoot 'fixtures\SafeFly\Invoke-SafeFlyGraphQL.stub.ps1') (Join-Path $sfDir 'Invoke-SafeFlyGraphQL.ps1')
         New-Item -ItemType Directory -Path (Join-Path $script:Stage 'scripts\lib') -Force | Out-Null
@@ -975,7 +976,8 @@ Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
             (New-Q 'ccoa.justification' $true $null @() (New-Cond 'ccoa.is_ccoa_request' 'Equals' 'True'))
         )
         function script:Write-Fixture([string[]]$Tags = @('BCM_Regular_Rollout', 'App Deployment'), [string]$FormId = $script:FormId, $Questions = $script:Questions, [hashtable]$Extra = @{}) {
-            $sf = [ordered]@{ graphQlEndpoint = 'https://stub.invalid/graphql'; tokenAudience = 'api://stub'; franchiseId = 'b52a8292-9c66-4139-9086-acb61009fad6'
+            # extendedRequest: these are regressions of the BCM (extended) request builder.
+            $sf = [ordered]@{ extendedRequest = $true; graphQlEndpoint = 'https://stub.invalid/graphql'; tokenAudience = 'api://stub'; franchiseId = 'b52a8292-9c66-4139-9086-acb61009fad6'
                 changeTypeId = '1bdba704-213b-4239-8dd7-691457341440'; formId = $script:FormId; serviceId = 'fb10185a-465d-42cd-b339-7d0d9331c340'
                 serviceGroupName = 'microsoft.azure.backup.cntl.bcm.active'; titleTemplate = '[MAB][{serviceName}] release {releaseName}'
                 descriptionTemplate = '{serviceName} release {releaseId}'; tags = @($Tags) }
@@ -1230,5 +1232,45 @@ Describe 'SafeFly V2 — BCM2610_2 payload regressions (staged dry run)' {
         $real.safefly.descriptionTemplate | Should -Match '^\{changeSections\}.*\{payloadUrl\}.*\{commitExcelUrl\}</a></p>$'
         $real.safefly.teamRiskJustificationTemplate | Should -BeLike "We have multiple layers of validation and monitoring in place to minimize deployment risk:`n- The changes are validated in Canary before broader rollout.`n*`nTogether, these controls provide both pre-deployment validation and post-deployment detection for potential regressions."
         @($real.safefly.teamRiskJustificationTemplate -split "`n" | Where-Object { $_ -like '- *' }).Count | Should -Be 4
+    }
+}
+
+Describe 'SafeFly — request builder selection (safefly.extendedRequest)' {
+    BeforeAll {
+        $script:DStage = Join-Path $TestDrive 'dispatch'
+        $dDir = Join-Path $script:DStage 'scripts\SafeFly'
+        New-Item -ItemType Directory -Path $dDir -Force | Out-Null
+        Copy-Item (Join-Path $SafeFlyDir 'New-SafeFlyRequest.ps1') $dDir
+        # Stub of the original builder: echoes what it received.
+        Set-Content (Join-Path $dDir 'New-SafeFlyRequest.Legacy.ps1') -Value (
+            'param([string]$BuildId, [string]$BuildNumber, [string]$ReleaseId, [string]$ReleaseOwnerAlias, [string[]]$TargetedRegions, [switch]$DryRun, [string]$ServiceConfigPath, [string]$CommitExcelUrl)' + "`n" +
+            '[pscustomobject]@{ builder = ''legacy''; bound = @($PSBoundParameters.Keys | Sort-Object); serviceConfigPath = $ServiceConfigPath }')
+        function script:Write-DCfg([bool]$Extended) {
+            $p = Join-Path $script:DStage 'service-config.json'
+            $sf = @{ titleTemplate = 'x'; serviceGroupName = 'g' }
+            if ($Extended) { $sf.extendedRequest = $true }
+            @{ safefly = $sf; service = @{ name = 'Prot' } } | ConvertTo-Json -Depth 4 | Set-Content $p
+            return $p
+        }
+    }
+
+    It 'uses the original builder when safefly.extendedRequest is not set, passing only its parameters' {
+        $cfg = Write-DCfg $false
+        $r = & (Join-Path $script:DStage 'scripts\SafeFly\New-SafeFlyRequest.ps1') -BuildId 1 -BuildNumber 'R-1' -ReleaseId '2026-11' -ReleaseOwnerAlias 'o' `
+            -TargetedRegions @('East US') -DryRun -ServiceConfigPath $cfg -ChangeSummary @('ignored') -TitleThemes 'ignored'
+        $r.builder | Should -Be 'legacy'
+        $r.bound | Should -Not -Contain 'ChangeSummary'
+        $r.bound | Should -Not -Contain 'TitleThemes'
+        $r.bound | Should -Contain 'TargetedRegions'
+        $r.serviceConfigPath | Should -Be $cfg
+    }
+    It 'the original builder file is the pre-BCM New-SafeFlyRequest.ps1 (unchanged)' {
+        $legacy = Get-Content (Join-Path $SafeFlyDir 'New-SafeFlyRequest.Legacy.ps1') -Raw
+        $legacy | Should -Not -Match 'extendedRequest'
+        $legacy | Should -Match "\`$rollbackV2 = 'DRI determines rollback or rollforward in real time based on the issue'"
+        $legacy | Should -Match '\$safeFlyUnsupportedRegions = @\('
+    }
+    It 'Get-SafeFlyApproval reads SafeFly V2 only with safefly.extendedRequest' {
+        Get-Content (Join-Path $SafeFlyDir 'Get-SafeFlyApproval.ps1') -Raw | Should -Match '\$useV2 = [^\r\n]*extendedRequest'
     }
 }

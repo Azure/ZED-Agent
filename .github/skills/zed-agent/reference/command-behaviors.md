@@ -306,6 +306,8 @@ When the release owner says `approve-revert` (or `approve revert`):
 
 ## approvals — Pending Pipeline Approvals
 
+Only meaningful with `CONFIG[operational.approvalWatchEnabled]`. Without it, reply that approval links are posted to Teams by Steps 5/7/10 and the watcher (original behaviour) and change nothing.
+
 Spec: `step-behaviors.md → Approval requests`.
 
 - **`approvals`** — run `Invoke-ApprovalWatch.ps1 -Action Get -ReleaseId <id>` and show one row per pending request: pipeline, run (link), step, waiting stage(s), waiting since, expires at, and the **approval link**; plus the last few approved/ended ones. Nothing pending → say so and when the last scan ran (`state.approvalWatch.lastSyncAt`).

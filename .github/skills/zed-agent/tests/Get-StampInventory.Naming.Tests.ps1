@@ -158,7 +158,7 @@ Describe 'Get-StampInventory — service filter and stamp naming' {
 
     Context 'SDS reconciliation by {shortName}-{index} key' {
         It 'pairs SDS short StampIds with Kusto full names (01 == 1, 02 == 2)' {
-            $fx = New-InvFixture -KustoStamps @('eus-pod01-tst1', 'we-pod01-tst2')
+            $fx = New-InvFixture -StampNaming $script:Bcmish -KustoStamps @('eus-pod01-tst1', 'we-pod01-tst2')
             $r = Invoke-Inv $fx
             $r.sdsReconciliation.matchedCount | Should -Be 2
             @($r.sdsReconciliation.sdsOnly).Count   | Should -Be 0
@@ -167,7 +167,7 @@ Describe 'Get-StampInventory — service filter and stamp naming' {
             @($r.drift).Count | Should -Be 0
         }
         It 'still reports genuine drift on both sides' {
-            $fx = New-InvFixture -KustoStamps @('eus-pod01-tst1', 'we-pod01-tst2', 'ne-pod01-tst1') `
+            $fx = New-InvFixture -StampNaming $script:Bcmish -KustoStamps @('eus-pod01-tst1', 'we-pod01-tst2', 'ne-pod01-tst1') `
                                  -SdsClouds @{ Public = @('eus-01', 'we-02', 'we-03') }
             $r = Invoke-Inv $fx
             $r.sdsReconciliation.kustoOnly | Should -Be @('ne-pod01-tst1')
@@ -179,7 +179,7 @@ Describe 'Get-StampInventory — service filter and stamp naming' {
         }
         It 'compares only Kusto stamps in the reconciled cloud and cannot collide across clouds' {
             # Canary 'ea-can02-tst1' and Public SDS 'ea-01' share key 'ea-1' but different clouds.
-            $fx = New-InvFixture -KustoStamps @('ea-can02-tst1', 'eus-pod01-tst1', 'we-pod01-tst2') `
+            $fx = New-InvFixture -StampNaming $script:Bcmish -KustoStamps @('ea-can02-tst1', 'eus-pod01-tst1', 'we-pod01-tst2') `
                                  -SdsClouds @{ Public = @('eus-01', 'we-02', 'ea-01'); Canary = @('ea-01') }
             $r = Invoke-Inv $fx
             $r.sdsReconciliation.cloud | Should -Be 'Public'
@@ -188,11 +188,19 @@ Describe 'Get-StampInventory — service filter and stamp naming' {
             $r.sdsReconciliation.kustoOutOfScope.cloud     | Should -Be 'Canary'
             $r.sdsReconciliation.sdsOnly | Should -Be @('ea-01')
         }
+        It 'without inventory.stampNaming keeps the original exact-name reconciliation (opt-in)' {
+            # SDS short ids are not paired with Kusto full names: both sides are reported, as before.
+            $fx = New-InvFixture -KustoStamps @('eus-pod01-tst1', 'we-pod01-tst2')
+            $r = Invoke-Inv $fx
+            $r.sdsReconciliation.sdsOnly   | Should -Be @('eus-01', 'we-02')
+            $r.sdsReconciliation.kustoOnly | Should -Be @('eus-pod01-tst1', 'we-pod01-tst2')
+            $r.sdsReconciliation.PSObject.Properties.Name | Should -Not -Contain 'matchedBy'
+            $r.sdsReconciliation.PSObject.Properties.Name | Should -Not -Contain 'kustoOutOfScope'
+        }
     }
-
     Context 'sovereign cloud (SDS is the sole source)' {
         It 'expands SDS short ids with the cloud layout so ASC validation passes' {
-            $fx = New-InvFixture -KustoStamps @() -SdsClouds @{ Public = @('eus-01'); Fairfax = @('ugv-01') }
+            $fx = New-InvFixture -StampNaming $script:Bcmish -KustoStamps @() -SdsClouds @{ Public = @('eus-01'); Fairfax = @('ugv-01') }
             $r = Invoke-Inv $fx -Cloud 'Fairfax'
             $r.stamps.stampName | Should -Be 'ugv-pod01-tst1'
             $r.stamps.cloud     | Should -Be 'Fairfax'

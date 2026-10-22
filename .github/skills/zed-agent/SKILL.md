@@ -108,7 +108,7 @@ The `templates/reminder-email.html` template requires these variables (computed 
 | Variable | Source | Description |
 |----------|--------|-------------|
 | `releaseId` | `release.json` | e.g., `2026-04` |
-| `serviceName` | `service-config.json → service.displayName` (filled automatically by `Expand-Template` when not passed) | e.g., `BCM` — used in the title and sign-off |
+| `releaseLabel` | `service-config.json → service.releaseLabel`, default `BDP` (filled automatically by `Expand-Template` — do not pass) | e.g., `BCM` — used in the title and sign-off |
 | `branchCutDate` | `release.json → dates.branchCut` | Code freeze date |
 | `baseBranch` | Agent Domain Knowledge (ADO Infrastructure) | `develop` |
 | `branchName` | `release.json → currentBranch` | e.g., `{CONFIG[ado.branchPrefix]}2604` |

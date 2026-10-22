@@ -41,7 +41,15 @@ $invalidatedStates = @("Archived", "Deleted", "DeploymentCancelled", "Abandoned"
 # --- SafeFly V2 (preferred): the V1 approvalstate read API returns HTTP 410 since 2026-10 ---
 $cfg = $null
 try { $cfg = & (Join-Path $PSScriptRoot '..\Load-ServiceConfig.ps1') -ServiceConfigPath $ServiceConfigPath } catch { $cfg = $null }
-$useV2 = $cfg -and $cfg.safefly -and $cfg.safefly.PSObject.Properties['graphQlEndpoint'] -and -not [string]::IsNullOrWhiteSpace("$($cfg.safefly.graphQlEndpoint)")
+$useV2 = $cfg -and $cfg.safefly -and $cfg.safefly.PSObject.Properties['extendedRequest'] -and $cfg.safefly.extendedRequest -eq $true -and
+    $cfg.safefly.PSObject.Properties['graphQlEndpoint'] -and -not [string]::IsNullOrWhiteSpace("$($cfg.safefly.graphQlEndpoint)")
+if (-not $useV2) {
+    # Original (pre-extendedRequest) V1 classification, unchanged for services that did not opt in.
+    $approvedStates    = @("ApprovedForDeployment", "AutoApproved", "DeploymentInProgress", "DeploymentCompleted")
+    $pendingStates     = @("Unsubmitted", "Draft", "EngineeringDirectorPending", "ServiceManagerPending", "BuddyPending", "ReadyToDeployPending", "CvpPending")
+    $rejectedStates    = @("EngineeringDirectorRejected", "ServiceManagerRejected", "BuddyRejected", "CvpRejected")
+    $invalidatedStates = @("Archived", "Deleted", "DeploymentCancelled")
+}
 
 if ($useV2) {
     $query = 'query GetRequestState($f: RequestFilterOptionsBaseInput!) { requests(pageSize: 1, filter: $f) { totalCount data { id displayId currentState activeStageNames buildVersion } } }'

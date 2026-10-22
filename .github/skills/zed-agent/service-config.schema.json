@@ -52,6 +52,7 @@
           "type": "string",
           "description": "Brief description of the service release purpose."
         },
+        "releaseLabel": { "type": "string", "description": "Optional. Name shown in the release message titles and sign-offs (branch cut reminder, commit request / nudge, CRB email, step-failure email: \"<label> Release …\"). Default \"BDP\" (the original text). BCM: \"BCM\"." },
         "stampTag": {
           "type": "string",
           "description": "Per-service stamp-name infix used to filter inventory rows to THIS service. Stamps follow the grammar `{shortName}-{layout}-{stampTag}{index}` (e.g. 'eus-pod01-prot1', 'eus-pod01-rec2'). Consumed by Get-StampInventory.ps1 to filter Kusto results and validate canary stamp names. Lowercase, letters only.",
@@ -471,6 +472,7 @@
       "required": ["titleTemplate", "descriptionTemplate", "tags", "serviceGroupName"],
       "additionalProperties": true,
       "properties": {
+        "extendedRequest": { "type": "boolean", "default": false, "description": "Opt-in extended R2D builder (BCM): change sections / title themes / validation summary / previous-build fields, JSON-array multi-selects, tag GUID lookup, team-assessed-risk answers, region groups, content warnings, and SafeFly V2 approval polling in Step 14. Off (default): the original builder (New-SafeFlyRequest.Legacy.ps1) and V1 approval polling." },
         "referenceRequest": {
           "type": "object",
           "description": "The owner-designated SafeFly request whose conventions R2Ds follow (title, description, team risk justification, regions, rollback, tags). Read it with requestByDisplayId before changing any safefly value.",
@@ -678,6 +680,7 @@
           "default": 2,
           "minimum": 0
         },
+        "approvalWatchEnabled": { "type": "boolean", "default": false, "description": "Opt-in approval watch (Invoke-ApprovalWatch.ps1): email + Teams the OneBranch Approval Service / ADO approval link of every waiting deployment run, with reminders and an expiry alert (routing row notifications.routing.approval-requests). Off (default): the original Teams post of approval links in Steps 5/7/10 and by the watcher." },
         "approvalPollIntervalSeconds": { "type": "integer", "description": "How often the watcher checks watched pipeline runs for pending approvals (Approval Service / ADO), independent of watcherPollIntervalSeconds.", "default": 600, "minimum": 60 },
         "scheduleGuardPollIntervalSeconds": { "type": "integer", "description": "How often the watcher runs the canary schedule guard (pause after Step 5, cancel runs ZED did not queue, restore after Step 6), independent of watcherPollIntervalSeconds — keep it well below the time a guarded pipeline needs to reach its deploy stage.", "default": 300, "minimum": 60 },
         "approvalReminderHours": { "type": "number", "description": "Re-send the approval email + Teams message every N hours while the approval is still pending (0 = no reminders).", "default": 4, "minimum": 0 },

@@ -179,6 +179,102 @@ Run these from Copilot Chat **in your service repo**, in this order the first ti
 | `setup-service validate` | Any time | Strict check, no prompts |
 | `setup` | Once per release | Creates `.zed-agent/releases/<id>/` and `state.json` |
 
+### Release-owner commands (during a release)
+
+| Command | What it does |
+|---|---|
+| `help` / `status` | Command list / current step, gates, watcher state |
+| `run` / `resume` | Start or continue the release (`resume` after a manual fix) |
+| `ack [retry]` | Acknowledge a failure (optionally retry the failed step) |
+| `skip` / `modify skip\|reset\|reorder N` | Skip the current step / change the step plan |
+| `approve-bvt` · `approve-rollback` · `approve-rollforward` · `approve-crb` | Sign off the BVT / rollback / roll-forward / CRB gates |
+| `approve-ri` | Go-ahead after the Reverse Integration PR (only with `ado.integration`) |
+| `private-stamp` · `approve-private-stamp` | Private stamp upgrade inputs and sign-off (only with `privateStampUpgrade`) |
+| `revert-bits` · `approve-revert` | Revert bits selection and sign-off (only with `revertBits`) |
+| `approvals` | Pending pipeline approvals (only with `operational.approvalWatchEnabled`) |
+| `rebuild` · `new-stamp` | Re-queue the build / onboard or reclassify a stamp |
+| `test` · `test-run` | Dry run, or a real run with steps skipped (pipelines cancelled at trigger) |
+| `stop` · `teardown` | Pause the release and stop the watcher / post-release cleanup |
+
+Full definitions: `.github/skills/zed-agent/reference/command-behaviors.md`.
+
+---
+
+## What ZED does — the 16 steps
+
+A **watcher** (Windows scheduled task, `Release-Watcher.ps1`) polls pipelines, PRs, timers and
+SafeFly between steps and re-invokes the agent when something changes, so the release keeps moving
+without the owner watching it. All state is in `.zed-agent/releases/<id>/state.json` and every
+action is written to `audit.jsonl`. Detailed behaviour: `.github/skills/zed-agent/reference/step-behaviors.md`.
+
+| # | Step | What ZED does |
+|---|---|---|
+| 1 | Branch cut reminder | Emails + Teams the "*&lt;label&gt;* Release Branch Cut Reminder" N days before the cut |
+| 2 | Cut release branch & queue build | Cuts `release/…` from the main branch and queues the official build. *Optional:* 2a/2b RI/FI integration PRs, 2c deploy-base build |
+| 3 | Wait for build | Polls the official build until it succeeds |
+| 4 | Commit details | Collects the commits since the last release into the commit Excel (new file per release, or one sheet in a shared tracker workbook), nudges authors to fill it in |
+| 5 | Deploy canary | Triggers the canary pipelines with the release build; posts approval links |
+| 6 | BVT check | Waits the BVT window (or runs BVT releases), runs the Kusto failure analysis, emails the results; owner `approve-bvt` |
+| 7 | Rollback | Rolls canary back to the previous build (or to the revert bits build) |
+| 8 | Post-rollback BVT | BVT on the rolled-back canary |
+| 9 | Post-rollback sign-off | Owner `approve-rollback` |
+| 10 | Roll-forward | Re-deploys the release build to canary via the production pipelines |
+| 11 | Post-roll-forward BVT | BVT on the rolled-forward canary |
+| 12 | Post-roll-forward sign-off | Owner `approve-rollforward` |
+| 13 | SafeFly R2D | Derives deployment nature / SDP type / regions (CCOA exclusions) and files the SafeFly R2D |
+| 14 | SafeFly approval + CRB | Polls the R2D approval, sends the CRB email; owner `approve-crb` |
+| 15 | Production rollout | Triggers the EV2 managed production rollout, with stamp-inventory, payload and geography gates and rollout diagnostics |
+| 16 | Merge-back PR | Opens the PR from the release branch back to the main branch |
+
+Failures halt the step, email the owner (routing per `notifications.routing`) and wait for `ack`.
+
+---
+
+## Configuration and customization options
+
+Everything a service does differently is a config value. **Every option below is off by default,
+and off means the original ZED behaviour** — a service that does not set it (e.g. BDP) is
+unaffected. `setup-service` asks about each one; the schemas
+(`service-config.schema.json`, `pipeline-catalog.schema.json`) document every field.
+
+### `service-config.json`
+
+| Option | Off (default) | When enabled | BCM |
+|---|---|---|---|
+| `service.releaseLabel` | Messages say "BDP Release …" | Label used in reminder / commit request / nudge / CRB / step-failure messages | `"BCM"` |
+| `releaseNaming` `{ prefix, sequenceSeparator }` | Release id = `YYYY-MM`, one release per month | Several releases per month (`BCM2610`, `BCM2610_2`, …); `setup` asks the name first and it is the release id everywhere (`{{releaseName}}`, `{{releaseNameLower}}` in templates) | prefix `BCM`, `_` |
+| `defaultSkippedSteps` `{ "<step>": "<reason>" }` | All 16 steps run | Listed steps are written `skipped` in every release (`modify reset N` runs one anyway) | 11, 12 (Step 10 → Step 13) |
+| `ado.integration` | Branch cut straight from the main branch | **Step 2a RI** (master → develop PR on a new branch, `preservePaths` kept from develop, conflicts resolved by newest commit per file) → owner `approve-ri` → **2b FI** (develop → master PR) → cut the release branch | enabled, `.config` preserved |
+| `ado.releaseMode: "deploy-base"` | Canary/production deploy the official build | Step 2c queues a deploy-base build from the release branch and pipelines are pinned to it (`PinResources`) | `deploy-base` |
+| `commitExcel.mode: "tracker"` (+ `commitExcel.tracker`) | New commit Excel file every release | Adds a sheet per release to one shared SharePoint workbook (columns / header style from config), polls fill % before Step 4 completes | tracker workbook |
+| `revertBits` (`enabled`) | Step 7 rolls back to the previous build | Builds a revert-bits branch/PR (config files preserved), deploys it for the rollback; owner `approve-revert` | enabled |
+| `revertBits.prepareDuringCanaryBvt` | Revert bits prepared at Step 7 | Prepared during the Step 6 BVT; Step 7 deploys at once after `approve-bvt`, Step 8 is the revert-bits BVT | `true` |
+| `operational.approvalWatchEnabled` (+ `approvalPollIntervalSeconds`, `approvalReminderHours`, `approvalExpiryWarnHours`) | Approval links posted to Teams in Steps 5/7/10 | Approval watch: emails + Teams every waiting Approval Service / ADO approval, with reminders and an expiry warning (`approvals` command) | `true` |
+| `operational.scheduleGuardPollIntervalSeconds` | — | Poll interval for `scheduleGuard` pipelines | set |
+| `inventory.stampNaming` | Stamp reconciliation by exact name | SDS StampId ↔ Kusto stamp name mapping (partition suffixes, `{region}-{NN}` ids), cloud-scoped | set |
+| `safefly.extendedRequest` | Original R2D builder (`New-SafeFlyRequest.Legacy.ps1`), V1 approval polling | Extended R2D: sectioned description (`descriptionSections`, `prUrlTemplate`, `payloadUrlTemplate`, …), `{titleThemes}`, `regionGroups`, `rollbackStrategy`, team-risk answers, tag GUIDs, content warnings; SafeFly V2 approval polling | `true` |
+| `safefly.r2dBuildSource: "productionRun"` | R2D `ev2.build` = official build number | Step 13 triggers the production pipeline first (parked on its approval gates, requires `approvalGate.verified`) and files the R2D with that run's build number; Step 15 reuses the run | `productionRun` |
+| `safefly.adoBuildLink` | No ADO build link | Adds the ADO build link answer to the R2D | set |
+
+### `pipeline-catalog.json`
+
+| Option | Off (default) | When enabled | BCM |
+|---|---|---|---|
+| `privateStampUpgrade` (`enabled`) | No private stamp test | Parallel to canary: asks the owner for the private stamp instance, two ports and the `WorkflowQueueName`, deploys the last and the current build (`ServiceOverrideSettings`), halts for the owner's private stamp BVT (`approve-private-stamp`, a join before Step 13) | pipeline 396863 |
+| `bvtReleases` `{ steps, releases }` | 24 h BVT timer | Creates the configured classic BVT releases (with variables, e.g. `MABIsOfficial="True"`) at the listed steps and tracks them instead of waiting | 40785 + 47437 at steps 6, 8 |
+| `<canary\|production>.<key>.deploymentDoneWhen` `{ ev2StepStarted, portalLinkTask }` | Deployment done = pipeline run completed | Deployment done = the EV2 rollout reached `ev2StepStarted` (read from the EV2 portal link in `portalLinkTask`); the BVT starts without the ~24 h ManagedValidation wait, and later deployments wait for EV2 serialization | BCM-CANARY: `Canary-ManagedValidation` |
+| `<canary>.<key>.scheduleGuard` | Pipeline's own schedule keeps running | Once ZED's Step 5 run succeeds, pauses the pipeline's own scheduled deployments (schedule variable off / UI schedule triggers removed / foreign runs cancelled) until Step 6 is signed off, then restores only what it changed | BCM-EACAN |
+| `<canary\|production>.<key>.approvalGate` | — | Evidence that the pipeline deploys nothing before a human approval; required for `r2dBuildSource: productionRun` | BCM-PROD verified |
+| `<key>.buildResource` + `artifactFeed` | — | Required with `ado.releaseMode: "deploy-base"`: the YAML build resource alias and feed used to pin every run to the release build | set |
+
+### Fixes that apply to every service
+
+These are bug fixes, not opt-in features:
+
+- ADO tokens are requested for the Azure DevOps AAD application id (`Get-AzToken`, `Get-PipelineApprovalLinks`).
+- `Update-ReleaseState` accepts dictionary state and adds missing properties instead of failing.
+- The Step 15 geography-coverage gate no longer flips the step back to in-progress, and `regions(*)` (which always failed the gate) is treated as all regions.
+
 ## Per-repo vs per-release
 
 | Scope | Command | Output | Commit it? |

@@ -189,7 +189,7 @@ Run these from Copilot Chat **in your service repo**, in this order the first ti
 | `skip` / `modify skip\|reset\|reorder N` | Skip the current step / change the step plan |
 | `approve-bvt` · `approve-rollback` · `approve-rollforward` · `approve-crb` | Sign off the BVT / rollback / roll-forward / CRB gates |
 | `approve-ri` | Go-ahead after the Reverse Integration PR (only with `ado.integration`) |
-| `private-stamp` · `approve-private-stamp` | Private stamp upgrade inputs and sign-off (only with `privateStampUpgrade`) |
+| `private-stamp` · `approve-private-stamp` · `private-stamp restore` | Private stamp upgrade inputs, sign-off, and redeploy without the queue override (only with `privateStampUpgrade`) |
 | `revert-bits` · `approve-revert` | Revert bits selection and sign-off (only with `revertBits`) |
 | `approvals` | Pending pipeline approvals (only with `operational.approvalWatchEnabled`) |
 | `rebuild` · `new-stamp` | Re-queue the build / onboard or reclassify a stamp |
@@ -261,6 +261,7 @@ unaffected. `setup-service` asks about each one; the schemas
 | Option | Off (default) | When enabled | BCM |
 |---|---|---|---|
 | `privateStampUpgrade` (`enabled`) | No private stamp test | Parallel to canary: asks the owner for the private stamp instance, two ports and the `WorkflowQueueName`, deploys the last and the current build (`ServiceOverrideSettings`), halts for the owner's private stamp BVT (`approve-private-stamp`, a join before Step 13) | pipeline 396863 |
+| `privateStampUpgrade.restoreAfterSignOff` (+ `restoreServiceOverrideSettings`) | Sign-off ends the test; the stamp keeps the test's `WorkflowQueueName` override | After `approve-private-stamp`, redeploys both builds on the same ports **without** the queue override (pipeline default `ServiceOverrideSettings`), so the stamp returns to its original state and the ports don't share a TEE queue; does not delay Step 13 | `true` |
 | `bvtReleases` `{ steps, releases }` | 24 h BVT timer | Creates the configured classic BVT releases (with variables, e.g. `MABIsOfficial="True"`) at the listed steps and tracks them instead of waiting | 40785 + 47437 at steps 6, 8 |
 | `<canary\|production>.<key>.deploymentDoneWhen` `{ ev2StepStarted, portalLinkTask }` | Deployment done = pipeline run completed | Deployment done = the EV2 rollout reached `ev2StepStarted` (read from the EV2 portal link in `portalLinkTask`); the BVT starts without the ~24 h ManagedValidation wait, and later deployments wait for EV2 serialization | BCM-CANARY: `Canary-ManagedValidation` |
 | `<canary>.<key>.scheduleGuard` | Pipeline's own schedule keeps running | Once ZED's Step 5 run succeeds, pauses the pipeline's own scheduled deployments (schedule variable off / UI schedule triggers removed / foreign runs cancelled) until Step 6 is signed off, then restores only what it changed | BCM-EACAN |

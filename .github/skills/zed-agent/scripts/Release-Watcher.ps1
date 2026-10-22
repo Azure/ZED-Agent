@@ -341,7 +341,9 @@ while ($true) {
     # ─────────────────────────────────────────────────────────────────────────
     try {
         if ($state.PSObject.Properties['privateStampUpgrade'] -and $state.privateStampUpgrade -and
-            $state.privateStampUpgrade.status -match '^(inputs-ready|triggering|deploying|bvt-running|retrying)') {
+            ($state.privateStampUpgrade.status -match '^(inputs-ready|triggering|deploying|bvt-running|retrying)' -or
+             ($state.privateStampUpgrade.PSObject.Properties['restore'] -and $state.privateStampUpgrade.restore -and
+              $state.privateStampUpgrade.restore.status -match '^(pending|triggering|deploying)$'))) {
             $psuScript = Join-Path $PSScriptRoot 'Invoke-PrivateStampUpgrade.ps1'
             if (Test-Path $psuScript) {
                 $psuArgs = @{

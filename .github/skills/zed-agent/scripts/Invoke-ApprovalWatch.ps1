@@ -144,6 +144,12 @@ function Get-WatchedRuns($State, $Release) {
             if ($r -and $r.Value) { $id = Get-RunIdFromValue $r.Value; if ($id -and -not $runs.Contains($id)) { $runs[$id] = 'private-stamp' } }
         }
     }
+    if ($State.PSObject.Properties['privateStampUpgrade'] -and $State.privateStampUpgrade -and
+        $State.privateStampUpgrade.PSObject.Properties['restore'] -and $State.privateStampUpgrade.restore -and $State.privateStampUpgrade.restore.runs) {
+        foreach ($p in @($State.privateStampUpgrade.restore.runs.PSObject.Properties)) {
+            if ($p.Value) { $id = Get-RunIdFromValue $p.Value; if ($id -and -not $runs.Contains($id)) { $runs[$id] = 'private-stamp' } }
+        }
+    }
     return $runs
 }
 

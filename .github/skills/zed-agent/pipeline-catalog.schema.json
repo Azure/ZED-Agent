@@ -187,6 +187,15 @@
           "description": "Value for the serviceOverrides parameter. Token {queueName} = owner-supplied TeeWorkflowQueueName.",
           "default": "@{}"
         },
+        "restoreAfterSignOff": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in. After `approve-private-stamp`, redeploy both legs (same pinned builds, same ports) WITHOUT the queue override, so the private stamp returns to its original configuration and the two ports no longer share one TEE workflow queue. Does not delay the Step 13 join. Owner can also run it with `private-stamp restore` (after skip / failure, or to retry). BCM: true."
+        },
+        "restoreServiceOverrideSettings": {
+          "type": "string",
+          "description": "Optional value for the serviceOverrides parameter in the restore runs. Omitted (default): the parameter is not passed, so the pipeline's own default applies (BCM pipeline 396863: @{\"BCMAppConfig->ServiceName\"=\"ic\";})."
+        },
         "artifact": {
           "type": "object",
           "description": "Optional: the private stamp pipeline's build resource. When set, both legs are PINNED to an exact build (the owner gives the last build as a build link/id; the current leg uses release.json → buildId): the build id is mapped to its version in the resource's feed and posted as resources.builds.<resourceAlias>.version, with ArtifactBranch = that build's branch. Without it, ArtifactBranch is a branch and the pipeline deploys its latest build.",

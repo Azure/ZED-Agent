@@ -27,7 +27,7 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `skip` or `skip N` | Skip the current step (or step N) at runtime |
 | `modify skip 4,5` | Skip specific steps mid-release (also supports `reorder` and `reset`). For up-front skipping, the per-release `setup` command has an interactive skip prompt. |
 | `approve-ri` | Give the go-ahead after the RI PR merged (starts FI — only when `ado.integration` is enabled) |
-| `private-stamp` | Provide the private stamp upgrade test inputs (instance, port for last build, port for current build, last build branch, TeeWorkflowQueueName, redirected vault ARM id for the BVT). Also `private-stamp retry`, `private-stamp skip <reason>`, `private-stamp status` |
+| `private-stamp` | Provide the private stamp upgrade test inputs (instance, port for last build, port for current build, last build branch, TeeWorkflowQueueName, redirected vault ARM id for the BVT). Also `private-stamp retry`, `private-stamp skip <reason>`, `private-stamp status`, `private-stamp restore` (redeploy both builds without the queue override) |
 | `approve-private-stamp` | Sign off the private stamp BVT (releases the Step 13 join) |
 | `revert-bits base <sha>` / `revert-bits preserve <numbers\|all\|none>` | Revert bits (Step 7, after canary BVT sign-off): confirm the previous release commit / choose which changed settings to keep. Also `revert-bits status`, `revert-bits skip <reason>` |
 | `approve-revert` | Sign off the BVT on the revert build — Step 7 then rolls canary back with it |
@@ -272,15 +272,17 @@ Only meaningful when `CONFIG[pipelines.privateStampUpgrade.enabled]`. Spec: `ste
 
 **`private-stamp skip <reason>`** — `-Action Skip -Reason <reason>` (ask for a reason if missing). Releases the Step 13 join; if Step 13 is `waiting`, resume the execution loop. The reason is recorded in audit and quoted in the R2D notes.
 
-**`private-stamp status`** — `-Action Get`; show status, inputs, both deployment runs, the BVT release (link, stage results) and the next owner action.
+**`private-stamp status`** — `-Action Get`; show status, inputs, both deployment runs, the BVT release (link, stage results), the restore (status, run links) and the next owner action.
+
+**`private-stamp restore`** — `-Action Restore`: redeploys the private stamp builds on both ports **without** the TeeWorkflowQueueName override (same instance, ports and pinned builds; `ServiceOverrideSettings` = pipeline default or `restoreServiceOverrideSettings`). Automatic after `approve-private-stamp` when `privateStampUpgrade.restoreAfterSignOff` is set; use this command after a `private-stamp skip` / failure (when legs were deployed), or to retry a failed restore (re-runs only the failed leg). Refused while the test is still running, while a restore is in progress, or when nothing was deployed. Reply with both restore run links.
 
 ## approve-private-stamp — Sign Off Private Stamp BVT
 
 When the release owner says `approve-private-stamp` or `approve private-stamp`:
 
 1. Run `Invoke-PrivateStampUpgrade.ps1 -Action SignOff -By <owner alias>`. Accepted when the track is `awaiting-bvt` (BVT finished succeeded/partiallySucceeded), or `failed` with only the BVT failed (owner override — confirm first: *"The BVT ended {bvtOutcome}. Sign off anyway?"*). Otherwise report the current status and what it is waiting for; change nothing.
-2. Confirm: *"✅ Private stamp upgrade test signed off ({instance}: {lastBuild} on {port1}, {currentBranch} on {port2}; BVT {bvtOutcome})."*
-3. If Step 13 is `waiting`, resume the execution loop (Step 13 re-runs its prerequisite checks).
+2. Confirm: *"✅ Private stamp upgrade test signed off ({instance}: {lastBuild} on {port1}, {currentBranch} on {port2}; BVT {bvtOutcome})."* With `privateStampUpgrade.restoreAfterSignOff` add: *"Restoring the stamp: redeploying both builds without the TeeWorkflowQueueName override (runs {restore.runs.last.url}, {restore.runs.current.url}) — I'll email when done."* (if the result has `NotifyEvent = private-stamp-restore-failed`, send that email).
+3. If Step 13 is `waiting`, resume the execution loop (Step 13 re-runs its prerequisite checks) — the restore does not hold Step 13.
 
 ## revert-bits — Revert Bits Selection and Control (Step 7 pre-phase)
 

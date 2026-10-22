@@ -11,7 +11,7 @@ BeforeAll {
     $script:Vault = '/subscriptions/5288acd1-ba79-4377-9205-9f220331a44a/resourceGroups/rg-1/providers/Microsoft.RecoveryServices/vaults/bvt-vault'
 
     function New-Env {
-        param([string]$Step3 = 'completed', [bool]$TestMode = $false, [bool]$Enabled = $true, [bool]$Bvt = $true, [bool]$Pinned = $false)
+        param([string]$Step3 = 'completed', [bool]$TestMode = $false, [bool]$Enabled = $true, [bool]$Bvt = $true, [bool]$Pinned = $false, [bool]$Restore = $false, [string]$RestoreOverrides = $null)
         $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $steps = 1..16 | ForEach-Object { [ordered]@{ number = $_; name = "s$_"; status = 'pending' } }
@@ -30,6 +30,8 @@ BeforeAll {
             serviceOverrideSettingsTemplate = '@{"BCMAppConfig->WorkflowQueueName"="{queueName}";}'
         }
         if ($Pinned) { $psu.artifact = [ordered]@{ resourceAlias = 'svc_build'; type = 'CloudVaultArtifacts-v3'; connectionId = 'conn-1'; connectionName = 'CloudVault API - cdpxofficialbuilds'; sourceId = 'fb10185a'; feedBranchPrefix = 'Mgmt_RecoverySvcs_IaaSCoord_'; buildDefinitionId = 223537 } }
+        if ($Restore) { $psu.restoreAfterSignOff = $true }
+        if ($RestoreOverrides) { $psu.restoreServiceOverrideSettings = $RestoreOverrides }
         if ($Bvt) { $psu.bvtRelease = [ordered]@{ definitionId = 64863; environmentName = 'IaaSVM BVT Private Stamp'; vaultIdVariable = 'PrivateStampVaultId' } }
         [ordered]@{ privateStampUpgrade = $psu } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $dir 'pipeline-catalog.json') -Encoding UTF8
         return $dir
@@ -439,6 +441,109 @@ Describe 'Invoke-PrivateStampUpgrade' {
             (Get-Track $d).previousStatus | Should -Be 'awaiting-input'
         }
     }
+
+    Context 'Restore after sign-off (restoreAfterSignOff)' {
+        BeforeEach {
+            $global:PsuBodies = [System.Collections.Generic.List[object]]::new()
+            $global:PsuQueueIds = [System.Collections.Generic.Queue[int]]::new([int[]](1..8))
+            Mock Invoke-RestMethod -ParameterFilter { $Method -eq 'POST' -and $Uri -like '*/pipelines/396863/runs*' } -MockWith {
+                $global:PsuBodies.Add(($Body | ConvertFrom-Json)); [pscustomobject]@{ id = $global:PsuQueueIds.Dequeue() }
+            }
+            $script:In = $GoodInputs.Clone(); $script:In.VaultId = ''
+        }
+        AfterEach { Remove-Variable -Name PsuBodies -Scope Global -ErrorAction SilentlyContinue }
+
+        It 'is off by default: sign-off does not redeploy' {
+            $d = New-Env -Bvt $false
+            $null = Invoke-Psu $d 'SetInputs' $script:In
+            Mock-Builds @{ 1 = 'succeeded'; 2 = 'succeeded' }
+            $null = Invoke-Psu $d 'Poll'
+            (Invoke-Psu $d 'SignOff' @{ By = 'owner' }).Status | Should -Be 'signed-off'
+            $global:PsuBodies.Count | Should -Be 2
+            (Get-Track $d).restore | Should -BeNullOrEmpty
+        }
+
+        It 'redeploys both builds on the same ports without the queue override, then reports restored' {
+            $d = New-Env -Bvt $false -Restore $true
+            $null = Invoke-Psu $d 'SetInputs' $script:In
+            Mock-Builds @{ 1 = 'succeeded'; 2 = 'succeeded'; 3 = 'inProgress'; 4 = 'inProgress' }
+            $null = Invoke-Psu $d 'Poll'
+            $s = Invoke-Psu $d 'SignOff' @{ By = 'owner' }
+            $s.Status | Should -Be 'signed-off'
+            $s.Transition | Should -BeLike 'signed-off; restore pending -> deploying*'
+            $global:PsuBodies.Count | Should -Be 4
+            $global:PsuBodies[0].templateParameters.ServiceOverrideSettings | Should -Be '@{"BCMAppConfig->WorkflowQueueName"="TeeQ-Upgrade.1";}'
+            foreach ($b in $global:PsuBodies[2..3]) {
+                $b.templateParameters.PSObject.Properties.Name | Should -Not -Contain 'ServiceOverrideSettings'
+                $b.templateParameters.PrivateInstance | Should -Be 'A'
+                $b.templateParameters.rolloutType | Should -Be 'normal'
+            }
+            @($global:PsuBodies[2..3] | ForEach-Object { $_.templateParameters.WebRolePort }) | Should -Be @('10060', '10062')
+            @($global:PsuBodies[2..3] | ForEach-Object { $_.templateParameters.ArtifactBranch }) | Should -Be @('releases/bcm-2610', 'releases/bcm-2611')
+            $t = Get-Track $d
+            $t.status | Should -Be 'signed-off'
+            $t.restore.status | Should -Be 'deploying'
+            $t.restore.runs.last.runId | Should -Be 3
+            $t.runs.last.runId | Should -Be 1
+
+            (Invoke-Psu $d 'Poll').NotifyEvent | Should -BeNullOrEmpty
+            Mock-Builds @{ 1 = 'succeeded'; 2 = 'succeeded'; 3 = 'succeeded'; 4 = 'succeeded' }
+            $r = Invoke-Psu $d 'Poll'
+            $r.NotifyEvent | Should -Be 'private-stamp-restored'
+            $r.Status | Should -Be 'signed-off'
+            (Get-Track $d).restore.status | Should -Be 'completed'
+            (Invoke-Psu $d 'Poll').NotifyEvent | Should -BeNullOrEmpty
+            $global:PsuBodies.Count | Should -Be 4
+        }
+
+        It 'uses restoreServiceOverrideSettings when configured' {
+            $d = New-Env -Bvt $false -Restore $true -RestoreOverrides '@{"BCMAppConfig->ServiceName"="ic";}'
+            $null = Invoke-Psu $d 'SetInputs' $script:In
+            Mock-Builds @{ 1 = 'succeeded'; 2 = 'succeeded'; 3 = 'inProgress'; 4 = 'inProgress' }
+            $null = Invoke-Psu $d 'Poll'
+            $null = Invoke-Psu $d 'SignOff' @{ By = 'owner' }
+            $global:PsuBodies[3].templateParameters.ServiceOverrideSettings | Should -Be '@{"BCMAppConfig->ServiceName"="ic";}'
+        }
+
+        It 'reports a failed restore and re-runs only the failed leg on private-stamp restore' {
+            $d = New-Env -Bvt $false -Restore $true
+            $null = Invoke-Psu $d 'SetInputs' $script:In
+            Mock-Builds @{ 1 = 'succeeded'; 2 = 'succeeded'; 3 = 'succeeded'; 4 = 'failed' }
+            $null = Invoke-Psu $d 'Poll'
+            $null = Invoke-Psu $d 'SignOff' @{ By = 'owner' }
+            $r = Invoke-Psu $d 'Poll'
+            $r.NotifyEvent | Should -Be 'private-stamp-restore-failed'
+            (Get-Track $d).restore.failedLegs | Should -Be @('current')
+
+            Mock-Builds @{ 1 = 'succeeded'; 2 = 'succeeded'; 3 = 'succeeded'; 4 = 'failed'; 5 = 'succeeded' }
+            $null = Invoke-Psu $d 'Restore' @{ By = 'owner' }
+            $global:PsuBodies.Count | Should -Be 5
+            $global:PsuBodies[4].templateParameters.WebRolePort | Should -Be '10062'
+            $r = Invoke-Psu $d 'Poll'
+            $r.NotifyEvent | Should -Be 'private-stamp-restored'
+            (Get-Track $d).restore.runs.last.runId | Should -Be 3
+            (Get-Track $d).restore.runs.current.runId | Should -Be 5
+        }
+
+        It 'lets the owner restore after a skip, and refuses while the test is running or a restore is active' {
+            $d = New-Env -Bvt $false
+            $null = Invoke-Psu $d 'SetInputs' $script:In
+            { Invoke-Psu $d 'Restore' @{ By = 'owner' } } | Should -Throw "*still 'deploying'*"
+            $null = Invoke-Psu $d 'Skip' @{ By = 'owner'; Reason = 'stamp broken' }
+            Mock-Builds @{ 3 = 'inProgress'; 4 = 'inProgress' }
+            (Invoke-Psu $d 'Restore' @{ By = 'owner' }).Status | Should -Be 'skipped'
+            (Get-Track $d).restore.status | Should -Be 'deploying'
+            (Get-Track $d).restore.reason | Should -Be 'manual'
+            { Invoke-Psu $d 'Restore' @{ By = 'owner' } } | Should -Throw "*already 'deploying'*"
+        }
+
+        It 'refuses a restore when nothing was deployed' {
+            $d = New-Env
+            $null = Invoke-Psu $d 'Init'
+            $null = Invoke-Psu $d 'Skip' @{ By = 'owner'; Reason = 'n/a' }
+            { Invoke-Psu $d 'Restore' @{ By = 'owner' } } | Should -Throw '*Nothing to restore*'
+        }
+    }
 }
 Describe 'privateStampUpgrade wiring' {
     BeforeAll {
@@ -449,6 +554,8 @@ Describe 'privateStampUpgrade wiring' {
         @{ key = 'private-stamp-input-needed'; outcome = 'halt' }
         @{ key = 'private-stamp-bvt-ready';    outcome = 'halt' }
         @{ key = 'private-stamp-failed';       outcome = 'failure' }
+        @{ key = 'private-stamp-restored';     outcome = 'success' }
+        @{ key = 'private-stamp-restore-failed'; outcome = 'failure' }
     ) {
         $rule = [pscustomobject]@{ emailGroups = @('permanent') }
         $step = [pscustomobject]@{}
@@ -473,6 +580,9 @@ Describe 'privateStampUpgrade wiring' {
         $c = Get-Content (Join-Path $PSScriptRoot '..\scripts\Invoke-ColdResume.ps1') -Raw
         $c | Should -Match "Invoke-PrivateStampUpgrade\.ps1"
         $c | Should -Match 'PrivateStampSideChannel'
+        # a restore after sign-off keeps the side track polled
+        $w | Should -Match 'restore\.status -match ''\^\(pending\|triggering\|deploying\)\$'''
+        $c | Should -Match 'restore\.status -match ''\^\(pending\|triggering\|deploying\)\$'''
     }
 }
 

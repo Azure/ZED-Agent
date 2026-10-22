@@ -36,6 +36,16 @@
         runs   : { last: {...}, current: {...}, bvt: {...} }
         failedLegs (subset of last, current, bvt), error, requestedAt, bvtOutcome,
         signedOffAt, signedOffBy, skippedAt, skippedBy, skipReason
+        restore: { status: pending | triggering | deploying | completed | failed, reason: sign-off | manual,
+                   legs, runs: { last, current }, failedLegs, error, requestedAt, requestedBy, completedAt }
+
+    Restore (privateStampUpgrade.restoreAfterSignOff, opt-in): on SignOff, both legs are redeployed with
+    the same pinned builds and ports but WITHOUT the TeeWorkflowQueueName override (the
+    ServiceOverrideSettings parameter is omitted → pipeline default, or
+    privateStampUpgrade.restoreServiceOverrideSettings), so the stamp returns to its original
+    configuration and the two ports stop sharing one TEE workflow queue. The main status stays
+    'signed-off' (the Step 13 join is not delayed); NotifyEvent private-stamp-restored /
+    private-stamp-restore-failed.
 
     Actions:
         Init      Step 5 kick-off. Creates the track (awaiting-input) and returns
@@ -48,7 +58,10 @@
                   throws — errors are returned in .Error.
         Retry     Re-runs only what failed: the failed leg(s), or the BVT release.
         SignOff   Owner's sign-off (awaiting-bvt, or failed with only the BVT failed → owner override).
+                  With restoreAfterSignOff, also starts the restore.
         Skip      Owner skips the track (Step 13 join is released).
+        Restore   Owner's `private-stamp restore`: (re)runs the restore after sign-off / skip / failure
+                  (only the failed legs when a previous restore failed).
         Get       Returns the current track state.
 
     Every trigger is "claimed" under the state lock (status triggering / triggering-bvt) before
@@ -59,7 +72,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('Init', 'SetInputs', 'Poll', 'Retry', 'SignOff', 'Skip', 'Get')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Init', 'SetInputs', 'Poll', 'Retry', 'SignOff', 'Skip', 'Restore', 'Get')][string]$Action,
     [Parameter(Mandatory)][string]$ReleaseId,
     [string]$Instance,
     [int]$LastPort,
@@ -257,7 +270,7 @@ function Resolve-PinnedBuild([long]$BuildId, [string]$Role) {
     }
 }
 
-function New-TemplateParameters($Track, [string]$Leg) {
+function New-TemplateParameters($Track, [string]$Leg, [switch]$Restore) {
     $tp = [ordered]@{}
     if ($script:Psu.PSObject.Properties['templateParameters'] -and $script:Psu.templateParameters) {
         foreach ($p in $script:Psu.templateParameters.PSObject.Properties) { $tp[$p.Name] = [string]$p.Value }
@@ -269,8 +282,43 @@ function New-TemplateParameters($Track, [string]$Leg) {
     $tp[(Get-ParamName 'instance' 'PrivateInstance')] = [string]$Track.inputs.instance
     $tp[(Get-ParamName 'port' 'WebRolePort')] = [string]$port
     $tp[(Get-ParamName 'artifactBranch' 'ArtifactBranch')] = [string]$artifact
-    $tp[(Get-ParamName 'serviceOverrides' 'ServiceOverrideSettings')] = [string]$Track.inputs.serviceOverrideSettings
+    $soName = Get-ParamName 'serviceOverrides' 'ServiceOverrideSettings'
+    if (-not $Restore) {
+        $tp[$soName] = [string]$Track.inputs.serviceOverrideSettings
+    } else {
+        # Restore: no queue override. Omit the parameter (pipeline default) unless
+        # restoreServiceOverrideSettings is configured.
+        $rso = Get-RestoreServiceOverrides
+        if ($null -ne $rso) { $tp[$soName] = $rso } elseif ($tp.Contains($soName)) { $tp.Remove($soName) }
+    }
     return $tp
+}
+
+function Test-RestoreEnabled {
+    return ($script:Psu.PSObject.Properties['restoreAfterSignOff'] -and $script:Psu.restoreAfterSignOff -eq $true)
+}
+
+function Get-RestoreServiceOverrides {
+    $p = $script:Psu.PSObject.Properties['restoreServiceOverrideSettings']
+    if ($p -and $null -ne $p.Value -and "$($p.Value)" -ne '') { return [string]$p.Value }
+    return $null
+}
+
+function Get-Restore($Track) {
+    if ($Track -and $Track.PSObject.Properties['restore'] -and $Track.restore) { return $Track.restore }
+    return $null
+}
+
+# Legs that were queued on the stamp (have a run id) — these are the ones to restore.
+function Get-DeployedLegs($Track) {
+    return @($script:Legs | Where-Object { $r = Get-Run $Track $_; $r -and $r.runId })
+}
+
+function New-RestoreRecord([string[]]$Legs, [string]$Reason) {
+    return [pscustomobject]@{
+        status = 'pending'; reason = $Reason; legs = @($Legs); requestedAt = (Get-NowIso); requestedBy = $script:By
+        runs = [pscustomobject]@{}; failedLegs = @(); error = $null; claimedAt = $null; completedAt = $null
+    }
 }
 
 function Get-LegPin($Track, [string]$Leg) {
@@ -294,6 +342,48 @@ function Set-Failed($Track, [string[]]$FailedLegs, [string]$Message) {
     Set-Prop $Track 'claimedAt' $null
 }
 
+# Queues ONE leg run (the deployment, or with -Restore the redeploy without the queue override). Returns @{ Run; Error }.
+function Invoke-QueueLeg($Track, [string]$Leg, [string]$Ref, [switch]$Restore) {
+    $orgBase = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_apis"
+    $tp = New-TemplateParameters $Track $Leg -Restore:$Restore
+    $tpObj = New-Object PSObject
+    foreach ($k in $tp.Keys) { $tpObj | Add-Member -MemberType NoteProperty -Name $k -Value $tp[$k] }
+    $resources = [ordered]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $Ref } } }
+    $pin = Get-LegPin $Track $Leg
+    if ($pin) {
+        $resources.builds = [pscustomobject]@{ ([string](Get-ArtifactConfig).resourceAlias) = [pscustomobject]@{ version = [string]$pin.versionId } }
+    }
+    $body = [pscustomobject]@{
+        resources          = [pscustomobject]$resources
+        templateParameters = $tpObj
+    } | ConvertTo-Json -Depth 8
+    $run = [ordered]@{
+        leg = $Leg; pipelineId = [int]$script:Psu.id; sourceBranch = $Ref
+        artifactBranch = $tp[(Get-ParamName 'artifactBranch' 'ArtifactBranch')]
+        port = [int]$tp[(Get-ParamName 'port' 'WebRolePort')]
+        pinnedBuildId = $(if ($pin) { $pin.buildId } else { $null }); pinnedVersion = $(if ($pin) { $pin.versionName } else { $null })
+        templateParameters = [pscustomobject]$tp
+        runId = $null; url = $null; status = $null; result = $null; queuedAt = (Get-NowIso); finishedAt = $null
+    }
+    $evt = if ($Restore) { 'private-stamp-restore' } else { 'private-stamp' }
+    $kind = if ($Restore) { 'restore run' } else { 'run' }
+    $err = $null
+    try {
+        $headers = @{ Authorization = "Bearer $(Get-AdoToken)"; 'Content-Type' = 'application/json' }
+        $resp = Invoke-RestMethod -Uri "$orgBase/pipelines/$($script:Psu.id)/runs?api-version=7.1" -Method POST -Headers $headers -Body $body -ErrorAction Stop
+        $run.runId = $resp.id
+        $run.url = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_build/results?buildId=$($resp.id)"
+        $run.status = 'inProgress'
+        Write-Audit @{ event = "$evt-triggered"; leg = $Leg; runId = $run.runId; port = $run.port; artifactBranch = $run.artifactBranch }
+    } catch {
+        $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { " | $($_.ErrorDetails.Message)" } else { '' }
+        $err = "Failed to queue private stamp '$Leg' $($kind): $($_.Exception.Message)$detail"
+        $run.status = 'queue-failed'; $run.result = 'failed'; $run.finishedAt = (Get-NowIso)
+        Write-Audit @{ event = "$evt-trigger-failed"; leg = $Leg; error = $err }
+    }
+    return @{ Run = [pscustomobject]$run; Error = $err }
+}
+
 # Queues the given legs IN PARALLEL (one claim, then one POST per leg). Returns the persisted track.
 function Start-Deployments([string]$FromStatus, [string[]]$Legs) {
     $claimed = Update-Track {
@@ -308,44 +398,12 @@ function Start-Deployments([string]$FromStatus, [string[]]$Legs) {
     if ($null -eq $claimed -or $claimed.status -ne 'triggering') { return $null }
 
     $ref = Get-SourceRef $claimed
-    $orgBase = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_apis"
     $newRuns = @{}
     $queueErrors = @{}
     foreach ($leg in $Legs) {
-        $tp = New-TemplateParameters $claimed $leg
-        $tpObj = New-Object PSObject
-        foreach ($k in $tp.Keys) { $tpObj | Add-Member -MemberType NoteProperty -Name $k -Value $tp[$k] }
-        $resources = [ordered]@{ repositories = [pscustomobject]@{ self = [pscustomobject]@{ refName = $ref } } }
-        $pin = Get-LegPin $claimed $leg
-        if ($pin) {
-            $resources.builds = [pscustomobject]@{ ([string](Get-ArtifactConfig).resourceAlias) = [pscustomobject]@{ version = [string]$pin.versionId } }
-        }
-        $body = [pscustomobject]@{
-            resources          = [pscustomobject]$resources
-            templateParameters = $tpObj
-        } | ConvertTo-Json -Depth 8
-        $run = [ordered]@{
-            leg = $leg; pipelineId = [int]$script:Psu.id; sourceBranch = $ref
-            artifactBranch = $tp[(Get-ParamName 'artifactBranch' 'ArtifactBranch')]
-            port = [int]$tp[(Get-ParamName 'port' 'WebRolePort')]
-            pinnedBuildId = $(if ($pin) { $pin.buildId } else { $null }); pinnedVersion = $(if ($pin) { $pin.versionName } else { $null })
-            templateParameters = [pscustomobject]$tp
-            runId = $null; url = $null; status = $null; result = $null; queuedAt = (Get-NowIso); finishedAt = $null
-        }
-        try {
-            $headers = @{ Authorization = "Bearer $(Get-AdoToken)"; 'Content-Type' = 'application/json' }
-            $resp = Invoke-RestMethod -Uri "$orgBase/pipelines/$($script:Psu.id)/runs?api-version=7.1" -Method POST -Headers $headers -Body $body -ErrorAction Stop
-            $run.runId = $resp.id
-            $run.url = "https://dev.azure.com/$($script:Organization)/$($script:Project)/_build/results?buildId=$($resp.id)"
-            $run.status = 'inProgress'
-            Write-Audit @{ event = 'private-stamp-triggered'; leg = $leg; runId = $run.runId; port = $run.port; artifactBranch = $run.artifactBranch }
-        } catch {
-            $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { " | $($_.ErrorDetails.Message)" } else { '' }
-            $queueErrors[$leg] = "Failed to queue private stamp '$leg' run: $($_.Exception.Message)$detail"
-            $run.status = 'queue-failed'; $run.result = 'failed'; $run.finishedAt = (Get-NowIso)
-            Write-Audit @{ event = 'private-stamp-trigger-failed'; leg = $leg; error = $queueErrors[$leg] }
-        }
-        $newRuns[$leg] = [pscustomobject]$run
+        $q = Invoke-QueueLeg $claimed $leg $ref
+        if ($q.Error) { $queueErrors[$leg] = $q.Error }
+        $newRuns[$leg] = $q.Run
     }
 
     $allFailed = $queueErrors.Count -eq $Legs.Count
@@ -459,10 +517,131 @@ function Complete-Deployments($Track) {
     return $t
 }
 
+# ── Restore (privateStampUpgrade.restoreAfterSignOff) ────────────────────────────
+# Redeploys the same pinned builds on the same ports WITHOUT the WorkflowQueueName
+# override, so the stamp is back to its original configuration and the two ports
+# no longer share one TEE workflow queue. Lives in track.restore; the main status
+# (signed-off / skipped / failed) is unchanged, so the Step 13 join is not affected.
+function Set-RestoreProp($Track, [string]$Name, $Value) { Set-Prop $Track.restore $Name $Value }
+
+function Start-Restore([string]$FromStatus) {
+    $claimed = Update-Track {
+        param($cur, $st)
+        $r = Get-Restore $cur
+        if ($null -eq $r -or $r.status -ne $FromStatus) { return $null }
+        $t = Copy-Track $cur
+        Set-RestoreProp $t 'status' 'triggering'
+        Set-RestoreProp $t 'claimedAt' (Get-NowIso)
+        Set-RestoreProp $t 'error' $null
+        return $t
+    }
+    if ($null -eq $claimed -or (Get-Restore $claimed).status -ne 'triggering') { return $null }
+
+    $legs = @((Get-Restore $claimed).legs | Where-Object { $script:Legs -contains $_ })
+    $ref = Get-SourceRef $claimed
+    $newRuns = @{}; $errs = @{}
+    foreach ($leg in $legs) {
+        $q = Invoke-QueueLeg $claimed $leg $ref -Restore
+        if ($q.Error) { $errs[$leg] = $q.Error }
+        $newRuns[$leg] = $q.Run
+    }
+    $allFailed = $errs.Count -eq $legs.Count
+    $final = Update-Track {
+        param($cur, $st)
+        $t = Copy-Track $cur
+        $r = $t.restore
+        if (-not $r.PSObject.Properties['runs'] -or $null -eq $r.runs) { Set-Prop $r 'runs' ([pscustomobject]@{}) }
+        foreach ($leg in $newRuns.Keys) { Set-Prop $r.runs $leg $newRuns[$leg] }
+        Set-Prop $r 'claimedAt' $null
+        if ($allFailed) { Set-Prop $r 'status' 'failed'; Set-Prop $r 'failedLegs' @($errs.Keys); Set-Prop $r 'error' (($errs.Values) -join ' ') }
+        else { Set-Prop $r 'status' 'deploying'; Set-Prop $r 'failedLegs' @() }
+        return $t
+    }
+    if ($allFailed) {
+        $script:result.NotifyEvent = 'private-stamp-restore-failed'
+        $script:result.Transition = "restore $FromStatus -> failed"
+    } else {
+        $script:result.Transition = "restore $FromStatus -> deploying ($($legs -join ' + '))"
+    }
+    $script:result.Run = [pscustomobject]$newRuns
+    return $final
+}
+
+function Invoke-RestorePoll($Track) {
+    $rs = Get-Restore $Track
+    switch ([string]$rs.status) {
+        'pending' { return (Start-Restore 'pending') }
+        'triggering' {
+            $claimedAt = if ($rs.PSObject.Properties['claimedAt'] -and $rs.claimedAt) { [datetime]$rs.claimedAt } else { $null }
+            if ($claimedAt -and ((Get-Date).ToUniversalTime() - $claimedAt.ToUniversalTime()).TotalMinutes -gt $StaleClaimMinutes) {
+                $msg = "Queueing the restore was interrupted. Check pipeline $($script:Psu.id) for a run you did not expect, then use 'private-stamp restore'."
+                $t = Update-Track {
+                    param($cur, $s)
+                    if ((Get-Restore $cur).status -ne 'triggering') { return $null }
+                    $n = Copy-Track $cur
+                    Set-RestoreProp $n 'status' 'failed'; Set-RestoreProp $n 'failedLegs' @($rs.legs); Set-RestoreProp $n 'error' $msg; Set-RestoreProp $n 'claimedAt' $null
+                    return $n
+                }
+                Write-Audit @{ event = 'private-stamp-restore-stale-claim' }
+                $script:result.NotifyEvent = 'private-stamp-restore-failed'
+                $script:result.Transition = 'restore triggering -> failed'
+                return $t
+            }
+            return $Track
+        }
+        'deploying' {
+            $updates = @{}
+            foreach ($p in @($rs.runs.PSObject.Properties)) {
+                $r = $p.Value
+                if (-not $r -or $r.status -ne 'inProgress' -or -not $r.runId) { continue }
+                $headers = @{ Authorization = "Bearer $(Get-AdoToken)" }
+                $b = Invoke-RestMethod -Uri "https://dev.azure.com/$($script:Organization)/$($script:Project)/_apis/build/builds/$($r.runId)?api-version=7.1" -Headers $headers -ErrorAction Stop
+                if ($b.status -ne 'completed') { continue }
+                $updates[$p.Name] = @{ result = [string]$b.result; finishedAt = $(if ($b.finishTime) { ([datetime]$b.finishTime).ToUniversalTime().ToString('o') } else { Get-NowIso }) }
+                Write-Audit @{ event = 'private-stamp-restore-run-completed'; leg = $p.Name; runId = $r.runId; result = [string]$b.result }
+            }
+            $Track = Update-Track {
+                param($cur, $s)
+                $r = Get-Restore $cur
+                if ($r.status -ne 'deploying') { return $null }
+                $n = Copy-Track $cur
+                foreach ($leg in $updates.Keys) {
+                    $n.restore.runs.$leg.status = 'completed'; $n.restore.runs.$leg.result = $updates[$leg].result; $n.restore.runs.$leg.finishedAt = $updates[$leg].finishedAt
+                }
+                $runs = @($n.restore.runs.PSObject.Properties | ForEach-Object { $_.Value })
+                if (@($runs | Where-Object { $_.status -eq 'inProgress' }).Count -gt 0) { if ($updates.Count -eq 0) { return $null }; return $n }
+                $failed = @($n.restore.runs.PSObject.Properties | Where-Object { $_.Value.result -ne 'succeeded' } | ForEach-Object { $_.Name })
+                if ($failed.Count -gt 0) {
+                    Set-RestoreProp $n 'status' 'failed'; Set-RestoreProp $n 'failedLegs' $failed
+                    Set-RestoreProp $n 'error' (($failed | ForEach-Object { "Restore of '$_' (run $($n.restore.runs.$_.runId)) finished with result '$($n.restore.runs.$_.result)'." }) -join ' ')
+                } else {
+                    Set-RestoreProp $n 'status' 'completed'; Set-RestoreProp $n 'completedAt' (Get-NowIso); Set-RestoreProp $n 'failedLegs' @()
+                }
+                return $n
+            }
+            $now = Get-Restore $Track
+            if ($now.status -eq 'completed') {
+                Write-Audit @{ event = 'private-stamp-restored'; legs = @($now.legs) }
+                $script:result.NotifyEvent = 'private-stamp-restored'; $script:result.Transition = 'restore deploying -> completed'
+            } elseif ($now.status -eq 'failed') {
+                Write-Audit @{ event = 'private-stamp-restore-failed'; failedLegs = @($now.failedLegs) }
+                $script:result.NotifyEvent = 'private-stamp-restore-failed'; $script:result.Transition = "restore deploying -> failed ($(@($now.failedLegs) -join ', '))"
+            }
+            return $Track
+        }
+        default { return $Track }
+    }
+}
+
 function Invoke-Poll {
     $st = Read-State
     $track = Get-Track $st
     if ($null -eq $track) { return $null }
+
+    $rs = Get-Restore $track
+    if ($rs -and [string]$rs.status -match '^(pending|triggering|deploying)$' -and [string]$track.status -match '^(signed-off|skipped|failed)$') {
+        return (Invoke-RestorePoll $track)
+    }
 
     switch -Regex ($track.status) {
         '^inputs-ready$' {
@@ -717,10 +896,13 @@ try {
                 param($cur, $st)
                 $allowed = @('awaiting-input', 'inputs-ready', 'failed')
                 if ($null -ne $cur -and $allowed -notcontains [string]$cur.status) { return $null }
+                $curRestore = Get-Restore $cur
+                if ($curRestore -and [string]$curRestore.status -match '^(pending|triggering|deploying)$') { return $null }
                 $t = if ($null -eq $cur) { [pscustomobject]@{ requestedAt = (Get-NowIso) } } else { Copy-Track $cur }
                 Set-Prop $t 'status' 'inputs-ready'
                 Set-Prop $t 'inputs' $inputs
                 Set-Prop $t 'runs' ([pscustomobject]@{})
+                Set-Prop $t 'restore' $null
                 Set-Prop $t 'failedLegs' @()
                 Set-Prop $t 'error' $null
                 return $t
@@ -740,6 +922,10 @@ try {
             $failedLegs = if ($cur -and $cur.PSObject.Properties['failedLegs']) { @($cur.failedLegs | Where-Object { $_ }) } else { @() }
             if ($null -eq $cur -or $cur.status -ne 'failed' -or $failedLegs.Count -eq 0) {
                 throw "Nothing to retry — private stamp track is '$(if ($cur) { $cur.status } else { 'not started' })'."
+            }
+            $curRestore = Get-Restore $cur
+            if ($curRestore -and [string]$curRestore.status -match '^(pending|triggering|deploying)$') {
+                throw "A restore of the private stamp is '$($curRestore.status)' — wait for it to finish before retrying."
             }
             $from = 'retrying'
             $null = Update-Track {
@@ -762,6 +948,9 @@ try {
                 Set-Prop $t 'signedOffAt' (Get-NowIso)
                 Set-Prop $t 'signedOffBy' $By
                 if ($onlyBvtFailed) { Set-Prop $t 'signedOffDespiteBvt' $cur.bvtOutcome }
+                # restoreAfterSignOff: redeploy both builds without the queue override.
+                $deployed = Get-DeployedLegs $t
+                if ((Test-RestoreEnabled) -and $deployed.Count -gt 0) { Set-Prop $t 'restore' (New-RestoreRecord $deployed 'sign-off') }
                 return $t
             }
             if ($null -eq $track -or $track.status -ne 'signed-off') {
@@ -769,6 +958,31 @@ try {
             }
             Write-Audit @{ event = 'private-stamp-signed-off'; by = $By; bvtOutcome = $track.bvtOutcome }
             $result.Transition = 'signed-off'
+            if ((Get-Restore $track) -and (Get-Restore $track).status -eq 'pending') {
+                $track = Invoke-Poll
+                $result.Transition = "signed-off; $($result.Transition)"
+            }
+        }
+        'Restore' {
+            # Owner's `private-stamp restore`: (re)run the restore — after a skip / failure, or to retry a failed restore.
+            $script:restoreErr = $null
+            $track = Update-Track {
+                param($cur, $st)
+                if ($null -eq $cur) { $script:restoreErr = 'The private stamp upgrade test has not started.'; return $null }
+                if ([string]$cur.status -notmatch '^(signed-off|skipped|failed)$') { $script:restoreErr = "The private stamp test is still '$($cur.status)' — restore after sign-off, skip or failure."; return $null }
+                $r = Get-Restore $cur
+                if ($r -and [string]$r.status -match '^(pending|triggering|deploying)$') { $script:restoreErr = "A restore is already '$($r.status)'."; return $null }
+                $legs = if ($r -and $r.status -eq 'failed' -and @($r.failedLegs).Count) { @($r.failedLegs) } else { Get-DeployedLegs $cur }
+                if (@($legs).Count -eq 0) { $script:restoreErr = 'Nothing to restore — no private stamp deployment was queued.'; return $null }
+                $t = Copy-Track $cur
+                $rec = New-RestoreRecord $legs 'manual'
+                if ($r -and $r.runs) { $rec.runs = $r.runs }
+                Set-Prop $t 'restore' $rec
+                return $t
+            }
+            if ($script:restoreErr) { throw $script:restoreErr }
+            Write-Audit @{ event = 'private-stamp-restore-requested'; by = $By; legs = @((Get-Restore $track).legs) }
+            $track = Invoke-Poll
         }
         'Skip' {
             $track = Update-Track {

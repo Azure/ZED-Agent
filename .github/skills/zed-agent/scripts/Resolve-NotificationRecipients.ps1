@@ -30,6 +30,8 @@
       private-stamp-input-needed -> (5,  halt)     upgrade test needs instance/ports/last build/queue name
       private-stamp-bvt-ready    -> (5,  halt)     both private stamp legs deployed, owner runs BVT
       private-stamp-failed       -> (5,  failure)  a private stamp leg failed to queue or deploy
+      private-stamp-restored     -> (5,  success)  stamp redeployed without the queue override (restoreAfterSignOff)
+      private-stamp-restore-failed -> (5, failure) a restore redeploy failed
       revert-bits-select         -> (7,  halt)     revert bits: owner picks the settings to keep
       revert-bits-pr-raised      -> (7,  halt)     revert bits PR opened, owner must merge
       revert-bits-bvt-ready      -> (7,  halt)     revert build ready, owner runs BVT
@@ -104,6 +106,8 @@ $LegacyMap = @{
     'private-stamp-input-needed' = @{ Step = 5; Outcome = 'halt'    }
     'private-stamp-bvt-ready'    = @{ Step = 5; Outcome = 'halt'    }
     'private-stamp-failed'       = @{ Step = 5; Outcome = 'failure' }
+    'private-stamp-restored'     = @{ Step = 5; Outcome = 'success' }
+    'private-stamp-restore-failed' = @{ Step = 5; Outcome = 'failure' }
     'revert-bits-select'         = @{ Step = 7; Outcome = 'halt'    }
     'revert-bits-pr-raised'      = @{ Step = 7; Outcome = 'halt'    }
     'revert-bits-bvt-ready'      = @{ Step = 7; Outcome = 'halt'    }

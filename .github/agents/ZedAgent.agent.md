@@ -257,6 +257,8 @@ Callers pass an `EventKey` to `Resolve-NotificationRecipients.ps1`. The helper m
 | `ri-pr-raised`, `fi-pr-raised`  | `2-cut-branch.halt` (Step 2a/2b integration PR opened)               |
 | `private-stamp-input-needed`, `private-stamp-bvt-ready` | `5-deploy-canary.halt` (private stamp upgrade side track) |
 | `private-stamp-failed`          | `5-deploy-canary.failure` (private stamp leg failed)                 |
+| `private-stamp-restored`        | `5-deploy-canary.success` (stamp redeployed without the queue override — `restoreAfterSignOff`) |
+| `private-stamp-restore-failed`  | `5-deploy-canary.failure` (restore redeploy failed)                  |
 | `revert-bits-select`, `revert-bits-pr-raised`, `revert-bits-bvt-ready`, `revert-bits-ready` | `7-rollback.halt` (revert bits pre-phase)          |
 | `revert-bits-failed` | `7-rollback.failure` (revert bits PR abandoned / build failed) |
 | `approval-needed`, `approval-reminder`, `approval-expiring` | `approval-requests.halt` (pipeline waiting on Approval Service / ADO approval, any step) |

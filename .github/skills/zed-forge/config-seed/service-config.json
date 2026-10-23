@@ -1,0 +1,2159 @@
+{
+  "$schema": "./service-config.schema.json",
+  "version": "1.0",
+  "service": {
+    "name": "Prot",
+    "displayName": "Protection Service",
+    "description": "",
+    "stampTag": "prot"
+  },
+  "serviceTreeIds": {
+    "safefly": "fb10185a-465d-42cd-b339-7d0d9331c340",
+    "ev2": {
+      "Prod": "fb10185a-465d-42cd-b339-7d0d9331c340",
+      "Fairfax": "fb10185a-465d-42cd-b339-7d0d9331c340",
+      "Mooncake": "fb10185a-465d-42cd-b339-7d0d9331c340"
+    }
+  },
+  "ado": {
+    "organization": "msazure",
+    "project": "One",
+    "repository": "Mgmt-RecoverySvcs-BackupDataPlane",
+    "branchPrefix": "releases/prot",
+    "baseBranch": "develop"
+  },
+  "kusto": {
+    "bvt": {
+      "queryVariables": {
+        "RESPONSIBLE_TEAM": "Prot"
+      },
+      "cluster": "https://mabprod1.kusto.windows.net/",
+      "database": "AzureBackup",
+      "queryFile": "bvt-prot-failures.kql"
+    },
+    "canary": {
+      "queryVariables": {},
+      "scopingNotes": "",
+      "cluster": "https://mabprod1.kusto.windows.net/",
+      "database": "MABKustoProd1",
+      "queryFile": "Canary-DeploymentUnits.kql",
+      "clusterTypeExtraction": {
+        "mode": "deployment-unit-substring"
+      },
+      "serviceFilter": "ServiceName == 'prot'",
+      "stampPrefixFilter": "StampName startswith 'ea-can' or StampName startswith 'ecy' or StampName startswith 'ccy'"
+    },
+    "production": {
+      "queryVariables": {},
+      "scopingNotes": "",
+      "cluster": "https://mabprod1.kusto.windows.net/",
+      "database": "MABKustoProd1",
+      "queryFile": "Production-DeploymentUnits.kql",
+      "clusterTypeExtraction": {
+        "mode": "deployment-unit-substring"
+      },
+      "serviceFilter": "ServiceName == 'prot'",
+      "stampPrefixFilter": "StampName startswith 'acl' or StampName startswith 'acl2' or StampName startswith 'ae' or StampName startswith 'ase' or StampName startswith 'aue' or StampName startswith 'bec' or StampName startswith 'brs' or StampName startswith 'bse' or StampName startswith 'ccy' or StampName startswith 'clc' or StampName startswith 'cnc' or StampName startswith 'cne' or StampName startswith 'cus' or StampName startswith 'dke' or StampName startswith 'ea' or StampName startswith 'ecy' or StampName startswith 'eus' or StampName startswith 'eus2' or StampName startswith 'eus3' or StampName startswith 'frc' or StampName startswith 'frs' or StampName startswith 'gn' or StampName startswith 'gwc' or StampName startswith 'idc' or StampName startswith 'ilc' or StampName startswith 'iln' or StampName startswith 'inc' or StampName startswith 'ins' or StampName startswith 'inw' or StampName startswith 'isc' or StampName startswith 'itn' or StampName startswith 'jic' or StampName startswith 'jiw' or StampName startswith 'jpe' or StampName startswith 'jpw' or StampName startswith 'krc' or StampName startswith 'krs' or StampName startswith 'mxc' or StampName startswith 'mys' or StampName startswith 'myw' or StampName startswith 'ncus' or StampName startswith 'ne' or StampName startswith 'ne5s' or StampName startswith 'nwe' or StampName startswith 'nww' or StampName startswith 'nzn' or StampName startswith 'plc' or StampName startswith 'qac' or StampName startswith 'sae' or StampName startswith 'san' or StampName startswith 'saw' or StampName startswith 'scus' or StampName startswith 'sdc' or StampName startswith 'sds' or StampName startswith 'sea' or StampName startswith 'sg3' or StampName startswith 'spc' or StampName startswith 'swus' or StampName startswith 'szn' or StampName startswith 'szw' or StampName startswith 'tnw' or StampName startswith 'tst' or StampName startswith 'twn' or StampName startswith 'uac' or StampName startswith 'uan' or StampName startswith 'uks' or StampName startswith 'ukw' or StampName startswith 'usc2' or StampName startswith 'use' or StampName startswith 'use3' or StampName startswith 'use5' or StampName startswith 'wcus' or StampName startswith 'we' or StampName startswith 'wfre' or StampName startswith 'wus' or StampName startswith 'wus2' or StampName startswith 'wus3'"
+    }
+  },
+  "notifications": {
+    "groups": {
+      "permanent": [
+        "rranganath@microsoft.com",
+        "gwazire@microsoft.com"
+      ],
+      "cc": [],
+      "teams": [
+        "ZED Onboarding to PROT"
+      ],
+      "teamsExtended": [
+        "ZED Onboarding to PROT"
+      ]
+    },
+    "routing": {
+      "10-roll-forward": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "12-post-rollforward-signoff": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "7-rollback": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "14-crb-review": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "8-post-rollback-bvt": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "11-post-rollforward-bvt": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "3-wait-build": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "6-bvt-check": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "13-create-r2d": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": [
+            "cc"
+          ]
+        }
+      },
+      "16-merge-back": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "5-deploy-canary": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "4-collect-commits": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [
+            "teamsExtended"
+          ],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "2-cut-branch": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "1-send-reminder": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [
+            "teams"
+          ],
+          "emailGroups": [
+            "permanent"
+          ],
+          "ccGroups": []
+        }
+      },
+      "9-post-rollback-signoff": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        }
+      },
+      "15-production-rollout": {
+        "failure": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "halt": {
+          "teamsGroups": [],
+          "emailGroups": [],
+          "ccGroups": []
+        },
+        "success": {
+          "teamsGroups": [],
+          "emailGroups": [
+            "permanent",
+            "cc"
+          ],
+          "ccGroups": []
+        }
+      }
+    }
+  },
+  "inventory": {
+    "production": {
+      "approvalRequired": true,
+      "cloudsActive": [
+        "Public",
+        "Fairfax",
+        "Mooncake"
+      ],
+      "Public": {
+        "_scopeFrom": {
+          "at": "2026-06-04T09:20:03.6092541Z",
+          "source": "SDS"
+        },
+        "stampCount": 144,
+        "stamps": [
+          {
+            "stampId": "acl2-02",
+            "stampName": "acl2-02",
+            "region": "acl2",
+            "ev2RegionName": "australiacentral2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "acl2-01",
+            "stampName": "acl2-pod01-prot1",
+            "region": "acl2",
+            "ev2RegionName": "australiacentral2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "acl-02",
+            "stampName": "acl-02",
+            "region": "acl",
+            "ev2RegionName": "australiacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "acl-01",
+            "stampName": "acl-pod01-prot1",
+            "region": "acl",
+            "ev2RegionName": "australiacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ae-02",
+            "stampName": "ae-02",
+            "region": "ae",
+            "ev2RegionName": "australiaeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ae-03",
+            "stampName": "ae-03",
+            "region": "ae",
+            "ev2RegionName": "australiaeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ae-01",
+            "stampName": "ae-pod01-prot1",
+            "region": "ae",
+            "ev2RegionName": "australiaeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ase-02",
+            "stampName": "ase-02",
+            "region": "ase",
+            "ev2RegionName": "australiasoutheast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ase-03",
+            "stampName": "ase-03",
+            "region": "ase",
+            "ev2RegionName": "australiasoutheast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ase-01",
+            "stampName": "ase-pod01-prot1",
+            "region": "ase",
+            "ev2RegionName": "australiasoutheast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "brs-02",
+            "stampName": "brs-02",
+            "region": "brs",
+            "ev2RegionName": "brazilsouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "brs-01",
+            "stampName": "brs-pod01-prot1",
+            "region": "brs",
+            "ev2RegionName": "brazilsouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "brs-03",
+            "stampName": "brs-03",
+            "region": "brs",
+            "ev2RegionName": "brazilsouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "bse-01",
+            "stampName": "bse-pod01-prot1",
+            "region": "bse",
+            "ev2RegionName": "brazilsoutheast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ccy-01",
+            "stampName": "ccy-pod01-prot1",
+            "region": "ccy",
+            "ev2RegionName": "centraluseuap",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "cnc-02",
+            "stampName": "cnc-02",
+            "region": "cnc",
+            "ev2RegionName": "canadacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "cnc-01",
+            "stampName": "cnc-pod01-prot1",
+            "region": "cnc",
+            "ev2RegionName": "canadacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "cne-02",
+            "stampName": "cne-02",
+            "region": "cne",
+            "ev2RegionName": "canadaeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "cne-01",
+            "stampName": "cne-pod01-prot1",
+            "region": "cne",
+            "ev2RegionName": "canadaeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "cus-02",
+            "stampName": "cus-02",
+            "region": "cus",
+            "ev2RegionName": "centralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "cus-03",
+            "stampName": "cus-03",
+            "region": "cus",
+            "ev2RegionName": "centralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "cus-01",
+            "stampName": "cus-pod01-prot1",
+            "region": "cus",
+            "ev2RegionName": "centralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ea-01",
+            "stampName": "ea-pod01-prot1",
+            "region": "ea",
+            "ev2RegionName": "eastasia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ecy-01",
+            "stampName": "ecy-pod01-prot1",
+            "region": "ecy",
+            "ev2RegionName": "eastus2euap",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus2-02",
+            "stampName": "eus2-02",
+            "region": "eus2",
+            "ev2RegionName": "eastus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus2-03",
+            "stampName": "eus2-03",
+            "region": "eus2",
+            "ev2RegionName": "eastus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus2-04",
+            "stampName": "eus2-04",
+            "region": "eus2",
+            "ev2RegionName": "eastus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus2-05",
+            "stampName": "eus2-05",
+            "region": "eus2",
+            "ev2RegionName": "eastus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus2-06",
+            "stampName": "eus2-06",
+            "region": "eus2",
+            "ev2RegionName": "eastus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus2-01",
+            "stampName": "eus2-pod01-prot1",
+            "region": "eus2",
+            "ev2RegionName": "eastus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-02",
+            "stampName": "eus-02",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-04",
+            "stampName": "eus-04",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-05",
+            "stampName": "eus-05",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-06",
+            "stampName": "eus-06",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-07",
+            "stampName": "eus-07",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-08",
+            "stampName": "eus-08",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-09",
+            "stampName": "eus-09",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-10",
+            "stampName": "eus-10",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus-01",
+            "stampName": "eus-pod01-prot1",
+            "region": "eus",
+            "ev2RegionName": "eastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "frc-01",
+            "stampName": "frc-pod01-prot1",
+            "region": "frc",
+            "ev2RegionName": "francecentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "frc-02",
+            "stampName": "frc-02",
+            "region": "frc",
+            "ev2RegionName": "francecentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "frs-02",
+            "stampName": "frs-02",
+            "region": "frs",
+            "ev2RegionName": "francesouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "frs-01",
+            "stampName": "frs-pod01-prot1",
+            "region": "frs",
+            "ev2RegionName": "francesouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "gn-01",
+            "stampName": "gn-pod01-prot1",
+            "region": "gn",
+            "ev2RegionName": "germanynorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "gwc-01",
+            "stampName": "gwc-pod01-prot1",
+            "region": "gwc",
+            "ev2RegionName": "germanywestcentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "inc-01",
+            "stampName": "inc-pod01-prot1",
+            "region": "inc",
+            "ev2RegionName": "centralindia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "inc-02",
+            "stampName": "inc-02",
+            "region": "inc",
+            "ev2RegionName": "centralindia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ins-02",
+            "stampName": "ins-02",
+            "region": "ins",
+            "ev2RegionName": "southindia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ins-01",
+            "stampName": "ins-pod01-prot1",
+            "region": "ins",
+            "ev2RegionName": "southindia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "inw-02",
+            "stampName": "inw-02",
+            "region": "inw",
+            "ev2RegionName": "westindia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "inw-01",
+            "stampName": "inw-pod01-prot1",
+            "region": "inw",
+            "ev2RegionName": "westindia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "jic-01",
+            "stampName": "jic-pod01-prot1",
+            "region": "jic",
+            "ev2RegionName": "jioindiacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "jiw-01",
+            "stampName": "jiw-pod01-prot1",
+            "region": "jiw",
+            "ev2RegionName": "jioindiawest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "jpe-02",
+            "stampName": "jpe-02",
+            "region": "jpe",
+            "ev2RegionName": "japaneast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "jpe-03",
+            "stampName": "jpe-03",
+            "region": "jpe",
+            "ev2RegionName": "japaneast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "jpe-01",
+            "stampName": "jpe-pod01-prot1",
+            "region": "jpe",
+            "ev2RegionName": "japaneast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "jpw-02",
+            "stampName": "jpw-02",
+            "region": "jpw",
+            "ev2RegionName": "japanwest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "jpw-01",
+            "stampName": "jpw-pod01-prot1",
+            "region": "jpw",
+            "ev2RegionName": "japanwest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "krc-01",
+            "stampName": "krc-pod01-prot1",
+            "region": "krc",
+            "ev2RegionName": "koreacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "krc-02",
+            "stampName": "krc-02",
+            "region": "krc",
+            "ev2RegionName": "koreacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "krs-02",
+            "stampName": "krs-02",
+            "region": "krs",
+            "ev2RegionName": "koreasouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "krs-01",
+            "stampName": "krs-pod01-prot1",
+            "region": "krs",
+            "ev2RegionName": "koreasouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ncus-02",
+            "stampName": "ncus-02",
+            "region": "ncus",
+            "ev2RegionName": "northcentralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ncus-03",
+            "stampName": "ncus-03",
+            "region": "ncus",
+            "ev2RegionName": "northcentralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ncus-01",
+            "stampName": "ncus-pod01-prot1",
+            "region": "ncus",
+            "ev2RegionName": "northcentralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne-02",
+            "stampName": "ne-02",
+            "region": "ne",
+            "ev2RegionName": "northeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne-03",
+            "stampName": "ne-03",
+            "region": "ne",
+            "ev2RegionName": "northeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne-04",
+            "stampName": "ne-04",
+            "region": "ne",
+            "ev2RegionName": "northeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne-05",
+            "stampName": "ne-05",
+            "region": "ne",
+            "ev2RegionName": "northeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne-06",
+            "stampName": "ne-06",
+            "region": "ne",
+            "ev2RegionName": "northeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne-07",
+            "stampName": "ne-07",
+            "region": "ne",
+            "ev2RegionName": "northeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne-01",
+            "stampName": "ne-pod01-prot1",
+            "region": "ne",
+            "ev2RegionName": "northeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "nwe-01",
+            "stampName": "nwe-pod01-prot1",
+            "region": "nwe",
+            "ev2RegionName": "norwayeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "nww-01",
+            "stampName": "nww-pod01-prot1",
+            "region": "nww",
+            "ev2RegionName": "norwaywest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "san-01",
+            "stampName": "san-pod01-prot1",
+            "region": "san",
+            "ev2RegionName": "southafricanorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "san-02",
+            "stampName": "san-02",
+            "region": "san",
+            "ev2RegionName": "southafricanorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "saw-02",
+            "stampName": "saw-02",
+            "region": "saw",
+            "ev2RegionName": "southafricawest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "saw-01",
+            "stampName": "saw-pod01-prot1",
+            "region": "saw",
+            "ev2RegionName": "southafricawest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "scus-02",
+            "stampName": "scus-02",
+            "region": "scus",
+            "ev2RegionName": "southcentralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "scus-03",
+            "stampName": "scus-03",
+            "region": "scus",
+            "ev2RegionName": "southcentralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "scus-01",
+            "stampName": "scus-pod01-prot1",
+            "region": "scus",
+            "ev2RegionName": "southcentralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "sdc-01",
+            "stampName": "sdc-pod01-prot1",
+            "region": "sdc",
+            "ev2RegionName": "swedencentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "sds-01",
+            "stampName": "sds-pod01-prot1",
+            "region": "sds",
+            "ev2RegionName": "swedensouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "sea-02",
+            "stampName": "sea-02",
+            "region": "sea",
+            "ev2RegionName": "southeastasia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "sea-03",
+            "stampName": "sea-03",
+            "region": "sea",
+            "ev2RegionName": "southeastasia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "sea-01",
+            "stampName": "sea-pod01-prot1",
+            "region": "sea",
+            "ev2RegionName": "southeastasia",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "szn-01",
+            "stampName": "szn-pod01-prot1",
+            "region": "szn",
+            "ev2RegionName": "switzerlandnorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "szw-01",
+            "stampName": "szw-pod01-prot1",
+            "region": "szw",
+            "ev2RegionName": "switzerlandwest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uac-02",
+            "stampName": "uac-02",
+            "region": "uac",
+            "ev2RegionName": "uaecentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uac-01",
+            "stampName": "uac-pod01-prot1",
+            "region": "uac",
+            "ev2RegionName": "uaecentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uan-02",
+            "stampName": "uan-02",
+            "region": "uan",
+            "ev2RegionName": "uaenorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uan-01",
+            "stampName": "uan-pod01-prot1",
+            "region": "uan",
+            "ev2RegionName": "uaenorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uks-02",
+            "stampName": "uks-02",
+            "region": "uks",
+            "ev2RegionName": "uksouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uks-03",
+            "stampName": "uks-03",
+            "region": "uks",
+            "ev2RegionName": "uksouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uks-04",
+            "stampName": "uks-04",
+            "region": "uks",
+            "ev2RegionName": "uksouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "uks-01",
+            "stampName": "uks-pod01-prot1",
+            "region": "uks",
+            "ev2RegionName": "uksouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ukw-02",
+            "stampName": "ukw-02",
+            "region": "ukw",
+            "ev2RegionName": "ukwest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ukw-01",
+            "stampName": "ukw-pod01-prot1",
+            "region": "ukw",
+            "ev2RegionName": "ukwest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wcus-01",
+            "stampName": "wcus-pod01-prot1",
+            "region": "wcus",
+            "ev2RegionName": "westcentralus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-02",
+            "stampName": "we-02",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-03",
+            "stampName": "we-03",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-05",
+            "stampName": "we-05",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-06",
+            "stampName": "we-06",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-07",
+            "stampName": "we-07",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-08",
+            "stampName": "we-08",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-09",
+            "stampName": "we-09",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-10",
+            "stampName": "we-10",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-11",
+            "stampName": "we-11",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-12",
+            "stampName": "we-12",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-13",
+            "stampName": "we-13",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-14",
+            "stampName": "we-14",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "we-01",
+            "stampName": "we-pod01-prot1",
+            "region": "we",
+            "ev2RegionName": "westeurope",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wus2-02",
+            "stampName": "wus2-02",
+            "region": "wus2",
+            "ev2RegionName": "westus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wus2-03",
+            "stampName": "wus2-03",
+            "region": "wus2",
+            "ev2RegionName": "westus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wus2-01",
+            "stampName": "wus2-pod01-prot1",
+            "region": "wus2",
+            "ev2RegionName": "westus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wus3-01",
+            "stampName": "wus3-pod01-prot1",
+            "region": "wus3",
+            "ev2RegionName": "westus3",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wus-02",
+            "stampName": "wus-02",
+            "region": "wus",
+            "ev2RegionName": "westus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wus-03",
+            "stampName": "wus-03",
+            "region": "wus",
+            "ev2RegionName": "westus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "wus-01",
+            "stampName": "wus-pod01-prot1",
+            "region": "wus",
+            "ev2RegionName": "westus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "qac-01",
+            "stampName": "qac-pod01-prot1",
+            "region": "qac",
+            "ev2RegionName": "qatarcentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ilc-01",
+            "stampName": "ilc-pod01-prot1",
+            "region": "ilc",
+            "ev2RegionName": "israelcentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "nzn-01",
+            "stampName": "nzn-pod01-prot1",
+            "region": "nzn",
+            "ev2RegionName": "newzealandnorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "idc-01",
+            "stampName": "idc-pod01-prot1",
+            "region": "idc",
+            "ev2RegionName": "indonesiacentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "myw-01",
+            "stampName": "myw-pod01-prot1",
+            "region": "myw",
+            "ev2RegionName": "malaysiawest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "clc-01",
+            "stampName": "clc-pod01-prot1",
+            "region": "clc",
+            "ev2RegionName": "chilecentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "plc-01",
+            "stampName": "plc-pod01-prot1",
+            "region": "plc",
+            "ev2RegionName": "polandcentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "spc-01",
+            "stampName": "spc-pod01-prot1",
+            "region": "spc",
+            "ev2RegionName": "spaincentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "mxc-01",
+            "stampName": "mxc-pod01-prot1",
+            "region": "mxc",
+            "ev2RegionName": "mexicocentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "mys-01",
+            "stampName": "mys-pod01-prot1",
+            "region": "mys",
+            "ev2RegionName": "malaysiasouth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "use-01",
+            "stampName": "use-pod01-prot1",
+            "region": "use",
+            "ev2RegionName": "southeastus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "twn-01",
+            "stampName": "twn-pod01-prot1",
+            "region": "twn",
+            "ev2RegionName": "taiwannorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "tnw-01",
+            "stampName": "tnw-pod01-prot1",
+            "region": "tnw",
+            "ev2RegionName": "taiwannorthwest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "itn-01",
+            "stampName": "itn-pod01-prot1",
+            "region": "itn",
+            "ev2RegionName": "italynorth",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "aue-01",
+            "stampName": "aue-pod01-prot1",
+            "region": "aue",
+            "ev2RegionName": "austriaeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "use3-01",
+            "stampName": "use3-pod01-prot1",
+            "region": "use3",
+            "ev2RegionName": "southeastus3",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "iln-01",
+            "stampName": "iln-pod01-prot1",
+            "region": "iln",
+            "ev2RegionName": "israelnorthwest",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "usc2-01",
+            "stampName": "usc2-pod01-prot1",
+            "region": "usc2",
+            "ev2RegionName": "southcentralus2",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "bec-01",
+            "stampName": "bec-pod01-prot1",
+            "region": "bec",
+            "ev2RegionName": "belgiumcentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "dke-01",
+            "stampName": "dke-pod01-prot1",
+            "region": "dke",
+            "ev2RegionName": "denmarkeast",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "swus-01",
+            "stampName": "swus-pod01-prot1",
+            "region": "swus",
+            "ev2RegionName": "southwestus",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "use5-01",
+            "stampName": "use5-pod01-prot1",
+            "region": "use5",
+            "ev2RegionName": "southeastus5",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "eus3-01",
+            "stampName": "eus3-pod01-prot1",
+            "region": "eus3",
+            "ev2RegionName": "eastus3",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfmc",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "isc-01",
+            "stampName": "isc-pod01-prot1",
+            "region": "isc",
+            "ev2RegionName": "indiasouthcentral",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          },
+          {
+            "stampId": "ne5s-01",
+            "stampName": "ne5s-pod01-prot1",
+            "region": "ne5s",
+            "ev2RegionName": "northeastus5",
+            "layout": "pod01",
+            "cloud": "Public",
+            "clusterType": "sfrp",
+            "source": "SDS stampId + Kusto/ASC clusterType join (region->clusterType is 1:1)"
+          }
+        ]
+      },
+      "Fairfax": {
+        "_scopeFrom": {
+          "at": "2026-06-04T09:20:03.6229007Z",
+          "source": "SDS"
+        },
+        "stampCount": 6,
+        "stamps": [
+          {
+            "stampId": "udc-01"
+          },
+          {
+            "stampId": "ude-01"
+          },
+          {
+            "stampId": "uga-01"
+          },
+          {
+            "stampId": "ugt-01"
+          },
+          {
+            "stampId": "ugv-02"
+          },
+          {
+            "stampId": "ugv-01"
+          }
+        ]
+      },
+      "Mooncake": {
+        "_scopeFrom": {
+          "at": "2026-06-04T09:20:03.6249825Z",
+          "source": "SDS"
+        },
+        "stampCount": 6,
+        "stamps": [
+          {
+            "stampId": "bjb2-01",
+            "stampName": "bjb2-01",
+            "region": "bjb2",
+            "ev2RegionName": "chinanorth2",
+            "layout": "pod01",
+            "cloud": "Mooncake",
+            "clusterType": "sfrp",
+            "source": "Mooncake is SFRP-exclusive: pipeline-catalog MCScript=false on BOTH sfmc pipelines and true on BOTH sfrp pipelines, and ev2CloudCoverage lists Mooncake only under PROT-PROD-SFRP/DT-PROD-SFRP. Region from ASC (Get-RegionMapping -CloudName Mooncake). Deterministic, not inferred."
+          },
+          {
+            "stampId": "bjb3-01",
+            "stampName": "bjb3-01",
+            "region": "bjb3",
+            "ev2RegionName": "chinanorth3",
+            "layout": "pod01",
+            "cloud": "Mooncake",
+            "clusterType": "sfrp",
+            "source": "Mooncake is SFRP-exclusive: pipeline-catalog MCScript=false on BOTH sfmc pipelines and true on BOTH sfrp pipelines, and ev2CloudCoverage lists Mooncake only under PROT-PROD-SFRP/DT-PROD-SFRP. Region from ASC (Get-RegionMapping -CloudName Mooncake). Deterministic, not inferred."
+          },
+          {
+            "stampId": "bjb-01",
+            "stampName": "bjb-01",
+            "region": "bjb",
+            "ev2RegionName": "chinanorth",
+            "layout": "pod01",
+            "cloud": "Mooncake",
+            "clusterType": "sfrp",
+            "source": "Mooncake is SFRP-exclusive: pipeline-catalog MCScript=false on BOTH sfmc pipelines and true on BOTH sfrp pipelines, and ev2CloudCoverage lists Mooncake only under PROT-PROD-SFRP/DT-PROD-SFRP. Region from ASC (Get-RegionMapping -CloudName Mooncake). Deterministic, not inferred."
+          },
+          {
+            "stampId": "sha2-01",
+            "stampName": "sha2-01",
+            "region": "sha2",
+            "ev2RegionName": "chinaeast2",
+            "layout": "pod01",
+            "cloud": "Mooncake",
+            "clusterType": "sfrp",
+            "source": "Mooncake is SFRP-exclusive: pipeline-catalog MCScript=false on BOTH sfmc pipelines and true on BOTH sfrp pipelines, and ev2CloudCoverage lists Mooncake only under PROT-PROD-SFRP/DT-PROD-SFRP. Region from ASC (Get-RegionMapping -CloudName Mooncake). Deterministic, not inferred."
+          },
+          {
+            "stampId": "sha3-01",
+            "stampName": "sha3-01",
+            "region": "sha3",
+            "ev2RegionName": "chinaeast3",
+            "layout": "pod01",
+            "cloud": "Mooncake",
+            "clusterType": "sfrp",
+            "source": "Mooncake is SFRP-exclusive: pipeline-catalog MCScript=false on BOTH sfmc pipelines and true on BOTH sfrp pipelines, and ev2CloudCoverage lists Mooncake only under PROT-PROD-SFRP/DT-PROD-SFRP. Region from ASC (Get-RegionMapping -CloudName Mooncake). Deterministic, not inferred."
+          },
+          {
+            "stampId": "sha-01",
+            "stampName": "sha-01",
+            "region": "sha",
+            "ev2RegionName": "chinaeast",
+            "layout": "pod01",
+            "cloud": "Mooncake",
+            "clusterType": "sfrp",
+            "source": "Mooncake is SFRP-exclusive: pipeline-catalog MCScript=false on BOTH sfmc pipelines and true on BOTH sfrp pipelines, and ev2CloudCoverage lists Mooncake only under PROT-PROD-SFRP/DT-PROD-SFRP. Region from ASC (Get-RegionMapping -CloudName Mooncake). Deterministic, not inferred."
+          }
+        ]
+      }
+    },
+    "driftToleranceCount": 0,
+    "canary": {
+      "regionPrefixHints": [
+        "ea",
+        "ecy",
+        "ccy"
+      ],
+      "stamps": [
+        {
+          "layout": "can02",
+          "cloud": "Canary",
+          "region": "ea",
+          "stampId": "ea-01",
+          "stampName": "ea-can02-prot1",
+          "clusterType": "sfmc",
+          "source": "SDS + YAML defaults"
+        },
+        {
+          "layout": "can02",
+          "cloud": "Canary",
+          "region": "ea",
+          "stampId": "ea-05",
+          "stampName": "ea-can02-prot5",
+          "clusterType": "sfrp",
+          "source": "SDS + YAML defaults"
+        },
+        {
+          "layout": "pod01",
+          "cloud": "Public",
+          "region": "ecy",
+          "stampId": "ecy-01",
+          "stampName": "ecy-pod01-prot1",
+          "clusterType": "sfmc",
+          "source": "SDS + YAML defaults"
+        },
+        {
+          "layout": "pod01",
+          "cloud": "Public",
+          "region": "ccy",
+          "stampId": "ccy-01",
+          "stampName": "ccy-pod01-prot1",
+          "clusterType": "sfmc",
+          "source": "SDS + YAML defaults"
+        }
+      ]
+    }
+  },
+  "agentFeedbackEmail": "gwazire@microsoft.com",
+  "sds": {
+    "PROT-PROD-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-PROD-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "PROT-CANARY-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-PROD-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-CANARY-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "PROT-CANARY-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "PROT-PROD-SFRP": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/ProtDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    },
+    "DT-CANARY-SFMC": {
+      "fileName": "ServiceDatacenterSettingsConfigActPass.json",
+      "localClonePath": null,
+      "confirmedAt": "2026-06-04T09:17:07.9162183Z",
+      "repo": "Mgmt-RecoverySvcs-BackupDataPlane",
+      "path": "src/Service/Protection/ServiceFabric/Deployments/DTDeployment/ServiceDatacenterSettingsConfigActPass.json",
+      "confirmedBy": "owner",
+      "branch": "develop"
+    }
+  },
+  "sdsFieldMapping": {
+    "stampNamePath": "StampId"
+  },
+  "safefly": {
+    "monitoringLink": "https://portal.microsoftgeneva.com/manage/monitors?account=BDPMDM",
+    "additionalNotifiers": [
+      "panbha@microsoft.com",
+      "abhim@microsoft.com"
+    ],
+    "tags": [],
+    "titleTemplate": "[MAB][Prot] Protection Service monthly release for {month}-{yy}",
+    "serviceGroupName": "Backup (MAB)",
+    "apiBaseUrl": "https://www.safefly.azure.com",
+    "requestCreationPath": "/api/RequestCreation/v1/requests",
+    "requestCreatorSpAppId": "62308d56-4ed4-41de-8a5c-ca98bb971ffc",
+    "requestCreatorAdoServiceConnectionId": "712dc115-726d-45e5-8573-f174f12f836a",
+    "graphQlEndpoint": "https://safeflyv2.live.azure.com/api/v1.0/graphql",
+    "tokenAudience": "api://f6f1426c-4d1b-44d8-8e36-db5824a21fe2",
+    "franchiseId": "b52a8292-9c66-4139-9086-acb61009fad6",
+    "serviceId": "fb10185a-465d-42cd-b339-7d0d9331c340",
+    "changeTypeId": "1bdba704-213b-4239-8dd7-691457341440",
+    "formId": "3cc72aed-0ecf-432e-92f2-133fee60a542",
+    "changeTypeName": "App deployment",
+    "apiVersion": "v2"
+  },
+  "commitExcel": {
+    "sheetNameTemplate": "Prot{{YYMM}}Commits",
+    "sharePointFolder": "/Shared Documents/Monthly Releases/Prot",
+    "excludeAuthors": [
+      "OneBranch GitPushVersion Account"
+    ]
+  },
+  "sharepoint": {
+    "sitePath": "/teams/AzureBackupDataPlane"
+  },
+  "operational": {
+    "watcherPollIntervalSeconds": 3600,
+    "bvtWaitHours": 24,
+    "watcherTaskPrefix": "ZED-ReleaseWatcher",
+    "canaryBakeTimeHours": 24,
+    "buildTimeoutMinutes": 360
+  },
+  "stepGates": {
+    "15-production-rollout": false,
+    "7-rollback": false,
+    "10-roll-forward": false,
+    "16-merge-back": false,
+    "9-post-rollback-signoff": true,
+    "14-crb-review": true,
+    "5-deploy-canary": false,
+    "1-send-reminder": false,
+    "6-bvt-check": true,
+    "4-collect-commits": false,
+    "12-post-rollforward-signoff": true,
+    "11-post-rollforward-bvt": false,
+    "13-create-r2d": false,
+    "8-post-rollback-bvt": false,
+    "2-cut-branch": false,
+    "3-wait-build": false
+  },
+  "regions": {
+    "ascRepo": "Mgmt-RecoverySvcs-DeploymentExtn",
+    "ascPath": "src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json",
+    "ascBranch": "develop",
+    "supplementaryRegions": [
+      {
+        "DataCenterName": "APAC Southeast 2",
+        "RegionShortName": "apacsoutheast2"
+      },
+      {
+        "DataCenterName": "Brazil Northeast",
+        "RegionShortName": "brazilnortheast"
+      },
+      {
+        "DataCenterName": "East US Slv",
+        "RegionShortName": "eastusslv"
+      },
+      {
+        "DataCenterName": "East US Stg",
+        "RegionShortName": "eastusstg"
+      },
+      {
+        "DataCenterName": "Korea South 2",
+        "RegionShortName": "koreasouth2"
+      },
+      {
+        "DataCenterName": "South Central US Stg",
+        "RegionShortName": "southcentralusstg"
+      },
+      {
+        "DataCenterName": "UK North",
+        "RegionShortName": "uknorth"
+      },
+      {
+        "DataCenterName": "UK South 2",
+        "RegionShortName": "uksouth2"
+      },
+      {
+        "DataCenterName": "US Gov Iowa",
+        "RegionShortName": "usgoviowa"
+      },
+      {
+        "DataCenterName": "US Gov Wyoming",
+        "RegionShortName": "usgovwyoming"
+      },
+      {
+        "DataCenterName": "US Southeast",
+        "RegionShortName": "ussoutheast"
+      },
+      {
+        "DataCenterName": "USSec Westcentral",
+        "RegionShortName": "ussecwestcentral"
+      }
+    ]
+  },
+  "stampPrefixToRegion": {
+    "isc": "indiasouthcentral",
+    "ne5s": "northeastus5",
+    "uae": "uaecentral",
+    "uan": "uaenorth",
+    "ilc": "israelcentral",
+    "iln": "israelnorthwest",
+    "qac": "qatarcentral"
+  }
+}

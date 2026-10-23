@@ -1,0 +1,162 @@
+{
+  "_comment": "Machine-checkable END STATE for a ZED true test run. Evaluated by scripts/Test-RunRequirements.ps1 against the target repo's release.json + state.json + test-run-capture.json. Human companion: requirements/requirements.md. Do NOT weaken these to make a run pass — fix ZED instead.",
+  "version": "2.0",
+  "_scope": "ZED is service-agnostic; bdp3/MAB is only the CURRENT test target. The GENERIC checks here (step statuses, the trigger-and-cancel capture contract, parameterSyntax, noUnresolvedTokens, SafeFly shape) apply to ANY service. The SPECIFIC values (referenceRuns build ids, PROT-SFMC/SFRP pipeline keys, isc-01/ne5s-01 forbidden stamps, region lists) are bdp3/MAB-specific and live in the seed configs + reference-runs.json — a different service supplies its own via service-config.json + pipeline-catalog.json. ZED-side fixes must stay generic (no hard-coded service names/ids/stamps/regions).",
+
+  "referenceRuns": {
+    "_comment": "GOLDEN successful runs. ZedForge keeps these as the reference for parameter SYNTAX. The full captured parameters are cached in requirements/reference-runs.json (refresh via scripts/Get-ReferenceRun.ps1). Compare a current run's parameter SYNTAX/FORMAT against these — NOT the literal values, which change every release (CCOA exclusions, dev-status, region set, release branch).",
+    "prod": [
+      { "buildId": 159822784, "definitionId": 421108, "name": "DTPROT-SF-Service-Upgrade-PROD-SDP-SFMC" },
+      { "buildId": 159830918, "definitionId": 421104, "name": "PROT-SF-Service-Upgrade-PROD-SDP-SFMC" },
+      { "buildId": 159830900, "definitionId": 403182, "name": "DTPROT-SF-Service-Upgrade-PROD-SDP" },
+      { "buildId": 159830909, "definitionId": 403190, "name": "PROT-SF-Service-Upgrade-PROD-SDP" }
+    ],
+    "canary": [
+      { "buildId": 171595767, "definitionId": 421103, "name": "PROT-SF-Service-Upgrade-Canary-SDP-SFMC" },
+      { "buildId": 171595703, "definitionId": 403183, "name": "PROT-SF-Service-Upgrade-Canary-SDP" },
+      { "buildId": 171595764, "definitionId": 421110, "name": "DT-SF-Service-Upgrade-Canary-SFMC" },
+      { "buildId": 171595704, "definitionId": 395577, "name": "DT-SF-Service-Upgrade-Canary" }
+    ],
+    "safefly": {
+      "requestId": "74f085e4-9824-4f16-9dab-715c55ed9f98",
+      "orgName": "r2d",
+      "detailsEndpoint": "https://www.safefly.azure.com/api/SafeFlyRequest/v1/request/r2d/74f085e4-9824-4f16-9dab-715c55ed9f98",
+      "resourceId": "api://6bca76ac-6a99-4b70-bb47-23ae8bc1f0f6",
+      "note": "A successful R2D. At verify time, fetch this and compare the current run's R2D fields (deploymentNature, sdpType, targetedRegions, blastRadius, rollback, impactType, sev2Alerting, payloadGoingToFairfax/Mooncake, preProdTesting) for the same SHAPE."
+    }
+  },
+
+  "parameterSyntax": {
+    "_comment": "Golden syntax extracted from the reference runs. Test-RunRequirements.ps1 checks each captured pipeline parameter against the matching rule. Enforces FORMAT, not literal values.",
+    "rules": [
+      {
+        "id": "stampsArray",
+        "appliesToKeysMatching": "stamps",
+        "pattern": "^(\\*|@\\(\\)|@\\(\"[^\"]+\"(,\"[^\"]+\")*\\))$",
+        "description": "Stamp-list params must be a PowerShell string-array literal like @(\"isc-01\",\"ne5s-01\"), or * (all), or @() (none). Double-quoted short names, comma-separated, no spaces, no * inside the array. e.g. reference PublicExcludestamps=@(\"isc-01\",\"ne5s-01\"); Canarystamps=@(\"ea-01\")."
+      },
+      {
+        "id": "regionsList",
+        "appliesToKeysMatching": "(?<!Exclude)Regions$",
+        "pattern": "^regions\\(.*\\)$",
+        "description": "Region params must be regions(a,b,c) form (or regions() empty, or regions(*) for non-active clouds). e.g. reference CanaryRegions=regions(eastasia); FFRegions=regions(usgovarizona)."
+      },
+      {
+        "id": "pubRegionsExplicit",
+        "appliesToKeysMatching": "^PubRegions$",
+        "pattern": "^regions\\([^)]+\\)$",
+        "notPattern": "regions\\(\\*\\)",
+        "description": "PubRegions must be an EXPLICIT non-empty region list — never regions(*) or *. The reference runs enumerate ~26-43 public regions inside regions(...)."
+      },
+      {
+        "id": "validateOnly",
+        "appliesToKeysMatching": "^ValidateOnlyRollOut$",
+        "pattern": "^(true|false)$",
+        "description": "ValidateOnlyRollOut must be true/false. false for a real trigger (as in every reference run)."
+      },
+      {
+        "id": "sdpType",
+        "appliesToKeysMatching": "^SdpType$",
+        "pattern": "^(Standard|Conservative)$",
+        "description": "SdpType is Standard or Conservative (reference = Standard)."
+      }
+    ],
+    "forbiddenExcludeStamps": {
+      "appliesToKeysMatching": "Excludestamps$",
+      "forbidden": ["isc-01", "ne5s-01"],
+      "reason": "isc-01/ne5s-01 were excluded in the reference runs ONLY because they were in development. They are being onboarded to SFMC: remove them from SFMC *Excludestamps AND add their regions (isc-01->indiasouthcentral, ne5s-01->northeastus5) to SFMC PubRegions. They may legitimately remain excluded in the SFRP type — owner should scope this rule to SFMC if so."
+    },
+    "caveats": [
+      "Compare SYNTAX/FORMAT, not literal stamp/region values — those change every release.",
+      "CCOA-excluded stamps (e.g. we-01..we-14 in build 159830918) are time-dependent; do not expect the same CCOA stamps in the current run.",
+      "isc-01/ne5s-01 are being onboarded to SFMC: remove from SFMC *Excludestamps AND add their regions (indiasouthcentral, northeastus5) to SFMC PubRegions. They may remain excluded in SFRP (the type they do not belong to).",
+      "Production params are per-pipeline-type (SFRP != SFMC, PROT != DT): compare a pipeline's params against the reference run of the SAME pipeline type; never copy across types.",
+      "ArtifactsBranch in a true test run is the ephemeral test branch (zedforge/test-...), not releases/prot<YYMM> — do not require the releases/ prefix."
+    ]
+  },
+
+  "release": {
+    "testModeMustBeTrue": true,
+    "skippedSteps": [3, 7, 8, 9, 11, 12, 14],
+    "nonSkippedSteps": [1, 2, 4, 5, 6, 10, 13, 16],
+    "_note_step15": "Step 15 is conditionally skipped: if Step 10 failed (no production triggers), Step 15 is skipped with a transition notification. If Step 10 succeeded, Step 15 must execute. See steps.15.acceptedStatuses."
+  },
+  "overall": {
+    "allNonSkippedStepsCompleted": true,
+    "noStepFailed": true,
+    "captureFileRequired": true,
+    "notificationsCaptureRequired": true
+  },
+  "steps": {
+    "1": { "status": "completed", "emailNotificationRequired": true },
+    "2": {
+      "status": "completed",
+      "capture": {
+        "expectPipelineKey": "officialBuild",
+        "scope": "single",
+        "triggeredMustBeTrue": true,
+        "matchCatalog": true,
+        "requiredKeys": ["CloudBuildQueue"],
+        "noUnresolvedTokens": true,
+        "sourceBranchResolved": true
+      }
+    },
+    "4": {
+      "status": "completed",
+      "commitExcelUrlRequired": true
+    },
+    "5": {
+      "acceptedStatuses": ["completed", "completed-with-expected-artifact-gap"],
+      "capture": {
+        "scope": "production-set",
+        "catalogSection": "canary",
+        "referenceScope": "canary",
+        "minPipelines": 4,
+        "triggeredMustBeTrue": true,
+        "matchCatalog": true,
+        "syntaxCheck": true,
+        "requiredKeys": ["ArtifactsBranch", "CanaryScript", "Canarystamps", "CanaryRegions", "ValidateOnlyRollOut", "rolloutType"],
+        "noUnresolvedTokens": true
+      }
+    },
+    "6": {
+      "status": "completed",
+      "bvtQueryMustRun": true,
+      "noApprovalRequired": true
+    },
+    "10": {
+      "acceptedStatuses": ["completed", "completed-with-expected-artifact-gap"],
+      "capture": {
+        "scope": "production-set",
+        "catalogSection": "production",
+        "referenceScope": "prod",
+        "minPipelines": 4,
+        "triggeredMustBeTrue": true,
+        "matchCatalog": true,
+        "syntaxCheck": true,
+        "requiredKeys": ["ArtifactsBranch", "Publicstamps", "PublicExcludestamps", "PubRegions", "SdpType", "ValidateOnlyRollOut", "rolloutType"],
+        "noUnresolvedTokens": true
+      }
+    },
+    "13": {
+      "status": "completed",
+      "safeFlyFiledRequired": true,
+      "emailNotificationRequired": true,
+      "safeflyReference": {
+        "requestId": "74f085e4-9824-4f16-9dab-715c55ed9f98",
+        "compareFields": ["deploymentNature", "sdpType", "targetedRegions", "blastRadius", "rollback", "impactType", "sev2Alerting", "payloadGoingToFairfax", "payloadGoingToMooncake", "preProdTesting", "deploymentDetail.deploymentTool"],
+        "note": "Verifier checks a R2D was filed. The agent compares these fields' SHAPE against the reference R2D during Phase 6 (fetch via referenceRuns.safefly.detailsEndpoint)."
+      }
+    },
+    "15": {
+      "acceptedStatuses": ["completed", "skipped"],
+      "_note": "Step 15 (Production Rollout) is conditionally skipped when Step 10 fails to trigger pipelines (e.g. EV2_DUAL_GATE_MISALIGNMENT). In a healthy run where Step 10 succeeds, Step 15 must execute. The notification email for this step must always be sent regardless of skip/complete.",
+      "emailNotificationRequired": true
+    },
+    "16": {
+      "status": "completed",
+      "mergeBackPrRequired": true,
+      "emailNotificationRequired": true
+    }
+  }
+}

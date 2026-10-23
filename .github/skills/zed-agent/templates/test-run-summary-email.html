@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: Segoe UI, sans-serif; color: #333; line-height: 1.5; }
+  .header { background: #0078d4; color: white; padding: 16px 24px; border-radius: 4px 4px 0 0; }
+  .header h2 { margin: 0; font-size: 18px; }
+  .content { padding: 20px 24px; background: #fff; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 4px 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; font-size: 13px; }
+  th { background: #f5f5f5; font-weight: 600; }
+  .pass { color: #107c10; } .skip { color: #8a8a8a; } .cancel { color: #d83b01; }
+  .action-box { background: #fff4ce; border-left: 4px solid #ffb900; padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; }
+  .footer { font-size: 12px; color: #8a8a8a; margin-top: 20px; padding-top: 12px; border-top: 1px solid #e0e0e0; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h2>🧪 ZED Agent Test Run Complete</h2>
+</div>
+<div class="content">
+  <p><strong>Release ID:</strong> {{releaseId}}<br>
+  <strong>Branch:</strong> {{currentBranch}}<br>
+  <strong>Owner:</strong> {{releaseOwner}}<br>
+  <strong>Duration:</strong> {{totalDuration}}</p>
+
+  <table>
+    <tr><th>#</th><th>Step</th><th>Result</th><th>Duration</th></tr>
+    <tr><td>1</td><td>Send Reminder</td><td class="pass">✅ Sent (owner only)</td><td>—</td></tr>
+    <tr><td>2</td><td>Cut Branch &amp; Build</td><td class="pass">✅ Triggered</td><td>—</td></tr>
+    <tr><td>3</td><td>Wait for Build</td><td class="pass">✅ {{buildResult}}</td><td>{{buildDuration}}</td></tr>
+    <tr><td>4</td><td>Collect Commits</td><td class="pass">✅ Auto-filled</td><td>—</td></tr>
+    <tr><td>5</td><td>Deploy Canary</td><td class="pass">✅ Completed</td><td>{{canaryDuration}}</td></tr>
+    <tr><td>6</td><td>BVT Check</td><td class="pass">✅ Owner approved</td><td>{{bvtDuration}}</td></tr>
+    <tr><td>7</td><td>Rollback</td><td class="skip">⊘ Skipped</td><td>—</td></tr>
+    <tr><td>8</td><td>Post-Rollback BVT</td><td class="skip">⊘ Skipped</td><td>—</td></tr>
+    <tr><td>9</td><td>Post-Rollback Sign-off</td><td class="skip">⊘ Skipped</td><td>—</td></tr>
+    <tr><td>10</td><td>Roll-Forward</td><td class="skip">⊘ Skipped</td><td>—</td></tr>
+    <tr><td>11</td><td>Post-Roll-Forward BVT</td><td class="skip">⊘ Skipped</td><td>—</td></tr>
+    <tr><td>12</td><td>Post-Roll-Forward Sign-off</td><td class="skip">⊘ Skipped</td><td>—</td></tr>
+    <tr><td>13</td><td>Create SafeFly R2D</td><td class="pass">✅ R2D #{{safeFlyNumber}} created</td><td>—</td></tr>
+    <tr><td>14</td><td>SafeFly Approval</td><td class="pass">✅ Approved</td><td>{{safeFlyDuration}}</td></tr>
+    <tr><td>15</td><td>Production Rollout</td><td class="cancel">🔶 Triggered &amp; Cancelled</td><td>30s</td></tr>
+    <tr><td>16</td><td>Merge-Back PR</td><td class="skip">⊘ Skipped</td><td>—</td></tr>
+  </table>
+
+  <div class="action-box">
+    <strong>⚠️ ACTION REQUIRED</strong><br>
+    Abandon SafeFly R2D #{{safeFlyNumber}} at:<br>
+    <a href="{{safeFlyUrl}}">{{safeFlyUrl}}</a>
+  </div>
+
+  <p>All test artifacts are in <code>.zed-agent/releases/{{releaseId}}/</code>. The watcher task has been unregistered.</p>
+
+  <div class="footer">
+    This was a test run — no production deployment occurred. PROD pipelines were triggered and cancelled within 30 seconds (before EV2 trigger step).
+  </div>
+</div>
+</body>
+</html>

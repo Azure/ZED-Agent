@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/microsoft/ZED-Agent/.github/skills/zed-agent/release.schema.json",
+  "title": "ZED Agent Release State",
+  "description": "Schema for release.json — per-release runtime artifact tracking release owner, branch names, dates, build/SafeFly/EV2 identifiers, and the commit Excel URL.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["releaseId", "releaseOwner", "currentBranch"],
+  "if": { "not": { "properties": { "releaseMode": { "const": "deploy-base" } }, "required": ["releaseMode"] } },
+  "then": { "required": ["previousBranch"] },
+  "else": { "required": ["previousCommit", "previousBuildId"] },
+  "properties": {
+    "releaseId": {
+      "type": "string",
+      "description": "Release identifier, typically 'YYYY-MM' (e.g., '2026-04').",
+      "pattern": "^[0-9]{4}-[0-9]{2}$"
+    },
+    "releaseOwner": {
+      "type": "object",
+      "required": ["alias", "email"],
+      "additionalProperties": true,
+      "properties": {
+        "alias": {
+          "type": "string",
+          "description": "Release owner MS alias (the part before @microsoft.com).",
+          "minLength": 1
+        },
+        "email": {
+          "type": "string",
+          "description": "Release owner email address.",
+          "format": "email",
+          "minLength": 3
+        },
+        "displayName": { "type": "string" }
+      }
+    },
+    "currentBranch": {
+      "type": "string",
+      "description": "Name of the release branch being deployed (e.g., 'Release-2604'). In releaseMode 'deploy-base' this is the deployment branch itself (e.g. 'master').",
+      "minLength": 1
+    },
+    "previousBranch": {
+      "type": "string",
+      "description": "Name of the previous release branch (used for rollback in Step 7). Not used in releaseMode 'deploy-base' (see previousCommit / previousBuildId).",
+      "minLength": 1
+    },
+    "releaseMode":         { "type": "string", "enum": ["cut-branch", "deploy-base"], "description": "Copied from service-config ado.releaseMode at setup; every step keys on this (not on the live config)." },
+    "releaseTag":          { "type": "string", "description": "Short release name for generated branch names / titles (e.g. 'bcm-2611'). Defaults to the leaf of currentBranch in cut-branch mode." },
+    "currentCommit":       { "type": "string", "description": "deploy-base: source commit of the release build (set at Step 2c)." },
+    "previousCommit":      { "type": "string", "description": "deploy-base: source commit of the previous release's build (set at setup from the last production rollout, owner-confirmed). Start of the Step 4 commit range." },
+    "previousBuildId":     { "type": ["integer", "string"], "description": "deploy-base: official build the previous production rollout deployed — Step 7 fallback rollback build and the default 'last build' for the private stamp upgrade test." },
+    "previousBuildNumber": { "type": "string" },
+    "branchCutDate":     { "type": "string", "format": "date-time" },
+    "buildId":           { "type": ["integer", "string"] },
+    "buildNumber":       { "type": "string" },
+    "commitExcelUrl":    { "type": "string", "format": "uri" },
+    "commitExcelSheet":  { "type": "string", "description": "Tracker mode: name of this release's sheet in the shared commit tracker workbook (e.g. 'BCM2611')." },
+    "safeFlyId":         { "type": "string" },
+    "safeFlyRequestNumber": { "type": ["string", "integer"] },
+    "safeFlyUrl":        { "type": "string", "format": "uri" },
+    "safeFlyStatus":     { "type": "string" },
+    "mergeBackPrId":     { "type": ["integer", "string"] },
+    "riPrId":            { "type": ["integer", "string"], "description": "Step 2a Reverse Integration PR id (ado.integration only)." },
+    "revertBranch":      { "type": "string", "description": "Revert bits branch for this release (revertBits only), e.g. 'releases/bcm2610revert'." },
+    "revertPrId":        { "type": ["integer", "string"], "description": "Revert bits PR id (work branch → revert branch)." },
+    "revertBuildId":     { "type": ["integer", "string"], "description": "Official build of the revert branch." },
+    "fiPrId":            { "type": ["integer", "string"], "description": "Step 2b Forward Integration PR id (ado.integration only)." },
+    "testMode":          { "type": "boolean" },
+    "triggeredPipelines": {
+      "type": "object",
+      "description": "Map of step number → array of pipeline run IDs triggered by that step. Written at trigger time for rollback/recovery (e.g., Step 7 reads Step 5's triggered set). Keys are string step numbers.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": ["integer", "string"] }
+      }
+    },
+    "pipelineTriggerTimestamps": {
+      "type": "object",
+      "description": "Map of step number → ISO-8601 timestamp recorded BEFORE the pipeline is triggered. BVT query windows (Steps 6, 8, 11) use these as their start bound. Must be written atomically before trigger.",
+      "additionalProperties": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "step4InlineCompleted": { "type": "boolean", "description": "True after Step 4 Phase A (inline) work is done." },
+    "step4InlineCompletedAt": { "type": "string", "format": "date-time" },
+    "step4ExcelUrl": { "type": "string", "format": "uri", "description": "OneDrive/SharePoint URL of the commit Excel file." },
+    "step4Tracker": {
+      "type": "object",
+      "description": "Tracker mode: where this release's commit sheet lives. Set by Step 4 from Invoke-CommitTracker -Action Publish; read by the Step 4 side-channel and the Step 13 barrier.",
+      "properties": { "sheetName": { "type": "string" }, "driveId": { "type": "string" }, "itemId": { "type": "string" } }
+    },
+    "step4ExcelImpactPct": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage of Excel rows with Impact column filled." },
+    "step4NudgeSentAt": { "type": "string", "format": "date-time", "description": "Timestamp of the 24h nudge message, used for dedup." }
+  }
+}

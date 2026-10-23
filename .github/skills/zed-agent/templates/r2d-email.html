@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{font-family:Segoe UI,sans-serif;max-width:650px;margin:0 auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f0f0f0;width:200px}.header{background:#107c10;color:white;padding:16px;text-align:center}.info-box{background:#e6f7e6;border:1px solid #107c10;border-radius:4px;padding:12px;margin:12px 0}.action-box{background:#e6f2ff;border:1px solid #0078d4;border-radius:4px;padding:12px;margin:12px 0}</style></head>
+<body>
+<div class="header"><h2>✅ SafeFly R2D #{{requestNumber}} Created — Release {{releaseId}}</h2></div>
+<p>Hi {{releaseOwnerName}},</p>
+<p>SafeFly R2D request has been <strong>automatically created</strong> for the {{serviceName}} monthly release.</p>
+<div class="info-box">
+<strong>SafeFly Request:</strong> <a href="{{safeFlyUrl}}">#{{requestNumber}} — View in SafeFly</a>
+</div>
+<table>
+<tr><th>Release</th><td>{{releaseId}}</td></tr>
+<tr><th>Branch</th><td>{{branchName}}</td></tr>
+<tr><th>Title</th><td>{{title}}</td></tr>
+<tr><th>SDP Type</th><td>{{sdpType}}</td></tr>
+<tr><th>Deployment Nature</th><td>{{deploymentNature}}</td></tr>
+<tr><th>Targeted Regions</th><td>{{regionCount}} regions ({{excludedCount}} excluded by CCOA)</td></tr>
+<tr><th>Build Number</th><td>{{buildNumber}}</td></tr>
+<tr><th>ADO Build ID</th><td><a href="https://msazure.visualstudio.com/One/_build/results?buildId={{buildId}}">{{buildId}}</a></td></tr>
+<tr><th>Commit Excel</th><td><a href="{{commitExcelUrl}}">View Commits</a></td></tr>
+</table>
+<div class="action-box">
+<strong>Next step — you need to:</strong>
+<ol>
+<li><strong>Present at CRB</strong> — share the SafeFly request at the Change Review Board meeting</li>
+<li>Once CRB approves, come back and type: <code>approve-crb</code></li>
+</ol>
+<p>The agent will <strong>auto-poll SafeFly approval every 60 minutes</strong>. The pipeline resumes when both SafeFly + CRB are approved.</p>
+</div>
+<p>Thanks,<br>ZED Agent (Release Orchestrator)</p>
+</body>
+</html>

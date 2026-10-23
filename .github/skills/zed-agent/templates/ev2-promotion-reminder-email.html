@@ -1,0 +1,34 @@
+<b>⏳ Manual Promotion Required — {{releaseId}}</b><br><br>
+
+<b>Pipeline:</b> {{pipelineName}}<br>
+<b>Cloud:</b> {{cloud}}<br>
+<b>Completed stage:</b> {{completedStageName}} ✅<br>
+<b>Waiting for promotion to:</b> {{nextStageName}}<br>
+<b>Timestamp:</b> {{timestamp}}<br><br>
+
+The rollout is <b>waiting for manual promotion</b> to proceed to the next stage.<br><br>
+
+<b>Action required:</b><br>
+1. Open the <a href="{{portalUrl}}">EV2 Portal</a><br>
+2. Navigate to the rollout for {{pipelineName}} ({{cloud}})<br>
+3. Click <b>Promote</b> to advance to {{nextStageName}}<br><br>
+
+<b>Full Rollout Dashboard:</b><br>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:Consolas,monospace; font-size:13px;">
+<tr style="background:#1a1a2e; color:#ffffff;">
+  <th style="padding:8px 12px;">Pipeline</th>
+  <th style="padding:8px 12px;">Cloud</th>
+  <th style="padding:8px 12px;">Stage</th>
+  <th style="padding:8px 12px;">Status</th>
+  <th style="padding:8px 12px;">Regions</th>
+</tr>
+{{dashboardRows}}
+</table><br>
+
+<b>Summary:</b> {{summaryLine}}<br><br>
+
+<b>Portal Links:</b><br>
+{{portalLinks}}
+<br>
+
+<i>Sent automatically by ZED Agent — manual promotion detected.</i>

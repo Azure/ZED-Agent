@@ -1,0 +1,381 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/microsoft/ZED-Agent/.github/skills/zed-agent/pipeline-catalog.schema.json",
+  "title": "ZED Agent Pipeline Catalog",
+  "description": "Schema for pipeline-catalog.json. Declares official build, canary, production pipelines, EV2 service-group mapping, and the routing modes used by Steps 5, 7, 10 to pick which pipelines to trigger.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["officialBuild", "canary", "production", "ev2ServiceGroups", "ev2CloudCoverage"],
+  "properties": {
+    "$schema":    { "type": "string", "default": "./pipeline-catalog.schema.json", "description": "Pointer to this schema file for editor validation." },
+    "description":{ "type": "string" },
+
+    "ev2ServiceTreeIds": {
+      "type": "object",
+      "description": "Per-cloud Service Tree GUIDs (Prod / Fairfax / Mooncake / USNat / USSec). Same GUID may be reused across clouds.",
+      "additionalProperties": { "type": "string" }
+    },
+
+    "ev2ServiceGroups": {
+      "type": "object",
+      "description": "Map of pipeline key → EV2 ServiceGroup name (e.g., 'Microsoft.Azure.Backup.Service.Component.ACTIVE'). Used by Step 15 EV2 monitoring.",
+      "additionalProperties": { "type": "string" }
+    },
+
+    "ev2CloudCoverage": {
+      "type": "object",
+      "description": "Map of pipeline key → array of clouds that pipeline deploys to. MUST be derived per-pipeline from the pipeline's own reference run and script flags — never by copying a sibling. Cross-checked at trigger time against resolved script flags (L-15). Drives Step 15 dashboard rows.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "enum": ["Prod", "Public", "Fairfax", "Mooncake", "Bleu", "USNat", "USSec"] }
+      }
+    },
+
+    "officialBuild": {
+      "type": "object",
+      "required": ["name", "id", "sourceBranch", "templateParameters"],
+      "properties": {
+        "name":         { "type": "string" },
+        "id":           { "type": "integer", "minimum": 0 },
+        "sourceBranch": { "type": "string", "description": "Typically 'refs/heads/{{currentBranch}}'." },
+        "templateParameters": {
+          "type": "object",
+          "description": "Free-form key-value map. The agent forwards every key verbatim to ADO POST /_apis/build/builds.",
+          "additionalProperties": true
+        }
+      }
+    },
+
+    "canary": {
+      "type": "object",
+      "description": "Map of canary pipeline key → entry. Keys are service-defined (e.g., 'SVC-SFMC', 'DM-EACAN').",
+      "additionalProperties": { "$ref": "#/$defs/pipelineEntry" }
+    },
+
+    "production": {
+      "type": "object",
+      "description": "Map of production pipeline key → entry. Keys are service-defined.",
+      "additionalProperties": { "$ref": "#/$defs/pipelineEntry" }
+    },
+
+    "canaryRouting": {
+      "type": "object",
+      "description": "How Steps 5 and 7 pick which canary pipelines to trigger. Optional — defaults to mode='static' if absent.",
+      "properties": {
+        "_comment": { "type": "string" },
+        "mode": {
+          "type": "string",
+          "enum": ["static", "cluster-type"],
+          "default": "static",
+          "description": "static (default): trigger ALL entries under canary.*. cluster-type: query Kusto, parse DeploymentUnit suffix, route via clusterTypeMap."
+        },
+        "clusterTypeMap": {
+          "type": "object",
+          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix (e.g., 'sfmc', 'sf') to a pipeline key under canary.* (string) OR a list of pipeline keys (array of strings). Use an array when multiple canary pipelines share the same cluster type (e.g., PROT-SFMC + DT-SFMC both serve 'sfmc' workloads).",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            ]
+          }
+        }
+      },
+      "if":   { "properties": { "mode": { "const": "cluster-type" } } },
+      "then": { "required": ["clusterTypeMap"] }
+    },
+
+    "productionRouting": {
+      "type": "object",
+      "description": "How Step 10 (Roll-Forward — PROD pipelines targeting canary regions) picks which production pipelines to trigger. Optional — defaults to mode='static' if absent. Independent from canaryRouting because services often have asymmetric topology (e.g., 2 canary keys + 1 prod key).",
+      "properties": {
+        "_comment": { "type": "string" },
+        "mode": {
+          "type": "string",
+          "enum": ["static", "cluster-type"],
+          "default": "static",
+          "description": "static (default): trigger ALL entries under production.*. cluster-type: query Kusto (same query as Step 5), route via clusterTypeMap."
+        },
+        "clusterTypeMap": {
+          "type": "object",
+          "description": "Required when mode='cluster-type'. Maps DeploymentUnit suffix to a pipeline key under production.* (string) OR a list of pipeline keys (array of strings).",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            ]
+          }
+        }
+      },
+      "if":   { "properties": { "mode": { "const": "cluster-type" } } },
+      "then": { "required": ["clusterTypeMap"] }
+    },
+
+    "artifactFeed": {
+      "type": "object",
+      "description": "Artifact feed that the deployment pipelines' build resources read (e.g. CloudVault). Used to pin runs to an exact build (Resolve-ReleaseBuild.ps1 -Action PinResources): feed branch = feedBranchPrefix + the build's git branch with / - . replaced by _ (must match the YAML resources.builds branch expression). Required when ado.releaseMode = 'deploy-base'.",
+      "required": ["connectionId", "sourceId", "feedBranchPrefix"],
+      "additionalProperties": false,
+      "properties": {
+        "type":              { "type": "string", "default": "CloudVaultArtifacts-v3" },
+        "connectionId":      { "type": "string" },
+        "connectionName":    { "type": "string" },
+        "sourceId":          { "type": "string" },
+        "feedBranchPrefix":  { "type": "string" },
+        "buildDefinitionId": { "type": "integer", "description": "Official build pipeline id (normally = officialBuild.id)." }
+      }
+    },
+    "bvtReleases": {
+      "type": "object",
+      "description": "Optional. Classic BVT releases that replace the fixed 24 h BVT wait in the listed steps (6 after canary, 8 after rollback, 11 after roll-forward): ZED creates every release right after the deployment (latest artifact versions, `variables` overridden) and the BVT step continues once all of their stages have finished. Script: scripts/Invoke-BvtReleases.ps1. See step-behaviors.md → BVT releases.",
+      "required": ["steps", "releases"],
+      "additionalProperties": false,
+      "properties": {
+        "steps": { "type": "array", "items": { "type": "integer", "enum": [6, 8, 11] }, "minItems": 1, "uniqueItems": true },
+        "timeoutHours": { "type": "number", "minimum": 1, "default": 12, "description": "Fail the BVT step if the releases have not finished after this many hours." },
+        "releases": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": ["definitionId"],
+            "additionalProperties": false,
+            "properties": {
+              "definitionId": { "type": "integer", "description": "Classic release definition id (…/_release?definitionId=<id>)." },
+              "variables": { "type": "object", "properties": { "MABIsOfficial": { "type": "string", "const": "True" } }, "additionalProperties": { "type": "string" }, "description": "Release variables to override (must be 'Settable at release time'), e.g. { \"MABIsOfficial\": \"True\" }. Preserve exact string case; never use Boolean true or string true." }
+            }
+          }
+        }
+      }
+    },
+    "privateStampUpgrade": {
+      "type": "object",
+      "description": "Optional private stamp upgrade test — a side track kicked off at Step 5 (parallel to canary) and joined at Step 13 (SafeFly R2D waits for the owner's sign-off). Two runs of the private stamp pipeline on ONE owner-chosen instance, queued in parallel: leg 'last' (owner-supplied last build branch, port 1) and leg 'current' (release.currentBranch, port 2), both with the same ServiceOverrideSettings built from the owner-supplied queue name; then the optional bvtRelease against the owner-supplied redirected vault. Inputs are asked from the owner every release (never cached). Script: scripts/Invoke-PrivateStampUpgrade.ps1.",
+      "additionalProperties": true,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "id": { "type": "integer", "description": "ADO pipeline definition id of the private stamp deployment pipeline." },
+        "name": { "type": "string" },
+        "sourceBranch": {
+          "type": "string",
+          "description": "Ref whose YAML is queued for BOTH legs. Token {currentBranch} = release.currentBranch.",
+          "default": "{currentBranch}"
+        },
+        "portSpan": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Consecutive ports one deployment occupies (e.g. 2 when HTTP = HTTPS port + 1). The two owner ports must be at least this far apart.",
+          "default": 1
+        },
+        "templateParameters": {
+          "type": "object",
+          "description": "Fixed templateParameters posted on both legs (values as strings). The four owner-driven parameters below are added on top.",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "parameterNames": {
+          "type": "object",
+          "description": "Pipeline parameter names that receive the owner inputs.",
+          "properties": {
+            "instance":         { "type": "string", "default": "PrivateInstance" },
+            "port":             { "type": "string", "default": "WebRolePort" },
+            "artifactBranch":   { "type": "string", "default": "ArtifactBranch" },
+            "serviceOverrides": { "type": "string", "default": "ServiceOverrideSettings" }
+          }
+        },
+        "serviceOverrideSettingsTemplate": {
+          "type": "string",
+          "description": "Value for the serviceOverrides parameter. Token {queueName} = owner-supplied TeeWorkflowQueueName.",
+          "default": "@{}"
+        },
+        "restoreAfterSignOff": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in. After `approve-private-stamp`, redeploy both legs (same pinned builds, same ports) WITHOUT the queue override, so the private stamp returns to its original configuration and the two ports no longer share one TEE workflow queue. Does not delay the Step 13 join. Owner can also run it with `private-stamp restore` (after skip / failure, or to retry). BCM: true."
+        },
+        "restoreServiceOverrideSettings": {
+          "type": "string",
+          "description": "Optional value for the serviceOverrides parameter in the restore runs. Omitted (default): the parameter is not passed, so the pipeline's own default applies (BCM pipeline 396863: @{\"BCMAppConfig->ServiceName\"=\"ic\";})."
+        },
+        "artifact": {
+          "type": "object",
+          "description": "Optional: the private stamp pipeline's build resource. When set, both legs are PINNED to an exact build (the owner gives the last build as a build link/id; the current leg uses release.json → buildId): the build id is mapped to its version in the resource's feed and posted as resources.builds.<resourceAlias>.version, with ArtifactBranch = that build's branch. Without it, ArtifactBranch is a branch and the pipeline deploys its latest build.",
+          "required": ["resourceAlias", "feedBranchPrefix", "connectionId", "sourceId"],
+          "additionalProperties": false,
+          "properties": {
+            "resourceAlias":     { "type": "string", "description": "YAML resources.builds alias that carries the service bits (BCM: svc_build)." },
+            "type":              { "type": "string", "default": "CloudVaultArtifacts-v3" },
+            "connectionId":      { "type": "string", "description": "Service connection id of the resource (BCM: 'CloudVault API - cdpxofficialbuilds')." },
+            "connectionName":    { "type": "string" },
+            "sourceId":          { "type": "string", "description": "Resource 'source' from the YAML (CloudVault source id)." },
+            "feedBranchPrefix":  { "type": "string", "description": "Feed branch = prefix + git branch with / - . replaced by _ (must match the YAML's branch expression). BCM: Mgmt_RecoverySvcs_IaaSCoord_." },
+            "buildDefinitionId": { "type": "integer", "description": "Official build pipeline id; the last build must come from it (BCM: 223537)." }
+          }
+        },
+        "bvtRelease": {
+          "type": "object",
+          "description": "Optional BVT run after BOTH legs (deployed in parallel) succeed: a release of this CLASSIC release definition is created with <vaultIdVariable> = the owner-supplied redirected vault ARM id and every artifact's latest version. The owner signs off after the <environmentName> stage finishes. Without it, the owner runs BVT by hand.",
+          "required": ["definitionId"],
+          "additionalProperties": false,
+          "properties": {
+            "definitionId":    { "type": "integer", "description": "Classic release definition id (BCM: 64863 IaaSVM-BVT-Private-Stamp)." },
+            "name":            { "type": "string" },
+            "environmentName": { "type": "string", "description": "Stage whose final status ends the BVT (BCM: 'IaaSVM BVT Private Stamp'). Default: the last stage by rank." },
+            "vaultIdVariable": { "type": "string", "default": "PrivateStampVaultId", "description": "Release variable (settable at release time) that receives the vault ARM id." },
+            "variables":       { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional fixed release-time variable overrides (must be settable at release time)." }
+          }
+        }
+      }
+    },
+
+    "_examples": {
+      "type": "object",
+      "description": "Optional reference shapes. Delete once real entries are populated.",
+      "additionalProperties": true
+    },
+
+    "yamlRepos": {
+      "type": "object",
+      "description": "Per-repo base-branch overrides used by Group 11 YAML discovery (Read-PipelineYaml.ps1). Keyed by ADO repo name. Populated incrementally during setup-service group 11 whenever the agent encounters a YAML file (or extends: reference) in a repo it hasn't seen yet. Use this to keep YAML discovery deterministic across runs.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "baseBranch": { "type": "string", "description": "Branch name (no 'refs/heads/' prefix), e.g. 'develop' or 'main'." },
+          "organization": { "type": "string", "description": "Optional ADO org override when the YAML repo lives outside the service's primary org. Defaults to service-config.json → ado.organization." },
+          "project": { "type": "string", "description": "Optional ADO project override. Defaults to service-config.json → ado.project." }
+        },
+        "required": ["baseBranch"],
+        "additionalProperties": false
+      }
+    }
+  },
+
+  "$defs": {
+    "pipelineEntry": {
+      "type": "object",
+      "required": ["name", "id", "sourceBranch", "templateParameters"],
+      "properties": {
+        "name":         { "type": "string" },
+        "id":           { "type": "integer", "minimum": 0 },
+        "sourceBranch": { "type": "string" },
+        "clusterType": {
+          "type": "string",
+          "description": "Optional cluster-type tag (e.g., 'sfmc', 'sfrp'). Used by canaryRouting/productionRouting when mode='cluster-type' as a per-pipeline declaration of which cluster type this pipeline serves (alternative to declaring it only in clusterTypeMap).",
+          "minLength": 1
+        },
+        "templateParameters": {
+          "type": "object",
+          "description": "Free-form pass-through to ADO. Reserved {{placeholders}}: {{currentBranch}}, {{excludeStamps}}, {{pubRegions}}, {{ffStamps}}, {{ffRegions}}, {{sdpType}}, {{validateOnly}}, {{canaryStamps}}, {{canaryRegions}}, {{canaryProdStamps}}, {{canaryProdRegions}}.",
+          "additionalProperties": true
+        },
+        "stampNameStyle": {
+          "type": "string",
+          "enum": ["short", "full"],
+          "default": "short",
+          "description": "Controls which stamp field Resolve-TemplateParams.ps1 uses for {{*Stamps}} tokens. 'short' (default) → stampId (e.g. 'ea-01'); 'full' → stampName (e.g. 'ea-can02-prot1'). Different pipeline YAMLs expect different formats — SFMC's ParseStampId expects short IDs."
+        },
+        "buildResource": {
+          "type": "string",
+          "description": "YAML resources.builds alias that carries the service bits (e.g. 'bcm_service'). Required for every canary/production entry when ado.releaseMode = 'deploy-base': each run posts resources.builds.<alias>.version = the release build's artifact version (Resolve-ReleaseBuild.ps1 -Action PinResources), so it deploys exactly that build instead of the newest build of ArtifactsBranch. Also used to find the previous release from production run history.",
+          "minLength": 1
+        },
+        "scheduleGuard": {
+          "type": "object",
+          "description": "Canary pipelines only. Pauses this pipeline's own scheduled/ad-hoc deployments while the release bits must stay on its stamps. Once ZED's Step 5 run of this pipeline SUCCEEDS, ZED (in one definition PUT) removes the pipeline's UI schedule trigger(s) (pauseScheduleTriggers; saved verbatim in state) and/or sets definition variable <variable> = <disabledValue>; with cancelForeignRuns it also cancels every run of this pipeline that ZED did not queue until Step 6 is signed off. When Step 6 BVT is signed off (or completed/skipped by any path, and always before ZED triggers this pipeline again) ZED re-adds the trigger(s) / sets the variable back to <enabledValue>. Only what ZED changed is reverted. Editing needs 'Edit build pipeline'; cancelling needs only 'Stop builds'. Script: scripts/Invoke-ScheduleGuard.ps1.",
+          "anyOf": [ { "required": ["variable"] }, { "required": ["pauseScheduleTriggers"] } ],
+          "additionalProperties": false,
+          "properties": {
+            "pauseScheduleTriggers": { "type": "boolean", "default": false, "description": "Remove the pipeline's UI (Triggers tab) schedule trigger(s) while guarded and re-add them verbatim on restore. YAML pipelines: without a UI schedule, ADO runs the YAML 'schedules:' cron instead — ZED warns when the YAML on the scheduled branch still has one (use cancelForeignRuns as well)." },
+            "variable":      { "type": "string", "minLength": 1, "description": "Definition (Pipeline settings → Variables) variable name, e.g. 'enableSchedule'. With pauseScheduleTriggers it is optional at runtime: skipped (noted) if not defined on the pipeline." },
+            "disabledValue": { "type": "string", "default": "false" },
+            "enabledValue":  { "type": "string", "default": "true" },
+            "cancelForeignRuns": { "type": "boolean", "default": false, "description": "While guarded (ZED's Step 5 run succeeded → Step 6 signed off), cancel queued/running runs of this pipeline that ZED did not queue (manual runs, cron runs). A run queued before ZED's Step 5 run is cancelled only once it starts. The owner and the person who queued the run are emailed. Checked every operational.scheduleGuardPollIntervalSeconds (default 300)." }
+          }
+        },
+        "approvalGate": {
+          "type": "object",
+          "description": "Production pipelines only. Evidence that a run cannot deploy to any stamp before a human approval (OneBranch Approval Service and/or ManualValidation / environment approval ahead of every EV2 rollout job). Required (verified=true) for every resolved production pipeline before Step 13 may trigger production ahead of the R2D (service-config safefly.r2dBuildSource = productionRun). Re-verify when the pipeline YAML changes.",
+          "required": ["verified", "evidence"],
+          "properties": {
+            "verified": { "type": "boolean" },
+            "verifiedAt": { "type": "string" },
+            "verifiedBy": { "type": "string" },
+            "gates": { "type": "array", "items": { "type": "string" } },
+            "evidence": { "type": "string", "minLength": 1 },
+            "caveat": { "type": "string" }
+          }
+        },
+        "deploymentDoneWhen": {
+          "type": "object",
+          "description": "Canary pipelines whose run stays in progress through a long EV2 post-deployment step (BCM-CANARY: 'Canary-ManagedValidation', ~24 h). ZED reads the EV2 portal link from the run (task <portalLinkTask>) and asks the EV2 API; once a nonempty set of '<prefix>.<region>' deployment stages all succeeded, the run counts as deployed (watcher target status 'deployed') and Step 5 (Step 7 for rollback) completes without waiting for managed validation to start or finish. Failed/pending region stages remain blockers; validation status stays separate and the run's final result is re-checked when the following BVT window ends. Prod cloud only (gov-cloud EV2 APIs are not reachable — those runs are tracked by the pipeline result). Script: scripts/EV2/Get-Ev2DeploymentProgress.ps1.",
+          "required": ["ev2StepStarted"],
+          "additionalProperties": false,
+          "properties": {
+            "ev2StepStarted": { "type": "string", "minLength": 1, "description": "Legacy selector for the validation action StepName, e.g. 'Canary-ManagedValidation', and its regional deployment prefix '<name without -ManagedValidation>.<region>'. Does not require validation to start; completion depends on successful regional deployment stages." },
+            "portalLinkTask": { "type": "string", "default": "Ev2 Managed SDP Region Agnostic", "description": "Pipeline task whose log prints 'Ev2 portal link - https://ra.ev2portal.azure.net/#/rollouts/...'." }
+          }
+        },
+        "sdpType": {
+          "type": "string",
+          "description": "EV2 SDP (Safe Deployment Practice) type for this pipeline. Overrides the resolver default when present. Common values: 'Express', 'Standard', 'Conservative'. When absent, defaults to 'Express' for backward compatibility with existing catalog entries.",
+          "minLength": 1
+        },
+        "requiresExclusions": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, Resolve-TemplateParams.ps1 throws if {{excludeStamps}} would be empty for production scope. Prevents accidental global deploy when CCOA exclusions are expected but missing."
+        },
+        "maxRegions": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of regions this pipeline should target. Resolve-TemplateParams.ps1 throws UNSAFE_REGION_SCOPE if the resolved region count exceeds this value for production scope. Set to the expected region count from a known-good reference run."
+        },
+        "_learnedFrom": {
+          "type": "object",
+          "description": "Provenance recorded by Group 11 wizard (setup-service). Skipped by the schema-driven empty-skeleton generator but accepted by the validator. Helps future re-runs detect drift (e.g., YAML sha changed).",
+          "properties": {
+            "runIds":      { "type": "array", "items": { "type": ["integer", "string"] }, "description": "ADO run IDs the agent learned templateParameters from (most-recent first, up to 3)." },
+            "yamlRepo":    { "type": "string" },
+            "yamlBranch":  { "type": "string" },
+            "yamlPath":    { "type": "string" },
+            "yamlSha":     { "type": "string" },
+            "learnedAt":   { "type": "string", "description": "UTC ISO 8601 timestamp." }
+          },
+          "additionalProperties": true
+        },
+        "discoveryNotes": {
+          "type": "object",
+          "description": "Auto-detected quirks observed during discovery (exclusion-list separator, stamp-name casing, reserved-token literal forms). Free-form owner annotations also welcome.",
+          "properties": {
+            "exclusionFormat": { "type": "string", "description": "e.g., 'comma', 'semicolon', 'json-array', 'newline'." },
+            "stampNameStyle":  { "type": "string", "description": "e.g., 'lowercase', 'mixed', 'prefix-ea-can'." },
+            "paramFormat": {
+              "type": "string",
+              "enum": ["bare", "ps-array", "regions-wrapper"],
+              "default": "bare",
+              "description": "Controls value formatting applied after token substitution. 'bare' (default): values emitted as-is (e.g., 'ea-01'). 'ps-array': wraps in PowerShell array notation (e.g., '@(\"ea-01\")'). 'regions-wrapper': wraps in regions() with full Azure region names (e.g., 'regions(eastasia)')."
+            },
+            "extraParams":     { "type": "array",  "items": { "type": "string" }, "description": "Parameters present in prior runs but NOT declared in the YAML. Surface to maintainers — likely stale." },
+            "freeText":        { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "_validated": {
+          "type": "object",
+          "description": "Stamp recorded after a successful Phase 11.2 / 11.3 dry-run. Underscore-prefixed → wizard metadata, not config.",
+          "properties": {
+            "at":            { "type": "string", "description": "UTC ISO 8601." },
+            "lastDryRunId":  { "type": ["integer", "string"] },
+            "by":            { "type": "string", "description": "Owner email or 'wizard'." },
+            "skipped":       { "type": "boolean", "description": "true when sub-identifier 11.discovery-only was used (no dry-run performed)." }
+          },
+          "additionalProperties": true
+        },
+        "agentGaps": {
+          "type": "array",
+          "description": "Free-text gap descriptions the agent could not resolve during discovery (e.g., 'parameter X has no prior value and no YAML default — owner supplied manually'). Empty array on clean discovery.",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

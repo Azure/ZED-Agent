@@ -1,0 +1,26 @@
+<b>🚀 EV2 Rollout Progress — {{releaseId}}</b><br><br>
+
+<b>Stage completed:</b> {{completedStageName}} ✅<br>
+<b>Next stage:</b> {{nextStageName}}<br>
+<b>Timestamp:</b> {{timestamp}}<br>
+<b>Scope:</b> {{routeCount}} route(s) covering {{geographyCount}} geograph(ies)<br>
+<b>Stage Map:</b> {{stageMapName}} v{{stageMapVersion}} {{stageMapStatus}}<br><br>
+
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:Consolas,monospace; font-size:13px;">
+<tr style="background:#1a1a2e; color:#ffffff;">
+  <th style="padding:8px 12px;">Pipeline</th>
+  <th style="padding:8px 12px;">Cloud</th>
+  <th style="padding:8px 12px;">Stage</th>
+  <th style="padding:8px 12px;">Status</th>
+  <th style="padding:8px 12px;">Regions</th>
+</tr>
+{{dashboardRows}}
+</table><br>
+
+<b>Summary:</b> {{summaryLine}}<br><br>
+
+<b>Portal Links:</b><br>
+{{portalLinks}}
+<br>
+
+<i>Sent automatically by ZED Agent on stage transition.</i>

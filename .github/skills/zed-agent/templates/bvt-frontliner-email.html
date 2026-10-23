@@ -1,0 +1,19 @@
+<html><body style="font-family:Segoe UI,sans-serif;font-size:14px;color:#333">
+<p>Hi {{frontlinerName}},</p>
+
+<p>BVT failures attributed to <b>your workload ({{workloadType}})</b> were detected during the latest production release.</p>
+
+<table style="border-collapse:collapse;margin:12px 0" border="1" cellpadding="6">
+<tr style="background:#f2f2f2"><td><b>Your Workload</b></td><td>{{workloadType}}</td></tr>
+<tr><td><b>Failures</b></td><td>{{workloadFailureCount}} failure(s)</td></tr>
+<tr><td><b>Environments</b></td><td>{{environments}}</td></tr>
+<tr><td><b>Query Window</b></td><td>{{pipelineTriggerTime}} → {{queryEndTime}}</td></tr>
+</table>
+
+<p><b>Failure Details:</b></p>
+<pre style="background:#f9f9f9;padding:10px;border:1px solid #ddd;font-size:12px">{{workloadFailureDetails}}</pre>
+
+<p>The release is <b>held</b> pending resolution. Please investigate and coordinate with the release owner (<b>{{releaseOwner}}</b>).</p>
+
+<p style="color:#888;font-size:12px">Automated by ZED Agent · BVT Check</p>
+</body></html>

@@ -1,0 +1,960 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "service-config.schema.json",
+  "title": "ZED Agent Service Configuration",
+  "description": "Normalized configuration schema for ZED Agent multi-service release automation (v1.0).",
+  "type": "object",
+  "required": [
+    "$schema",
+    "version",
+    "service",
+    "serviceTreeIds",
+    "ado",
+    "kusto",
+    "commitExcel",
+    "sharepoint",
+    "notifications",
+    "safefly",
+    "operational",
+    "stepGates"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "default": "./service-config.schema.json",
+      "description": "Pointer to this schema file for editor validation."
+    },
+    "version": {
+      "type": "string",
+      "description": "Schema version. Currently '1.0'.",
+      "enum": ["1.0"],
+      "default": "1.0"
+    },
+
+    "service": {
+      "type": "object",
+      "description": "Identity metadata for the service being released.",
+      "required": ["name", "displayName"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Short canonical service name (e.g. 'Prot', 'MAB').",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human-readable service name (e.g. 'Protection Service').",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Brief description of the service release purpose."
+        },
+        "releaseLabel": { "type": "string", "description": "Optional. Name shown in the release message titles and sign-offs (branch cut reminder, commit request / nudge, CRB email, step-failure email: \"<label> Release …\"). Default \"BDP\" (the original text). BCM: \"BCM\"." },
+        "stampTag": {
+          "type": "string",
+          "description": "Per-service stamp-name infix used to filter inventory rows to THIS service. Stamps follow the grammar `{shortName}-{layout}-{stampTag}{index}` (e.g. 'eus-pod01-prot1', 'eus-pod01-rec2'). Consumed by Get-StampInventory.ps1 to filter Kusto results and validate canary stamp names. Lowercase, letters only.",
+          "pattern": "^[a-z]+$",
+          "examples": ["prot", "rec", "mab"]
+        }
+      }
+    },
+
+    "serviceTreeIds": {
+      "type": "object",
+      "description": "Service Tree GUIDs used by SafeFly and EV2.",
+      "required": ["safefly", "ev2"],
+      "additionalProperties": true,
+      "properties": {
+        "safefly": {
+          "type": "string",
+          "description": "Service Tree GUID for SafeFly registration.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "ev2": {
+          "type": "object",
+          "description": "Service Tree GUIDs keyed by EV2 environment (Prod, Fairfax, Mooncake, etc.).",
+          "required": ["Prod"],
+          "additionalProperties": true,
+          "properties": {
+            "Prod": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "Fairfax": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "Mooncake": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            }
+          }
+        }
+      }
+    },
+
+    "ado": {
+      "type": "object",
+      "description": "Azure DevOps coordinates for the source repository.",
+      "required": ["organization", "project", "repository", "branchPrefix", "baseBranch"],
+      "additionalProperties": true,
+      "properties": {
+        "organization": {
+          "type": "string",
+          "description": "ADO organization name.",
+          "minLength": 1
+        },
+        "project": {
+          "type": "string",
+          "description": "ADO project name.",
+          "minLength": 1
+        },
+        "repository": {
+          "type": "string",
+          "description": "ADO repository name.",
+          "minLength": 1
+        },
+        "branchPrefix": {
+          "type": "string",
+          "description": "Prefix for official release branches (e.g. 'official/bdp-').",
+          "minLength": 1
+        },
+        "baseBranch": {
+          "type": "string",
+          "description": "Base branch from which release branches are cut.",
+          "default": "develop",
+          "minLength": 1
+        },
+        "releaseMode": {
+          "type": "string",
+          "enum": ["cut-branch", "deploy-base"],
+          "default": "cut-branch",
+          "description": "'cut-branch' (default): Step 2 cuts <branchPrefix><YYMM> from baseBranch and the release deploys that branch. 'deploy-base' (e.g. BCM): no release branch — the release deploys the base branch itself (owner confirms the deployment branch at setup, default baseBranch). The release is the build of the newest deployable commit of that branch (Step 2), the previous release is the build the last production rollout deployed, and EVERY canary/production/rollback run is pinned to its exact build (requires pipeline-catalog artifactFeed + buildResource). Step 16 (merge-back) is skipped. Script: scripts/Resolve-ReleaseBuild.ps1."
+        },
+        "integration": {
+          "type": "object",
+          "description": "Optional pre-branch-cut Reverse/Forward Integration (Step 2 sub-phases 2a/2b) for services that keep a develop + master pair. 2a RI: merge mainBranch into developBranch via PR, wait for merge, then wait for the release owner's `approve-ri`. 2b FI: merge developBranch into mainBranch via PR, wait for merge. 2c: the normal branch cut from ado.baseBranch. Absent or enabled=false keeps the stock Step 2.",
+          "additionalProperties": true,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "developBranch": {
+              "type": "string",
+              "description": "Integration/development branch (RI target, FI source).",
+              "default": "develop",
+              "minLength": 1
+            },
+            "mainBranch": {
+              "type": "string",
+              "description": "Release-source branch (RI source, FI target). Must equal ado.baseBranch so the release branch is cut from the FI result.",
+              "default": "master",
+              "minLength": 1
+            },
+            "preservePaths": {
+              "type": "array",
+              "description": "Repo-relative paths whose PR-TARGET version always wins (RI keeps develop's, FI keeps master's). Applies to conflicted and cleanly-merged files.",
+              "items": { "type": "string", "minLength": 1 },
+              "default": [".config"]
+            },
+            "conflictStrategy": {
+              "type": "string",
+              "description": "How conflicts outside preservePaths are resolved. 'newest-commit-per-file': the branch whose last commit touching the file is newer wins the conflicting hunks (ties keep the target).",
+              "enum": ["newest-commit-per-file"],
+              "default": "newest-commit-per-file"
+            },
+            "riBranchTemplate": {
+              "type": "string",
+              "description": "Name of the RI integration branch. Tokens: {releaseId} (e.g. 2026-11 or, with releaseNaming, BCM2610_2), {releaseTag} (release.json → releaseTag: the lowercased release name with releaseNaming, e.g. bcm2610_2; else e.g. bcm-2611).",
+              "default": "zed/{releaseTag}-ri-master-to-develop"
+            },
+            "fiBranchTemplate": {
+              "type": "string",
+              "description": "Name of the FI integration branch. Same tokens as riBranchTemplate.",
+              "default": "zed/{releaseTag}-fi-develop-to-master"
+            },
+            "requireGoAheadAfterRI": {
+              "type": "boolean",
+              "description": "After the RI PR merges, halt Step 2 in waiting-approval until the release owner sends `approve-ri`. FI then starts automatically.",
+              "default": true
+            },
+            "prPollIntervalSeconds": {
+              "type": "integer",
+              "description": "Watcher poll interval for the RI/FI PR status (poll-ado-pr).",
+              "minimum": 60,
+              "default": 900
+            }
+          }
+        }
+      }
+    },
+
+    "kusto": {
+      "type": "object",
+      "description": "Kusto query configuration for BVT and canary monitoring.",
+      "required": ["bvt", "canary"],
+      "additionalProperties": true,
+      "properties": {
+        "bvt": {
+          "type": "object",
+          "description": "BVT (Build Verification Test) Kusto query settings.",
+          "required": ["cluster", "database", "queryFile"],
+          "additionalProperties": true,
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Kusto cluster URL.",
+              "format": "uri"
+            },
+            "database": {
+              "type": "string",
+              "description": "Kusto database name.",
+              "minLength": 1
+            },
+            "queryFile": {
+              "type": "string",
+              "description": "Filename of the KQL query template.",
+              "minLength": 1
+            },
+            "queryVariables": {
+              "type": "object",
+              "description": "Key-value pairs substituted into the KQL query template.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "canary": {
+          "type": "object",
+          "description": "Canary cluster-type detection Kusto query settings. Consumed by Resolve-PipelinesByClusterType.ps1 (-Scope canary) when pipeline-catalog.json → canaryRouting.mode == 'cluster-type'.",
+          "required": ["cluster", "database", "queryFile"],
+          "additionalProperties": true,
+          "properties": {
+            "cluster":   { "type": "string", "description": "Kusto cluster URL.", "format": "uri" },
+            "database":  { "type": "string", "description": "Kusto database name.", "minLength": 1 },
+            "queryFile": { "type": "string", "description": "Filename (relative to .github/skills/zed-agent/queries/) of the canary cluster-type detection KQL query.", "minLength": 1 },
+            "serviceFilter":     { "type": "string",  "description": "KQL where-clause fragment substituted into {{SERVICE_FILTER}}. May be empty when scopingNotes records that the query is pre-scoped." },
+            "stampPrefixFilter": {
+              "type": "array",
+              "description": "List of stamp-name prefixes joined into a `StampName startswith '<p1>' or …` predicate and substituted into {{STAMP_PREFIX_FILTER}}.",
+              "examples": [["ea-can", "ecy", "ccy"], ["cn-can", "use-can"]],
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "clusterTypeExtraction": {
+              "type": "object",
+              "description": "How Resolve-PipelinesByClusterType.ps1 extracts the live cluster-type set from result rows.",
+              "required": ["mode"],
+              "properties": {
+                "mode":   { "type": "string", "enum": ["deployment-unit-substring", "column", "custom"] },
+                "column": { "type": "string", "description": "Required when mode='column' — name of the result column holding the cluster type." },
+                "notes":  { "type": "string", "description": "Free-text used when mode='custom'." }
+              }
+            },
+            "queryVariables": { "type": "object", "description": "Additional {{NAME}} placeholders the owner declared.", "additionalProperties": { "type": "string" } },
+            "scopingNotes":   { "type": "string", "description": "Free-text memo describing how the query scopes to the service when serviceFilter is empty." }
+          }
+        },
+        "production": {
+          "type": "object",
+          "description": "Production cluster-type detection Kusto query settings. Consumed by Resolve-PipelinesByClusterType.ps1 (-Scope production) when pipeline-catalog.json → productionRouting.mode == 'cluster-type' (Step 10 and Step 15). Shape mirrors the canary block exactly — cluster type is a pipeline-level attribute, so the resolver runs once per release (not per cloud) and each resolved pipeline pushes to whichever clouds are listed under ev2CloudCoverage.<key>.",
+          "required": ["cluster", "database", "queryFile"],
+          "additionalProperties": true,
+          "properties": {
+            "cluster":   { "type": "string", "description": "Kusto cluster URL.", "format": "uri" },
+            "database":  { "type": "string", "description": "Kusto database name.", "minLength": 1 },
+            "queryFile": { "type": "string", "description": "Filename (relative to .github/skills/zed-agent/queries/) of the production cluster-type detection KQL query. Must declare {{SERVICE_FILTER}} and {{STAMP_PREFIX_FILTER}} placeholders (same shape as canary).", "minLength": 1 },
+            "serviceFilter":     { "type": "string",  "description": "KQL where-clause fragment substituted into {{SERVICE_FILTER}}. May be empty when scopingNotes records that the query is pre-scoped." },
+            "stampPrefixFilter": {
+              "type": "array",
+              "description": "List of stamp-name prefixes joined into a `StampName startswith '<p1>' or …` predicate and substituted into {{STAMP_PREFIX_FILTER}}. Auto-derived by setup-service group 11.3a from the distinct lower-cased ShortName values under AzureServiceConfig.json → Clouds[Public].DataCenters[] — covers Public-cloud stamps only. Sovereign clouds (Fairfax/Mooncake/USNat/USSec) require AME-tenant Kusto and are handled out-of-band. Owners may hand-edit this list any time; the wizard will not overwrite a non-empty value on re-run.",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "clusterTypeExtraction": {
+              "type": "object",
+              "description": "How Resolve-PipelinesByClusterType.ps1 extracts the live cluster-type set from result rows.",
+              "required": ["mode"],
+              "properties": {
+                "mode":   { "type": "string", "enum": ["deployment-unit-substring", "column", "custom"] },
+                "column": { "type": "string" },
+                "notes":  { "type": "string" }
+              }
+            },
+            "queryVariables": { "type": "object", "additionalProperties": { "type": "string" } },
+            "scopingNotes":   { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "defaultSkippedSteps": {
+      "type": "object",
+      "description": "Optional. Steps this service never runs: setup writes them as 'skipped' (reason 'service-default') in every new release; the owner can still run one in a release with 'modify reset N'. Keys are step numbers, values the reason. Steps 13-15 (R2D, SafeFly/CRB, production) cannot be skipped this way. BCM: { \"11\": \"…\", \"12\": \"…\" } — roll-forward (Step 10) goes straight to the R2D (Step 13).",
+      "propertyNames": { "pattern": "^([1-9]|1[0-2]|16)$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "releaseNaming": {
+      "type": "object",
+      "description": "Optional. Explicit release names for services that ship several releases per month (BCM: BCM2610, BCM2610_2, BCM2610_3). setup asks for the name (suggesting the next free one) and it becomes the release id everywhere: .zed-agent/releases/<name>/, state, email/Teams subjects, the watcher, and the {{releaseName}} / {{releaseNameLower}} template tokens (commit tracker sheet, revert branch, RI/FI branches, SafeFly {releaseName}). release.json keeps releaseMonth (YYYY-MM) so {{YYMM}} still works. Without it the release id is YYYY-MM. Script: scripts/Resolve-ReleaseName.ps1.",
+      "required": ["prefix"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "prefix": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$", "description": "Name prefix, e.g. 'BCM' → BCM<YYMM>." },
+        "sequenceSeparator": { "type": "string", "enum": ["_", ".", "-"], "default": "_", "description": "Separator before the 2nd, 3rd … release of a month: BCM2610_2." },
+        "notes": { "type": "string" }
+      }
+    },
+    "revertBits": {
+      "type": "object",
+      "description": "Optional revert bits, built as a Step 7 pre-phase right after the canary BVT sign-off (approve-bvt): <branchTemplate> is forked from the PREVIOUS release commit and, through a PR, receives only the settings the release owner chooses to keep from THIS release (preserveAlways keys are always kept). ZED then builds it, waits for the owner's BVT sign-off (approve-revert), and — when useForRollback — Step 7 rolls canary back with that build instead of release.previousBranch. Script: scripts/Invoke-RevertBits.ps1.",
+      "required": ["enabled"],
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "branchTemplate": { "type": "string", "default": "releases/{{releaseTag}}revert", "description": "Revert branch name. Tokens: {{YYMM}}, {{releaseId}}, {{releaseName}}, {{releaseNameLower}}, {{releaseTag}}. With releaseNaming use {{releaseNameLower}} — BCM: releases/{{releaseNameLower}}revert (releases/bcm2610revert, releases/bcm2610_2revert)." },
+        "topicBranchTemplate": { "type": "string", "default": "users/{ownerAlias}/{{releaseTag}}-revert-config", "description": "Work branch that carries the kept settings; the PR goes from here into the revert branch. Extra token: {ownerAlias}." },
+        "files": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Repo-relative settings files to compare (every '.../Properties' object: defaults, per cloud, per stamp)." },
+        "preserveAlways": { "type": "array", "items": { "type": "string" }, "description": "Setting keys always kept from this release when they changed (any scope), e.g. 'BCMAppConfig->BCMTeeWorkflowVersion'." },
+        "useForRollback": { "type": "boolean", "default": true, "description": "Step 7 deploys the revert build (ArtifactsBranch = revert branch) instead of release.previousBranch." },
+        "prPollIntervalSeconds": { "type": "integer", "minimum": 60, "default": 900 },
+        "prepareDuringCanaryBvt": { "type": "boolean", "default": false, "description": "Prepare the revert bits WHILE the canary BVT (Step 6) runs instead of after approve-bvt: 7a plan + owner selection + PR at Step 6 entry; the watcher side-channel (scripts/Invoke-RevertBitsTrack.ps1) follows the PR, reuses/queues the revert build and marks it 'ready'. Right after approve-bvt Step 7 rolls canary back with the ready revert build and Step 8 runs the BVT on it — no separate approve-revert." }
+      }
+    },
+
+    "commitExcel": {
+      "type": "object",
+      "description": "Settings for the commit-collection Excel sheet.",
+      "required": ["sheetNameTemplate", "sharePointFolder", "excludeAuthors"],
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["per-release", "tracker"],
+          "default": "per-release",
+          "description": "'per-release': Step 4 creates and uploads a new commits.xlsx every release (default). 'tracker': Step 4 adds one sheet per release to a single shared workbook (commitExcel.tracker) and edits it in place via the Graph Excel API — scripts/Invoke-CommitTracker.ps1."
+        },
+        "tracker": {
+          "type": "object",
+          "description": "Required when mode == 'tracker'. The shared workbook and its column layout.",
+          "required": ["url", "columns"],
+          "additionalProperties": true,
+          "properties": {
+            "url": { "type": "string", "minLength": 1, "description": "SharePoint sharing link (or URL) of the shared tracker workbook." },
+            "dateFormat": { "type": "string", "default": "dd-mm-yyyy", "description": "Excel number format of the date column." },
+            "headerStyle": {
+              "type": "object",
+              "description": "Header row styling for sheets ZED creates.",
+              "properties": {
+                "fill": { "type": "string" }, "fontColor": { "type": "string" },
+                "bold": { "type": "boolean" }, "wrapText": { "type": "boolean" }
+              }
+            },
+            "columns": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Columns in sheet order. Exactly one column must have source 'link' (or 'linkText') — it identifies each row (PR id / commit sha). Columns without a source are team-filled; 'required: true' ones must be non-empty on every row before Step 4 completes.",
+              "items": {
+                "type": "object",
+                "required": ["header"],
+                "additionalProperties": false,
+                "properties": {
+                  "header":   { "type": "string", "minLength": 1 },
+                  "source":   { "type": "string", "enum": ["date", "author", "link", "linkText", "description", "commitId"] },
+                  "required": { "type": "boolean", "default": false },
+                  "width":    { "type": "number", "minimum": 0, "description": "Column width (points) for sheets ZED creates." },
+                  "aliases":  { "type": "array", "items": { "type": "string" }, "description": "Other header spellings accepted when adopting an existing sheet (matching ignores spaces and case)." }
+                }
+              }
+            }
+          }
+        },
+        "sheetNameTemplate": {
+          "type": "string",
+          "description": "Template for the Excel sheet tab name. Supports {{YYMM}}, {{YYYY}}, {{MM}}, {{releaseId}}, {{releaseName}} (with releaseNaming several releases share a month — use {{releaseName}}, e.g. BCM2610_2).",
+          "minLength": 1
+        },
+        "sharePointFolder": {
+          "type": "string",
+          "description": "SharePoint document library path for uploading the Excel file.",
+          "minLength": 1
+        },
+        "excludeAuthors": {
+          "type": "array",
+          "description": "Git author names to exclude from commit collection.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "sharepoint": {
+      "type": "object",
+      "description": "SharePoint site configuration for commit Excel uploads.",
+      "required": ["sitePath"],
+      "additionalProperties": true,
+      "properties": {
+        "sitePath": {
+          "type": "string",
+          "description": "SharePoint site path for Graph API (e.g., '/teams/AzureBackupDataPlane').",
+          "minLength": 1
+        }
+      }
+    },
+
+    "notifications": {
+      "type": "object",
+      "description": "Email and Teams notification configuration.",
+      "required": ["groups", "routing"],
+      "additionalProperties": true,
+      "properties": {
+        "groups": {
+          "type": "object",
+          "description": "Named recipient groups referenced by routing rules.",
+          "required": ["permanent", "teams"],
+          "additionalProperties": true,
+          "properties": {
+            "permanent": {
+              "type": "array",
+              "description": "Always-notified email addresses.",
+              "items": { "type": "string" }
+            },
+            "cc": {
+              "type": "array",
+              "description": "CC-line email addresses.",
+              "items": { "type": "string" }
+            },
+            "teams": {
+              "type": "array",
+              "description": "Teams channel names for notifications.",
+              "items": { "type": "string" }
+            },
+            "teamsExtended": {
+              "type": "array",
+              "description": "Extended Teams channel names (used for commit-request and similar broader broadcasts).",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "routing": {
+          "type": "object",
+          "description": "Per-step notification routing. Keys are step identifiers (matching stepGates: '1-send-reminder' through '16-merge-back'), plus 'approval-requests' for pipeline runs waiting on the OneBranch Approval Service / an ADO approval (approval-needed/-reminder/-expiring -> halt, approval-failed -> failure; Invoke-ApprovalWatch.ps1). Each step may define routing for any of three outcomes: 'success', 'failure', 'halt' (where 'halt' covers both unexpected halts and approval-waiting gates). The release owner is ALWAYS added to every notification by Resolve-NotificationRecipients.ps1 — there is no per-rule includeOwner field. Any step or outcome not listed defaults to owner-only. EventKeys map into this table as follows: step-<N>-completed/skipped -> success; step-<N>-failed -> failure; step-<N>-waiting-approval -> halt; reminder -> 1-send-reminder.success; commit-request -> 4-collect-commits.success; create-r2d -> 13-create-r2d.success; ev2-stage-progress -> 15-production-rollout.success; ev2-promotion-reminder -> 15-production-rollout.halt. Generic keys (judgment, failure, halt, step-transition) are unmapped and always owner-only.",
+          "additionalProperties": false,
+          "properties": {
+            "_comment": { "type": "string", "description": "Human-readable comment explaining the routing section." },
+
+            "1-send-reminder":             { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "2-cut-branch":                { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "3-wait-build":                { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "4-collect-commits":           { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "5-deploy-canary":             { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "6-bvt-check":                 { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "7-rollback":                  { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "8-post-rollback-bvt":         { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "9-post-rollback-signoff":     { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "10-roll-forward":             { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "11-post-rollforward-bvt":     { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "12-post-rollforward-signoff": { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "13-create-r2d":               { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "14-crb-review":               { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "15-production-rollout":       { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "16-merge-back":               { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } },
+            "approval-requests":           { "type": "object", "additionalProperties": false, "properties": { "success": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "failure": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } }, "halt": { "type": "object", "additionalProperties": false, "properties": { "emailGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "ccGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } }, "teamsGroups": { "type": "array", "items": { "type": "string", "enum": ["permanent","cc","teams","teamsExtended"] } } } } } }
+          }
+        }
+      }
+    },
+
+    "safefly": {
+      "type": "object",
+      "description": "SafeFly change-request configuration.",
+      "required": ["titleTemplate", "descriptionTemplate", "tags", "serviceGroupName"],
+      "additionalProperties": true,
+      "properties": {
+        "extendedRequest": { "type": "boolean", "default": false, "description": "Opt-in extended R2D builder (BCM): change sections / title themes / validation summary / previous-build fields, JSON-array multi-selects, tag GUID lookup, team-assessed-risk answers, region groups, content warnings, and SafeFly V2 approval polling in Step 14. Off (default): the original builder (New-SafeFlyRequest.Legacy.ps1) and V1 approval polling." },
+        "referenceRequest": {
+          "type": "object",
+          "description": "The owner-designated SafeFly request whose conventions R2Ds follow (title, description, team risk justification, regions, rollback, tags). Read it with requestByDisplayId before changing any safefly value.",
+          "properties": {
+            "displayId": { "type": "string", "pattern": "^\\d+\\.\\d+$" },
+            "id": { "type": "string" },
+            "title": { "type": "string" },
+            "url": { "type": "string" },
+            "note": { "type": "string" }
+          }
+        },
+        "titleTemplate": {
+          "type": "string",
+          "description": "Template for SafeFly CR title. Supports {serviceName}, {serviceDisplayName}, {releaseName} / {releaseId} (e.g. BCM2610_2), {releaseNumber} (release name without releaseNaming.prefix, e.g. 2610_2; else yyMM), {titleThemes} (-TitleThemes, per-release; fails closed on a real filing when empty), {month}, {yy}, {buildNumber}, {buildId}. {month}/{yy} are the release month (-ReleaseMonth = release.json releaseMonth), not the filing date. The SafeFly portal prefixes the service name ('Backup (MAB): ') — do not repeat it. BCM (reference 13.12038): '{serviceName} Monthly Release {releaseNumber}: {titleThemes}'.",
+          "minLength": 1
+        },
+        "descriptionTemplate": {
+          "type": "string",
+          "description": "Template for SafeFly CR description (HTML allowed). Supports the titleTemplate tokens plus {changeSections} (-ChangeSections rendered as <h4>section</h4><ul><li>sentence <a>PR/work item</a></li></ul> in descriptionSections order), {payloadUrl} (payloadUrlTemplate with -PreviousBuildId), {commitExcelUrl} / {commitExcelSheet} (HTML-encoded) and the legacy {changeSummary} (-ChangeSummary lines, <br>-joined). A commit Excel URL not referenced by the template is appended as a link. A real filing fails closed when a used token is empty.",
+          "minLength": 1
+        },
+        "descriptionSections": {
+          "type": "array",
+          "description": "Ordered h4 section names for {changeSections} (BCM reference 13.12038: Highlights, Features, Dependency Updates, Configuration Changes, Fixes). Empty sections are omitted; a -ChangeSections item with another section fails closed.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "prUrlTemplate": {
+          "type": "string",
+          "description": "PR link for a -ChangeSections item with 'pr' ({id} token), e.g. https://msazure.visualstudio.com/One/_git/<repo>/pullrequest/{id}. Link text is the PR number."
+        },
+        "workItemUrlTemplate": {
+          "type": "string",
+          "description": "Work item link for a -ChangeSections item with 'workItem' ({id} token), e.g. https://msazure.visualstudio.com/One/_workitems/edit/{id}."
+        },
+        "payloadUrlTemplate": {
+          "type": "string",
+          "description": "Payload link for {payloadUrl} (13.12038 'For more details, view the Payload'): ADO build-health Payload view with tokens {buildId} (release build) and {previousBuildId} (-PreviousBuildId = release.json previousBuildId), e.g. https://msazure.visualstudio.com/One/_apps/buildhealth?serviceId=<id>&definitionId=<official build definition>&buildId={buildId}&payloadBuildId={previousBuildId}&view=Payload&payloadType=PullRequests."
+        },
+        "teamRiskJustificationTemplate": {
+          "type": "string",
+          "description": "Template for the 'core.team_risk.justification' answer (what R2D reviewers judge). Plain text (the reference answers are plain text; '\\n' line breaks allowed). Supports the titleTemplate tokens plus {validationSummary} (-ValidationSummary). A real filing fails closed when {validationSummary} is used but empty. Unset: question not answered. BCM: the owner's multi-layer validation/monitoring statement (2026-10-22), verbatim."
+        },
+        "regionGroups": {
+          "type": "array",
+          "description": "SafeFly V2 regionGroups names whose regions make up 'core.regions' (minus -ExcludedRegions CCOA exclusions), e.g. United States, Europe, Asia Pacific, Americas (Excl. US), Middle East & Africa, Fairfax, Mooncake for a Public+Fairfax+Mooncake rollout. Unknown group names fail closed. Unset: -TargetedRegions is used.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "tags": {
+          "type": "array",
+          "description": "Tags applied to the SafeFly change request — V2 tag names (or tag GUIDs). New-SafeFlyRequest resolves names with tags(name:) to tag GUIDs; a name that does not exist in SafeFly V2 is skipped with a warning (never sent as a name). May be empty (the BCM reference 13.12038 has no tags).",
+          "items": { "type": "string" },
+          "minItems": 0
+        },
+        "additionalNotifiers": {
+          "type": "array",
+          "description": "Extra email addresses to notify on SafeFly CR events.",
+          "items": { "type": "string" }
+        },
+        "monitoringLink": {
+          "type": "string",
+          "description": "Monitoring dashboard URL (e.g., Geneva MDM monitors link).",
+          "format": "uri"
+        },
+        "serviceGroupName": {
+          "type": "string",
+          "description": "EV2 service group sent as the SafeFly V2 'ev2.servicegroup' answer (e.g. 'microsoft.azure.backup.cntl.bcm.active'). Must be one of getEV2Payload(serviceTreeId).serviceGroups — NOT the SafeFly service name (e.g. 'Backup (MAB)'). Service-specific; ZED reads this from config and must never hard-code it.",
+          "minLength": 1
+        },
+        "graphQlEndpoint": {
+          "type": "string",
+          "description": "SafeFly V2 GraphQL endpoint used for R2D creation (V1 write API returns HTTP 410). E.g. https://safeflyv2.live.azure.com/api/v1.0/graphql. Required by Step 13.",
+          "format": "uri"
+        },
+        "tokenAudience": {
+          "type": "string",
+          "description": "AAD audience for SafeFly V2 tokens, e.g. api://f6f1426c-4d1b-44d8-8e36-db5824a21fe2. Required by Step 13."
+        },
+        "franchiseId": {
+          "type": "string",
+          "description": "SafeFly V2 franchise GUID (the request's franchiseId — e.g. Compute-Host-Franchise b52a8292-...). Required by Step 13.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "serviceId": {
+          "type": "string",
+          "description": "SafeFly V2 serviceId (Service Tree id). Optional — defaults to serviceTreeIds.safefly.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "changeTypeId": {
+          "type": "string",
+          "description": "SafeFly V2 change type GUID for a service code deployment (category 'codedeployment', e.g. 'App deployment'). Not 'Production touch' (ACIS/JIT changes). List with changeTypes(franchiseId). Required by Step 13.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "changeTypeName": {
+          "type": "string",
+          "description": "Display name of changeTypeId (e.g. 'App deployment'); used in messages only."
+        },
+        "formId": {
+          "type": "string",
+          "description": "SafeFly V2 form GUID — the change type's activeFormId. Forms are versioned; re-check with changeTypes(franchiseId) when SafeFly rejects it. Required by Step 13.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "rollbackStrategy": {
+          "type": "string",
+          "description": "Option (label or value) for the R2D 'core.rollback_strategy' question, e.g. 'Manual (TSG)'. Default: 'DRI determines rollback or rollforward in real time based on the issue'. Validated against the live form options."
+        },
+        "adoBuildLink": {
+          "type": "boolean",
+          "default": false,
+          "description": "true: Step 13 answers the R2D ADO build question ('ado.build_na' = Applicable, 'ado.build' = release.json buildUrl). false: 'Not Applicable'."
+        },
+        "r2dBuildSource": {
+          "type": "string",
+          "enum": ["releaseBuild", "productionRun"],
+          "default": "releaseBuild",
+          "description": "What the R2D 'ev2.build' answer carries. releaseBuild: release.json buildNumber. productionRun: Step 13 first triggers the Step 15 production pipeline(s) (all Step 15 gates; only pipelines with a verified pipeline-catalog approvalGate) and uses the run's buildNumber (e.g. Release-2610-1); Step 15 then reuses that run instead of triggering again."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Evidence / free-text memo for the SafeFly values (where each id was verified)."
+        }
+      }
+    },
+
+    "regions": {
+      "type": "object",
+      "description": "Region source-of-truth for deployment/SafeFly region discovery (consumed by Get-RegionMapping.ps1). Service-specific; ZED reads these instead of hard-coding a region source.",
+      "additionalProperties": true,
+      "properties": {
+        "ascRepo": {
+          "type": "string",
+          "description": "ADO repo (in msazure/One) holding the AzureServiceConfig.json region source-of-truth."
+        },
+        "ascPath": {
+          "type": "string",
+          "description": "Path within ascRepo to AzureServiceConfig.json."
+        },
+        "ascBranch": {
+          "type": "string",
+          "description": "Branch of ascRepo to fetch from (e.g. 'develop')."
+        },
+        "supplementaryRegions": {
+          "type": "array",
+          "description": "SafeFly-only regions without physical deployment stamps, not yet in ASC. Each item: { DataCenterName, RegionShortName }.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "DataCenterName":  { "type": "string" },
+              "RegionShortName": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "operational": {
+      "type": "object",
+      "description": "Timeouts, polling intervals, and operational parameters.",
+      "required": [
+        "buildTimeoutMinutes",
+        "bvtWaitHours",
+        "bvtQueryTimeoutMinutes",
+        "excelCompletionTimeoutHours",
+        "canaryBakeTimeHours",
+        "reminderBeforeCutDays",
+        "watcherPollIntervalSeconds",
+        "watcherTestModePollIntervalSeconds",
+        "watcherMaxRetries",
+        "watcherTaskPrefix"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "buildTimeoutMinutes": {
+          "type": "integer",
+          "description": "Maximum minutes to wait for a build to complete. Default 360 (6 hours).",
+          "default": 360,
+          "minimum": 1
+        },
+        "bvtWaitHours": {
+          "type": "integer",
+          "description": "Hours to wait before running BVT queries after deployment.",
+          "default": 24,
+          "minimum": 1
+        },
+        "bvtQueryTimeoutMinutes": {
+          "type": "integer",
+          "description": "Maximum minutes for a BVT Kusto query to return results.",
+          "default": 120,
+          "minimum": 1
+        },
+        "excelCompletionTimeoutHours": {
+          "type": "integer",
+          "description": "Maximum hours to wait for commit Excel completion.",
+          "default": 48,
+          "minimum": 1
+        },
+        "canaryBakeTimeHours": {
+          "type": "integer",
+          "description": "Hours to bake in canary before progressing.",
+          "default": 24,
+          "minimum": 1
+        },
+        "reminderBeforeCutDays": {
+          "type": "integer",
+          "description": "Days before branch cut date to send the reminder.",
+          "default": 2,
+          "minimum": 0
+        },
+        "approvalWatchEnabled": { "type": "boolean", "default": false, "description": "Opt-in approval watch (Invoke-ApprovalWatch.ps1): email + Teams the OneBranch Approval Service / ADO approval link of every waiting deployment run, with reminders and an expiry alert (routing row notifications.routing.approval-requests). Off (default): the original Teams post of approval links in Steps 5/7/10 and by the watcher." },
+        "approvalPollIntervalSeconds": { "type": "integer", "description": "How often the watcher checks watched pipeline runs for pending approvals (Approval Service / ADO), independent of watcherPollIntervalSeconds.", "default": 600, "minimum": 60 },
+        "scheduleGuardPollIntervalSeconds": { "type": "integer", "description": "How often the watcher runs the canary schedule guard (pause after Step 5, cancel runs ZED did not queue, restore after Step 6), independent of watcherPollIntervalSeconds — keep it well below the time a guarded pipeline needs to reach its deploy stage.", "default": 300, "minimum": 60 },
+        "approvalReminderHours": { "type": "number", "description": "Re-send the approval email + Teams message every N hours while the approval is still pending (0 = no reminders).", "default": 4, "minimum": 0 },
+        "approvalExpiryWarnHours": { "type": "number", "description": "Send one 'approval expires soon' alert this many hours before the OneBranch approval task expires.", "default": 12, "minimum": 0 },
+        "watcherPollIntervalSeconds": {
+          "type": "integer",
+          "description": "Seconds between watcher poll cycles in production mode.",
+          "default": 3600,
+          "minimum": 60
+        },
+        "watcherTestModePollIntervalSeconds": {
+          "type": "integer",
+          "description": "Seconds between watcher poll cycles in test mode.",
+          "default": 1800,
+          "minimum": 60
+        },
+        "watcherMaxRetries": {
+          "type": "integer",
+          "description": "Maximum consecutive retries for transient watcher failures.",
+          "default": 3,
+          "minimum": 0
+        },
+        "watcherTaskPrefix": {
+          "type": "string",
+          "description": "Prefix for watcher scheduled-task names.",
+          "default": "ZED-ReleaseWatcher",
+          "minLength": 1
+        },
+        "regionMappingRepo": {
+          "type": "string",
+          "description": "ADO repository containing AzureServiceConfig.json for region mapping.",
+          "default": "Mgmt-RecoverySvcs-DeploymentExtn"
+        },
+        "regionMappingPath": {
+          "type": "string",
+          "description": "File path within the region mapping repo.",
+          "default": "src/DeploymentInfra/EV2DeploymentEngine/SchemaInput/AzureServiceConfig.json"
+        },
+        "regionMappingBranch": {
+          "type": "string",
+          "description": "Branch to read region mapping from.",
+          "default": "develop"
+        }
+      }
+    },
+
+    "stepGates": {
+      "type": "object",
+      "description": "Per-step approval gates. true = owner must approve before next step. false = auto-advance.",
+      "required": [
+        "1-send-reminder",
+        "2-cut-branch",
+        "3-wait-build",
+        "4-collect-commits",
+        "5-deploy-canary",
+        "6-bvt-check",
+        "7-rollback",
+        "8-post-rollback-bvt",
+        "9-post-rollback-signoff",
+        "10-roll-forward",
+        "11-post-rollforward-bvt",
+        "12-post-rollforward-signoff",
+        "13-create-r2d",
+        "14-crb-review",
+        "15-production-rollout",
+        "16-merge-back"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "_comment": {
+          "type": "string",
+          "description": "Human-readable comment explaining the stepGates section."
+        },
+        "1-send-reminder":             { "type": "boolean", "default": false },
+        "2-cut-branch":                { "type": "boolean", "default": false },
+        "3-wait-build":                { "type": "boolean", "default": false },
+        "4-collect-commits":           { "type": "boolean", "default": false },
+        "5-deploy-canary":             { "type": "boolean", "default": false },
+        "6-bvt-check":                 { "type": "boolean", "default": true },
+        "7-rollback":                  { "type": "boolean", "default": false },
+        "8-post-rollback-bvt":         { "type": "boolean", "default": false },
+        "9-post-rollback-signoff":     { "type": "boolean", "default": true },
+        "10-roll-forward":             { "type": "boolean", "default": false },
+        "11-post-rollforward-bvt":     { "type": "boolean", "default": false },
+        "12-post-rollforward-signoff": { "type": "boolean", "default": true },
+        "13-create-r2d":               { "type": "boolean", "default": false },
+        "14-crb-review":               { "type": "boolean", "default": true },
+        "15-production-rollout":       { "type": "boolean", "default": false },
+        "16-merge-back":               { "type": "boolean", "default": false }
+      }
+    },
+
+    "sds": {
+      "type": "object",
+      "description": "Service Datacenter Settings (Phobos 2022 schema, https://aka.ms/phobosweb/schema/2022/sds) location, keyed by pipeline key from pipeline-catalog.json. Populated by setup-service group 11.3b after the owner confirms the file the wizard located by following the pipeline YAML's `-SdsFiles <name>` hint. Consumed by Get-StampInventory.ps1 (SDS reconciliation for Public cloud, SDS-only inventory for sovereign clouds) and the inventory approval gate. Multiple pipeline keys may point at the same SDS file when one repo backs many pipelines.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["repo", "branch", "path", "fileName"],
+        "additionalProperties": true,
+        "properties": {
+          "repo":        { "type": "string", "description": "ADO repository name that hosts the SDS file (e.g. 'Mgmt-RecoverySvcs-DataMover').", "minLength": 1 },
+          "branch":      { "type": "string", "description": "Branch on which the SDS file is authoritative (matches the pipeline YAML's `resources.repositories` ref).", "minLength": 1, "default": "develop" },
+          "path":        { "type": "string", "description": "Path within the repo, ending in the filename (e.g. 'src/ServiceFabric/Deployment/ServiceDatacenterSettingsConfig.json').", "minLength": 1 },
+          "fileName":    { "type": "string", "description": "Bare filename as referenced by the pipeline's `-SdsFiles <name>` argument (e.g. 'ServiceDatacenterSettingsConfig.json' or 'ServiceDatacenterSettingsConfigActPass.json').", "minLength": 1 },
+          "confirmedAt": { "type": "string", "format": "date-time", "description": "UTC timestamp when the owner confirmed (via setup-service group 11.3b) that this is the SDS that contains all stamps for this service." },
+          "confirmedBy": { "type": "string", "description": "Email/UPN of the owner who confirmed the SDS location." },
+          "localClonePath": { "type": "string", "description": "Optional absolute path to a local clone of `repo`. When present, Get-StampInventory.ps1 reads the SDS from disk instead of fetching from ADO — faster and works offline." }
+        }
+      }
+    },
+
+    "sdsFieldMapping": {
+      "type": "object",
+      "description": "Overrides the Phobos 2022 default dotted paths Get-StampInventoryFromSds.ps1 walks when parsing the SDS. Built-in defaults match the schema at https://aka.ms/phobosweb/schema/2022/sds. Set this block only when the service's SDS uses a non-standard shape; setup-service group 11.3b detects the shape and writes the override once with owner confirmation. Any subset of keys may be supplied — missing keys fall back to the built-in defaults.",
+      "additionalProperties": false,
+      "properties": {
+        "cloudArrayPath":     { "type": "string", "description": "Dotted path from SDS root to the array of cloud entries. Default 'CloudSettings'.", "default": "CloudSettings" },
+        "cloudNameField":     { "type": "string", "description": "Field on each cloud entry that holds its name (e.g. 'Public', 'Canary', 'Fairfax'). Default 'CloudName'.", "default": "CloudName" },
+        "stampsArrayField":   { "type": "string", "description": "Field on each cloud entry that holds the array of stamps. Default 'StampSettings'.", "default": "StampSettings" },
+        "stampIdField":       { "type": "string", "description": "Field on each stamp entry holding the canonical stamp id (e.g. 'ea-01'). Default 'StampId'.", "default": "StampId" },
+        "stampNamePath":      { "type": "string", "description": "Dotted path from a stamp entry to the full stamp name (e.g. 'ea-can02-dm1'). Default 'Macros.__StampName__'.", "default": "Macros.__StampName__" },
+        "clusterNamePath":    { "type": "string", "description": "Default 'Macros.__ClusterName__'.", "default": "Macros.__ClusterName__" },
+        "dcShortNamePath":    { "type": "string", "description": "Default 'Macros.__DatacenterShortName__'.", "default": "Macros.__DatacenterShortName__" },
+        "regionPath":         { "type": "string", "description": "Default 'Macros.__ClusterLocation__'.", "default": "Macros.__ClusterLocation__" },
+        "deploymentNamePath": { "type": "string", "description": "Default 'Macros.__DeploymentName__'.", "default": "Macros.__DeploymentName__" },
+        "dsmsRegionPath":     { "type": "string", "description": "Default 'Macros.__DsmsRegion__'.", "default": "Macros.__DsmsRegion__" }
+      }
+    },
+
+    "inventory": {
+      "type": "object",
+      "description": "Stamp/region inventory overrides. Populated by setup-service. The production inventory is live-queried from Kusto by Get-StampInventory.ps1 and (when sds is configured) cross-checked against SDS; the canary inventory is owner-curated here (canary set is small and stable — one DC in the Canary cloud, today). Sovereign clouds (Fairfax/Mooncake/USNat/USSec) are sourced from SDS only — Get-StampInventory.ps1 refuses Kusto for them because AME-tenant access is unavailable from setup-service.",
+      "additionalProperties": true,
+      "properties": {
+        "driftToleranceCount": {
+          "type": "integer",
+          "description": "Maximum number of unmatched stamps (Kusto-only or SDS-only) tolerated before Get-StampInventory.ps1 marks the run as 'drift' and the inventory approval gate refuses Step 10 / Step 15. 0 means any drift requires re-approval.",
+          "minimum": 0,
+          "default": 0
+        },
+        "stampNaming": {
+          "type": "object",
+          "description": "How Get-StampInventory.ps1 normalizes stamp names before ASC validation and SDS reconciliation. Kusto StampName is '{shortName}-{layout}-{stampTag}{index}' (e.g. 'acl-pod01-coord1'), optionally with a per-partition suffix ('ecy-pod01-coord1-p1a'); SDS StampId is often the short form '{shortName}-{index}' ('acl-01'). Reconciliation pairs both on the cloud-local key '{shortName}-{index}' (numeric index unpadded) and only compares Kusto stamps that ASC resolved into the reconciled cloud. Sovereign-cloud SDS short ids are expanded to '{shortName}-{cloud layout}-{stampTag}{index}'.",
+          "additionalProperties": true,
+          "properties": {
+            "partitionSuffixPattern": {
+              "type": ["string", "null"],
+              "description": "OPT-IN regex (anchored at end by the script) matching a per-partition suffix on Kusto StampName, e.g. '-p[0-9]+[a-z]*'. Matching names fold into their base stamp, but only when the remainder is itself a valid stamp name. Omit / empty = no folding (partition names surface as grammar drift)."
+            },
+            "sdsStampIdPattern": {
+              "type": "string",
+              "description": "Regex with named groups 'shortName' and 'index' that recognises an SDS short StampId. Default '^(?<shortName>[a-z0-9]+)-(?<index>[0-9]+)$'.",
+              "default": "^(?<shortName>[a-z0-9]+)-(?<index>[0-9]+)$"
+            },
+            "notes": { "type": "string", "description": "Evidence / free-text memo for the chosen patterns." }
+          }
+        },
+        "production": {
+          "type": "object",
+          "description": "Production inventory gate settings.",
+          "additionalProperties": true,
+          "properties": {
+            "approvalRequired": {
+              "type": "boolean",
+              "description": "When true (default), readiness.inventory.approved must be true AND readiness.inventory.sds.hash must match the latest SDS hash before Step 10 (Roll-Forward) and Step 15 (Production Rollout) are allowed to fire.",
+              "default": true
+            }
+          }
+        },
+        "canary": {
+          "type": "object",
+          "description": "Owner-curated canary stamp inventory. Multi-cloud: each stamp carries its own cloud / region / layout so services whose canary stamps span Public + sovereign clouds (or live entirely in Public, e.g. 'ecy', 'ccy') are represented natively. Get-StampInventory.ps1 (-Scope canary) reads this block instead of enumerating ASC datacenters, and lazily resolves clusterType via the Kusto query collected in Phase 4b when entries have clusterType=null and canaryRouting.mode == 'cluster-type'.",
+          "required": ["stamps"],
+          "additionalProperties": true,
+          "properties": {
+            "cloud": {
+              "type": "string",
+              "description": "DEPRECATED single-cloud cloud Name. Kept only so older configs still load; new fields live on each stamp. New configs should omit.",
+              "minLength": 1
+            },
+            "layout": {
+              "type": "string",
+              "description": "DEPRECATED single-cloud Layout. Kept only so older configs still load; new fields live on each stamp.",
+              "pattern": "^[a-z0-9]+$"
+            },
+            "regions": {
+              "type": "array",
+              "description": "DEPRECATED single-cloud regions list. Kept only so older configs still load; new fields live on each stamp.",
+              "items": { "type": "string", "pattern": "^[a-z0-9]+$" }
+            },
+            "regionPrefixHints": {
+              "type": "array",
+              "description": "Owner-declared canary region short names (or shape-anchored prefixes like 'ea-can') from setup-service Group 4c. The wizard looks each one up in AzureServiceConfig.json to resolve its cloud + layout, then builds the stamps[] entries below. Persisted only so re-runs of Group 4c can offer the saved list as a default; not consulted by Get-StampInventory at release time.",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "stamps": {
+              "type": "array",
+              "description": "Canary stamps for this service across all clouds. Each entry carries its own cloud / region / layout so the agent does not assume a single canary cloud. clusterType may be null at setup time — Get-StampInventory.ps1 fills it lazily via the Phase 4b Kusto query when canaryRouting.mode == 'cluster-type'.",
+              "items": {
+                "type": "object",
+                "required": ["stampName"],
+                "additionalProperties": true,
+                "properties": {
+                  "stampName": {
+                    "type": "string",
+                    "description": "Full stamp identifier as it appears in Kusto / EV2 (e.g. 'ea-can02-prot1', 'ecy-prod-prot1').",
+                    "pattern": "^[a-z0-9]+-[a-z0-9]+-[a-z]+[a-z0-9]+$"
+                  },
+                  "cloud": {
+                    "type": "string",
+                    "description": "Cloud Name from AzureServiceConfig.json → Clouds[].Name (e.g. 'Public', 'Canary', 'BVTD3'). Optional for back-compat — when omitted, falls back to inventory.canary.cloud (deprecated singular).",
+                    "minLength": 1
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "DataCenter ShortName from ASC (e.g. 'ea', 'ecy', 'ccy'). Optional for back-compat — when omitted, derived from stampName prefix.",
+                    "pattern": "^[a-z0-9]+$"
+                  },
+                  "layout": {
+                    "type": "string",
+                    "description": "Cloud Layout (stamp-name middle segment) for this stamp's cloud (e.g. 'can02', 'prod'). Optional for back-compat — when omitted, falls back to inventory.canary.layout (deprecated singular).",
+                    "pattern": "^[a-z0-9]+$"
+                  },
+                  "clusterType": {
+                    "type": ["string", "null"],
+                    "description": "Cluster type token consumed by pipeline-catalog.json → canaryRouting.clusterTypeMap (e.g. 'sfrp', 'sfmc', 'eap', 'aks'). May be null at setup time — Get-StampInventory.ps1 fills it lazily by running kusto.canary when canaryRouting.mode == 'cluster-type'. setup-service Group 4c never prompts for this value.",
+                    "minLength": 1
+                  },
+                  "stampId": {
+                    "type": "string",
+                    "description": "Short stamp identifier expected by pipelines that use ParseStampId (e.g. 'ea-01', 'ecy-01'). When present, Resolve-TemplateParams.ps1 uses this for {{canaryStamps}} / {{*Stamps}} tokens by default (stampNameStyle='short'). When absent, falls back to stampName.",
+                    "pattern": "^[a-z0-9]+-[a-z0-9]+$"
+                  },
+                  "notes": {
+                    "type": "string",
+                    "description": "Free-text annotation (owner, decommission date, etc.)."
+                  }
+                }
+              },
+              "minItems": 1
+            }
+          }
+        },
+        "ccoaExclusions": {
+          "type": "object",
+          "description": "CCOA (Change Control / Operational Awareness) exclusions for the current release cycle. Stamps listed here are subtracted from all emitted {{*Stamps}} tokens and populate {{excludeStamps}}. Regions listed here are subtracted from all emitted {{*Regions}} tokens. Populated by setup-service or manually by the release owner before Step 15.",
+          "additionalProperties": false,
+          "properties": {
+            "stamps": {
+              "type": "array",
+              "description": "Stamp IDs excluded from production deployment (e.g. ['isc-01', 'ne5s-01']). These populate {{excludeStamps}} and are subtracted from all {{*Stamps}} tokens.",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            },
+            "regions": {
+              "type": "array",
+              "description": "Region names excluded from production deployment (e.g. ['indiasouthcentral', 'northeastus5']). These are subtracted from all {{*Regions}} tokens. A region should be listed here when ALL its stamps are excluded.",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            }
+          }
+        }
+      }
+    },
+
+    "agentFeedbackEmail": {
+      "type": "string",
+      "description": "Email address that receives feedback about the ZED agent itself. Hardcoded to the agent author; do not change.",
+      "default": "gwazire@microsoft.com"
+    },
+    "stampPrefixToRegion": {
+      "type": "object",
+      "description": "Optional service-specific map from a stamp-name PREFIX to its Azure region short name, e.g. { \"isc\": \"indiasouthcentral\", \"ne5s\": \"northeastus5\", \"uae\": \"uaecentral\", \"ilc\": \"israelcentral\", \"qac\": \"qatarcentral\" }. Stamps are named {prefix}-{layout}-{serviceTag}{n} and the prefix is NOT always the literal region code (e.g. 'uae' maps to uaecentral via short code 'uac'). Steps that add a stamp's region to a pipeline's PubRegions (onboarding/reclassifying a stamp) look the region up here instead of guessing. Service-agnostic — each service supplies its own map.",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

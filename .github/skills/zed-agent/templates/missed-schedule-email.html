@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f0f0f0}.header{background:#ff8c00;color:white;padding:16px;text-align:center}.warn-box{background:#fff4ce;border:1px solid #ff8c00;border-radius:4px;padding:12px;margin:12px 0}</style></head>
+<body>
+<div class="header"><h2>⚠️ Missed Scheduled Deployment — Release {{releaseId}}</h2></div>
+<p>Hi {{releaseOwnerName}},</p>
+<p>The release agent <strong>missed a scheduled production deployment</strong>. The pipeline was not triggered at the configured date and time.</p>
+<table>
+<tr><th>Release</th><td>{{releaseId}}</td></tr>
+<tr><th>Region</th><td>{{regionName}}</td></tr>
+<tr><th>Scheduled At</th><td>{{scheduledAt}}</td></tr>
+<tr><th>Detected At</th><td>{{detectedAt}}</td></tr>
+<tr><th>Delay</th><td>{{delayMinutes}} minutes late</td></tr>
+</table>
+<div class="warn-box"><strong>Reason:</strong> {{reason}}</div>
+<p><strong>Next steps:</strong></p>
+<ul>
+<li>Run <code>resume</code> to restart the watcher and re-trigger the deployment</li>
+<li>Check if the watcher process is running — run <code>resume</code> to restart it</li>
+</ul>
+<p>Thanks,<br>Release Orchestrator</p>
+</body>
+</html>

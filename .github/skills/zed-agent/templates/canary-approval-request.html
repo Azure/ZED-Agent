@@ -1,0 +1,26 @@
+<b>🔐 Canary Approval Required — {{releaseId}}</b><br><br>
+
+Canary pipelines for <b>{{releaseId}}</b> (v{{buildVersion}}) need EV2 approval to proceed.<br>
+Branch: <code>{{branch}}</code><br>
+<b>Scope:</b> {{routeCount}} route(s) covering {{geographyCount}} geograph(ies)<br>
+{{regionListHtml}}<br><br>
+
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:Consolas,monospace; font-size:13px;">
+<tr style="background:#1a1a2e; color:#ffffff;">
+  <th style="padding:8px 12px;">Pipeline</th>
+  <th style="padding:8px 12px;">Stage</th>
+  <th style="padding:8px 12px;">Status</th>
+  <th style="padding:8px 12px;">Approval</th>
+  <th style="padding:8px 12px;">ADO Build</th>
+</tr>
+{{approvalRows}}
+</table><br>
+
+{{#ev2Links}}
+<b>EV2 Rollout Portal:</b><br>
+{{ev2Links}}<br>
+{{/ev2Links}}
+
+<i>Please approve the EV2 gates above to proceed with canary deployment.<br>
+Release owner: {{releaseOwner}}<br>
+Sent automatically by ZED Agent.</i>

@@ -1,0 +1,31 @@
+<b>🛑 Stamp Drift Detected — {{scope}} — Step {{stepNumber}} Halted</b><br><br>
+
+Release <b>{{releaseId}}</b> (branch <code>{{branch}}</code>) has been halted at <b>Step {{stepNumber}}</b> ({{stepName}}).<br>
+Get-StampInventory reported <b>{{driftCount}}</b> drift row(s) in <b>{{scope}}</b> scope that fail Azure Service Config validation.<br>
+<br>
+Per Layer 2 contract, the agent will NOT trigger any pipelines for this step until drift is resolved or explicitly approved by the release owner.<br><br>
+
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:Consolas,monospace; font-size:13px;">
+<tr style="background:#1a1a2e; color:#ffffff;">
+  <th style="padding:8px 12px;">Stamp Name</th>
+  <th style="padding:8px 12px;">Reason</th>
+  <th style="padding:8px 12px;">Source</th>
+</tr>
+{{driftRows}}
+</table><br>
+
+<b>Owner action required — pick one</b>:<br>
+<ol>
+  <li><b>Mitigate</b>: Edit <code>service-config.json → inventory.canary.stamps</code> (canary scope) or fix the Kusto query / <code>kusto.production.clusterTypeExtraction</code> (production scope), then reply with <code>mitigated</code> in this thread. The agent will re-run the resolver and proceed normally if drift clears.</li>
+  <li><b>Approve anyway</b>: Reply with <code>approve drift</code> to re-run the step with <code>-IgnoreDrift</code>. This will be audit-logged with your alias and the drift list. Use ONLY when you have already validated the drift is benign (e.g., a stamp is mid-decommission and won't actually receive deployment).</li>
+</ol>
+
+<b>Diagnostic</b>:<br>
+Resolver: <code>.github/skills/zed-agent/scripts/Resolve-PipelinesByClusterType.ps1 -Scope {{scope}}</code><br>
+Inventory: <code>.github/skills/zed-agent/scripts/Get-StampInventory.ps1 -Scope {{scope}}</code><br>
+Audit event: <code>drift-halt</code> in <code>.zed-agent/releases/{{releaseId}}/audit.jsonl</code><br>
+<br>
+
+<i>Release owner: {{releaseOwner}}<br>
+Halted at: {{haltedAt}}<br>
+Sent automatically by ZED Agent.</i>

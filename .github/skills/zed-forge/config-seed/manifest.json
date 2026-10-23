@@ -1,0 +1,17 @@
+{
+  "description": "Files ZedForge keeps and copies into the target deployment repo before every validation run. On each iteration Seed-DeploymentRepo.ps1 (1) installs the LATEST ZED (with this iteration's fixes) into the target via Install-Zed.ps1 -Force, then (2) overlays the kept files below. If a ZED change alters what any of these files must contain, update the kept copy here so it carries forward to future iterations.",
+  "targetRepoDefault": "Q:\\bdp3",
+  "installZedFirst": true,
+  "files": [
+    {
+      "from": "config-seed/service-config.json",
+      "to": ".github/skills/zed-agent/service-config.json",
+      "why": "Pre-filled real service config (msazure/One/Mgmt-RecoverySvcs-BackupDataPlane)."
+    },
+    {
+      "from": "config-seed/pipeline-catalog.json",
+      "to": ".github/skills/zed-agent/pipeline-catalog.json",
+      "why": "Pre-filled pipeline catalog (static routing). Fill real pipeline ids before real triggers succeed."
+    }
+  ]
+}

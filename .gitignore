@@ -1,0 +1,28 @@
+# Node dependencies (per-clone, installed via `npm install`)
+node_modules/
+
+# ZED runtime artifacts — scratch space (secrets, locks, caches — never committed)
+.zed-agent/
+# NOTE: .zed-release/ is intentionally NOT ignored — it holds durable state
+# (state.json, release.json, audit.jsonl, audit.md) that must survive across
+# stateless cloud sessions. It is committed to the release branch.
+
+# Secret guard — block secrets.json even under .zed-release/ (defensive)
+.zed-release/**/secrets.json
+.zed-agent/**/secrets.json
+
+# ZedForge loop state (runtime, per-clone)
+.github/skills/zed-forge/state/forge-state.json
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.bak
+*.tmp
+*.log
+Thumbs.db
+.DS_Store
+
+# PowerShell secrets dumps (defensive — should never be created here)
+*.secrets.json
+*.cred.xml

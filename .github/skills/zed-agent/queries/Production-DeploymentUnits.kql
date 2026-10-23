@@ -1,0 +1,15 @@
+// Production cluster-type detection — used by Step 10 (Roll-Forward) and Step 15
+// (Production Rollout) when productionRouting.mode == "cluster-type".
+//
+// Placeholders (substituted at runtime by Resolve-PipelinesByClusterType.ps1):
+//   {{SERVICE_FILTER}}      → CONFIG[kusto.production.serviceFilter]
+//   {{STAMP_PREFIX_FILTER}} → CONFIG[kusto.production.stampPrefixFilter]
+//
+// Required columns in result rows: StampName, DeploymentUnit
+// Response parsing: ALWAYS use $resp.Tables[0].Rows.
+EventLogAllClusters
+| where TIMESTAMP > ago(1d)
+| where {{SERVICE_FILTER}} and DeploymentName !contains 'r-pod01'
+| where {{STAMP_PREFIX_FILTER}}
+| summarize make_set(DeploymentUnit) by StampName
+| order by StampName asc

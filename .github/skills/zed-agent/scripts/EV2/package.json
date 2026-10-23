@@ -1,0 +1,12 @@
+{
+  "name": "zed-agent-ev2-portal-scrape",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright-driven scrape of the EV2 portal for rollout status. Used by Get-Ev2RolloutStatus.ps1 via Invoke-Ev2PortalScrape.js.",
+  "scripts": {
+    "postinstall": "echo \"playwright-core installed; ensure Microsoft Edge is available on PATH for CDP.\""
+  },
+  "dependencies": {
+    "playwright-core": "^1.59.1"
+  }
+}

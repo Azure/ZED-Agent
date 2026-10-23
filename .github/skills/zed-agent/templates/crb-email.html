@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f0f0f0}.header{background:#8661c5;color:white;padding:16px;text-align:center}</style></head>
+<body>
+<div class="header"><h2>📝 Change Review Board — Release {{releaseId}}</h2></div>
+<p>Dear CRB members,</p>
+<p>Please review the following change request for <strong>{{releaseLabel}} Release {{releaseId}}</strong> production deployment.</p>
+<table>
+<tr><th>Release</th><td>{{releaseId}}</td></tr>
+<tr><th>Branch</th><td>{{branchName}}</td></tr>
+<tr><th>Release Owner</th><td>{{releaseOwnerName}}</td></tr>
+<tr><th>R2D</th><td><a href="{{r2dUrl}}">{{r2dWorkItemId}}</a></td></tr>
+<tr><th>Commit Count</th><td>{{commitCount}}</td></tr>
+<tr><th>Rollout Stages</th><td>{{rolloutStages}}</td></tr>
+<tr><th>Canary Duration</th><td>{{canaryDuration}}</td></tr>
+<tr><th>BVT Pass Rate</th><td>{{bvtPassRate}}</td></tr>
+</table>
+<p><strong>Summary:</strong> {{changeSummary}}</p>
+<p>Thanks,<br>{{releaseOwnerName}}<br>Release Orchestrator</p>
+</body>
+</html>

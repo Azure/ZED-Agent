@@ -28,7 +28,7 @@
 .OUTPUTS
     PSCustomObject with: rolloutId, serviceGroup, overallStatus, portalUrl,
     completedNodes[], failedNodes[], inProgressNodes[], waitingNodes[],
-    suggestedActions[]
+    suggestedActions[], batchStages[], stageTransition (verified notification values)
 
 .EXAMPLE
     $status = .\Get-Ev2RolloutStatus.ps1 -BuildId 12345678 -ServiceGroup "Microsoft.Azure.Backup.<Service>.<Component>.ACTIVE"
@@ -443,6 +443,7 @@ $result = [PSCustomObject]@{
     inProgressNodes  = @()
     waitingNodes     = @()
     batchStages      = @()   # Parent SDP stages (Canary, Day1, etc.) with batch-level status
+    stageTransition  = $null
     suggestedActions = @()
     rawResponse      = $rollout
 }
@@ -469,6 +470,11 @@ foreach ($stage in $stages) {
             completedRegions  = $completedChildren
         }
     }
+}
+
+$result.stageTransition = & (Join-Path $PSScriptRoot 'Resolve-Ev2StageTransition.ps1') -BatchStages $result.batchStages
+if (-not $result.stageTransition.isVerified) {
+    $result.suggestedActions += $result.stageTransition.error
 }
 
 foreach ($stage in $stages) {

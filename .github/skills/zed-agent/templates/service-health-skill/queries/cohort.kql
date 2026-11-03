@@ -1,0 +1,6 @@
+// Contract: Unit, Version, FirstSeen, LastSeen, Ops  — one row per unit x build seen in the lookback.
+// TODO: a high-volume table that carries the unit (stamp) and the build version of the running process.
+TODO_OperationsTable
+| where TIMESTAMP between ({{LOOKBACK_START}} .. {{AS_OF}})
+| where TODO_UnitColumn matches regex @"TODO-unit-regex"
+| summarize FirstSeen = min(TIMESTAMP), LastSeen = max(TIMESTAMP), Ops = count() by Unit = TODO_UnitColumn, Version = TODO_VersionColumn

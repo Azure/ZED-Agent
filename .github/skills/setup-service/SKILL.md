@@ -9,7 +9,7 @@ description: |
   Use this skill whenever the release owner types any of:
     - `setup-service`               (full wizard from group 1)
     - `setup-service validate`      (run loader in strict mode, no prompts)
-    - `setup-service group <N>`     where N in {1, 2, 3, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 4.10, 4.11, 4.12, 4.13, 5a, 5b, 6, 7, 8, 9, 10}
+    - `setup-service group <N>`     where N in {1, 2, 3, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 4.10, 4.11, 4.12, 4.13, 5a, 5b, 6, 7, 8, 9, 10, 11}
                                     (jump directly to a group)
 
   Also use this skill from inside the `setup` command when Test-PreFlight reports
@@ -114,6 +114,7 @@ If the release owner types `setup-service validate`, skip all prompting — go s
 | `8` | Group 8 — SharePoint |
 | `9` | Group 9 — Operational Parameters |
 | `10` | Group 10 — Step Gates |
+| `11` | Group 11 — Release Health (post-deployment analysis, GO/NO-GO) |
 
 Dispatcher behavior:
 1. Parse the trailing token after `setup-service group `.
@@ -1108,6 +1109,38 @@ Explain what a gate is, then ask whether to change defaults. Use this exact phra
 >
 > *Would you like to change any gates? You can also adjust them later any time with `gate on <N>` / `gate off <N>`."*
 
+**Group 11 — Release Health (post-deployment analysis, GO/NO-GO)**
+
+Optional but recommended. After each deployment wave (canary, then every production stage), ZED compares the new build against the previous build on the same stamps (before/after) and against stamps still on the previous build (control). It checks operation outcomes, latency, error logs, CPU and memory, and upgrade health. It then mails a **GO / HOLD / NO-GO** verdict with justification. The engine lives in ZED (`scripts/Health/`). Everything service-specific — Kusto tables, queries, thresholds, markers and RCA knowledge — lives in a **service-owned skill in this repo** (`.github/skills/<service>-release-health/`), scaffolded from `zed-agent/templates/service-health-skill/`. Read `zed-agent/templates/service-health-skill/README.md` (placeholders, output column contracts) and `zed-agent/reference/release-health.md` before starting.
+
+Ask with `ask_user`, one topic per form, persisting after each answer (same incremental rules as every group). Pre-fill from what is already on disk. Never invent table or column names: when the owner is unsure, run exploratory KQL (`getschema`, `take 10`, `summarize count() by ...`) on their cluster and propose values for confirmation.
+
+| # | Topic | Ask / derive | Persist to |
+|---|-------|--------------|------------|
+| 11.1 | Enable + mode | Enable release health? Mode: `shadow` (owner-only mails, recommended for the first release), `advisory` (team mails, verdict informs promotion), `acknowledge` (owner must acknowledge a NO-GO/HOLD before promoting). Max background run minutes (default 40). | `service-config.json → releaseHealth {enabled, mode, maxRunMinutes}` |
+| 11.2 | On-call group | A **small on-call distribution list separate from the release notification groups** — receives early warnings (Sev1 tripwires) and NO-GO verdicts. | `notifications.groups.healthOnCall` (non-empty) |
+| 11.3 | Notification policy | Who gets which result. Default: GO → owner only (or `permanent` if the team wants every verdict); HOLD/INCONCLUSIVE → owner; NO-GO → `permanent` + `healthOnCall`; early warning → `healthOnCall`. | `notifications.routing['release-health'] {success, halt, failure}`, `['release-health-tripwire'].failure` |
+| 11.4 | Scaffold | Skill name (default `<service>-release-health`). Run `New-ServiceHealthSkill.ps1 -ServiceName <name> -UpdateServiceConfig` (sets `releaseHealth.skillPath`, keeps existing files). | `.github/skills/<skill>/` |
+| 11.5 | Telemetry source | Kusto cluster URI + database holding production telemetry; dashboard URL used today for manual validation (linked in every mail). | `health-config.json → dataSource, dashboardUrl` |
+| 11.6 | Deployment units | The column that identifies a stamp/deployment unit and a regex for real production units (exclude private/test partitions); canary units (exact names); how a unit maps to a region prefix (`unitPrefixRegex`); wave gap minutes (default 180). | `scope.*`, `queries/cohort.kql`, `queries/exposure.kql` |
+| 11.7 | Build version | Which column carries the deployed build and its format (e.g. `<buildNumber>-<branch with special chars → _>`); official build pattern; build patterns to exclude (users/dev/buddy builds). Confirm with a query that the current production build string matches `{buildNumber}-{branch}` for a known release. | `version.*`, `scope.officialVersionPattern`, `scope.excludeVersionPatterns` |
+| 11.8 | Workload outcomes | For each workload table (one row per operation): table, operation-name column, result/success condition, error-code column, subscription column, unit attribution (which column maps the row to a unit — may differ from the VM location). One outcomes signal per table. | `signals[] kind=outcomes` + `queries/<signal>.kql` |
+| 11.9 | Error classification | Where user-vs-service errors are defined: `ado-git-xml` (org/project/repo/path/branch + XPath of code and user-error flag), `local-xml`, or `none`; regex fallback for user errors; overrides. | `errorClassification.*` |
+| 11.10 | Latency + sub-operations | Optional sub-operation table (name, duration, error columns) for latency p50/p95 and sub-operation outcomes; minimum samples and minimum ms delta. | `signals[] kind=latency/outcomes` |
+| 11.11 | Error logs | Trace table, message/level columns, error level threshold, columns for role instance and process; extra normalization rules (beyond GUID/URL/quoted/number); history lookback (default 14 days) and minimum stamps (default 2). | `signals[] kind=signatures`, `signatureNormalization`, `queries/signatures.kql`, `queries/signature-history.kql` |
+| 11.12 | CPU + memory | Counter table, service/role filter, instance column, counter names for CPU, available memory, committed memory, exceptions/sec; CPU p95 ceiling (default 80), available-memory floor MB (default 1024), memory growth %/h (default 2). | `signals[] kind=counters/series` |
+| 11.13 | Upgrade health | Per role: "initialized" log marker + success token, stop marker + "stop requested" token, and the **role start-failure (role recycling) log prefixes** — ask for each role separately. Restart-loop rule (default 3 distinct restarts in 60 min, duplicates within 5 min collapsed). | `signals[] kind=lifecycle` params, `queries/lifecycle.kql`, `queries/start-failures.kql` |
+| 11.14 | Timing | Workload cycle hours (e.g. a 4-hour backup schedule), ingestion lag, minimum bake hours (canary / other), final verdict after hours, tripwire interval. | `timing.*` |
+| 11.15 | Thresholds | Confirm defaults: investigate at ≥10% relative change (FDR q ≤ 0.01, ≥ 20 extra failures); Sev1 ratios per signal; single-subscription share (0.8) treated as customer noise; known-noise suppressions (signal, key regex, reason, expiry). | `comparison.*`, `signals[].thresholds`, `suppressions[]` |
+| 11.16 | RCA knowledge | Known failure patterns, dependencies and first checks, plus drill-down queries the agent may run during RCA (e.g. errors by request id). | `SKILL.md` (service knowledge), `rca.drilldowns[]` + queries |
+
+After 11.16:
+1. Replace every remaining `TODO` in `health-config.json`, `queries/*.kql` and the `SKILL.md` tables with the owner's answers (the KQL must keep the output column contracts in the skeleton README).
+2. Validate: `pwsh .github/skills/zed-agent/scripts/Health/Test-ServiceHealthSkill.ps1` — schema, TODO check and a live dry run of every query with column checks. Fix and repeat until `ok = true`.
+3. Offer a backtest on a past release (`Invoke-ReleaseHealthCheck.ps1 -ReleaseVersion <build> -AsOf <time> -Wave <id>`), ideally one known-good release (expect GO) and one known-bad (expect NO-GO), and tune thresholds with the owner.
+4. Only after validation passes, set `releaseHealth.enabled = true`. Recommend `shadow` for the first release, then `advisory`.
+5. Remind the owner to commit `.github/skills/<skill>/` — the service skill is owned and reviewed by the service team.
+
 ### Generation
 
 By this point, all field values collected from the release owner have **already been written to disk incrementally** (see the Interactive Collection Flow). The Generation phase is therefore a **finalization pass**, not a bulk write. It exists to:
@@ -1123,6 +1156,8 @@ If at this point a required field is still missing on disk (e.g., the release ow
    - `4-collect-commits.success`     → `{                                       "teamsGroups": ["teamsExtended"] }`
    - `13-create-r2d.success`         → `{ "ccGroups": ["cc"] }`
    - `15-production-rollout.success` → `{ "emailGroups": ["permanent", "cc"] }`
+
+   When `releaseHealth.enabled` (Group 11) and the owner did not customize them, also seed `release-health.failure` → `{ "emailGroups": ["permanent", "healthOnCall"] }` and `release-health-tripwire.failure` → `{ "emailGroups": ["healthOnCall"] }` (GO and HOLD stay owner-only unless the owner widened them in 11.3).
 
    The current release owner's personal email is always added to the To-line of every notification by `Resolve-NotificationRecipients.ps1`. Empty cells in the grid resolve to current-owner-only. Owners widen any cell — including `failure` and `halt` for any step — via `setup-service group 5b`. The legacy generic keys (`judgment`, `failure`, `halt`, `step-transition`) are unmapped (no associated step) and stay current-owner-only.
 
@@ -1162,6 +1197,7 @@ $cfg = & .\.github\skills\zed-agent\scripts\Load-ServiceConfig.ps1 -Strict
 ```
 3. **Schema check** — for each required key listed in `service-config.schema.json`, verify the value is present and non-empty.
 4. **Sanity checks** — verify pipeline IDs are numeric, service tree IDs are GUIDs, email addresses contain `@`, GUIDs are 36-char hyphenated.
+4a. **Release health** — when `releaseHealth.enabled`, run `pwsh .github/skills/zed-agent/scripts/Health/Test-ServiceHealthSkill.ps1` and report its `issues` (failing → `setup-service group 11`).
 5. **Report**: list any missing fields, type errors, or unresolved `<TODO>` placeholders. If everything passes, print:
 ```
 ✅ Configuration valid: <serviceDisplayName>

@@ -362,6 +362,21 @@ function Test-PreFlight {
         $checks += @{ name = "Kusto queries"; status = "warn"; detail = "Cannot check — service-config.json missing kusto.bvt.queryFile. Will be validated after setup-service." }
     }
 
+    # ── 5b. Release health skill (only when enabled; static check — the live dry run is setup-service group 11) ──
+    if ($cfg -and $cfg.PSObject.Properties['releaseHealth'] -and $cfg.releaseHealth -and $cfg.releaseHealth.enabled -eq $true) {
+        try {
+            $rhRepo = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent ([System.IO.Path]::GetFullPath($ServiceConfigPath))) '..\..\..'))
+            $rhTest = & (Join-Path $PSScriptRoot 'Health\Test-ServiceHealthSkill.ps1') -RepoRoot $rhRepo -NoDryRun
+            if ($rhTest.ok) {
+                $checks += @{ name = "Release health skill"; status = "pass"; detail = "$($cfg.releaseHealth.skillPath) valid (mode: $($cfg.releaseHealth.mode))" }
+            } else {
+                $checks += @{ name = "Release health skill"; status = "fail"; detail = "$((@($rhTest.issues) | Select-Object -First 3) -join '; ') — run 'setup-service group 11'" }
+            }
+        } catch {
+            $checks += @{ name = "Release health skill"; status = "fail"; detail = "Check failed: $($_.Exception.Message)" }
+        }
+    }
+
     # ── 6. Templates ──
     $templateDir = Join-Path $skillDir "templates"
     if (Test-Path $templateDir) {
@@ -441,7 +456,7 @@ function Test-PreFlight {
     )
     $configChecks = @(
         'Service config','Pipeline catalog','Pipeline definitions',
-        'Kusto connectivity','Kusto queries','Inventory cache (production)'
+        'Kusto connectivity','Kusto queries','Inventory cache (production)','Release health skill'
     )
     $releaseChecks = @(
         'Environment config','Repo root path','Tenant ID','SharePoint site ID',

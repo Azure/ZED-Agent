@@ -1,0 +1,61 @@
+---
+name: __SKILL_NAME__
+description: |
+  Release health validation for __SERVICE__. Holds the __SERVICE__-specific telemetry knowledge
+  (Kusto tables, columns, build-version format, upgrade markers, error classification, thresholds)
+  that the ZED release health engine uses after every canary / SDP wave, plus the RCA playbook.
+
+  Use this skill when:
+    - ZED's watcher asks for `release health notify <id> for release <id>` (RCA + email)
+    - the owner runs `health status`, `health run`, `health backtest` or asks whether a
+      __SERVICE__ release / stage is healthy, or why a health finding fired
+    - onboarding or tuning __SERVICE__ health checks (`setup-service group 11`)
+---
+
+# __SERVICE__ release health skill
+
+> Service-owned. The ZED engine (`.github/skills/zed-agent/scripts/Health/*`) is generic; everything
+> __SERVICE__-specific lives in this folder: `health-config.json` (settings) and `queries/*.kql`.
+> Contracts and placeholders: `.github/skills/zed-agent/templates/service-health-skill/README.md`.
+
+## 1. Telemetry
+
+<!-- TODO: one row per table the queries read. -->
+| Table | Cluster / database | What it holds | Unit column | Build column |
+|---|---|---|---|---|
+| TODO | TODO | TODO | TODO | TODO |
+
+**Units (stamps):** TODO — naming pattern, which units are canary, which are excluded.
+**Build version in telemetry:** TODO — e.g. `<buildNumber>-<branch>`; only the exact build ZED deployed counts.
+
+## 2. Signals
+
+<!-- TODO: keep in sync with health-config.json → signals. -->
+| Signal id | Kind | Query | What a finding means |
+|---|---|---|---|
+| TODO | outcomes | queries/TODO.kql | TODO |
+
+## 3. RCA playbook (used by the agent for every finding)
+
+1. **Scope** — which units/roles/instances, since when relative to T0, one unit or the whole wave.
+2. **Is it new?** — compare with the same units on the previous build (report windows) and the control.
+3. **Follow the trail** — run the drill-downs in `health-config.json → rca.drilldowns`:
+   TODO: e.g. failed operations → sub-operation that failed → error logs by request id → code location.
+4. **Link to code** — match the failing code path with the release's commits (Step 4 commit list) and
+   name candidate PRs/authors.
+5. **Known background issues** — TODO: list issues that occur on every build (so they are not blamed on the release).
+6. **Classify** — `regression` / `environmental` / `customer` / `pre-existing` / `data-quality` / `unknown`,
+   with confidence (`high` / `medium` / `low`) and a recommendation (see `zed-agent/reference/release-health.md`).
+
+## 4. Validate and tune
+
+```powershell
+# Validate config + dry-run every query against Kusto (column contracts)
+pwsh .github/skills/zed-agent/scripts/Health/Test-ServiceHealthSkill.ps1
+# Run a check now / backtest a past release
+pwsh .github/skills/zed-agent/scripts/Health/Invoke-ReleaseHealthCheck.ps1 -ReleaseId <id> -Wave <stage> -Tier final
+pwsh .github/skills/zed-agent/scripts/Health/Invoke-ReleaseHealthCheck.ps1 -ReleaseVersion <ver> -PreviousVersion <ver> -Units <a,b> -AsOf <utc> -OutDir ./backtest
+```
+
+Thresholds and suppressions live in `health-config.json` (`comparison`, per-signal `thresholds`, `suppressions`).
+Every change is reviewed like code — commit it with the reason.

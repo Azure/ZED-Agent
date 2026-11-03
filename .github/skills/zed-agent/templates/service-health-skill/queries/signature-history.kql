@@ -1,0 +1,9 @@
+// Contract: Signature, Count — occurrences of the candidate signatures on any OTHER build in the lookback.
+let Candidates = {{SIGNATURES}};
+TODO_LogTable
+| where TIMESTAMP between ({{LOOKBACK_START}} .. {{LOOKBACK_END}})
+| where TODO_LevelColumn <= 1 and TODO_VersionColumn != {{RELEASE_VERSION}}
+| extend Message = tostring(TODO_MessageColumn)
+| extend Signature = {{SIGNATURE_EXPR}}
+| where Signature in (Candidates)
+| summarize Count = count() by Signature

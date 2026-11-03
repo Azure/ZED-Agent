@@ -270,6 +270,11 @@ Callers pass an `EventKey` to `Resolve-NotificationRecipients.ps1`. The helper m
 | `ev2-stage-progress`            | `15-production-rollout.success` (per-stage EV2 ticks)                |
 | `ev2-promotion-reminder`        | `15-production-rollout.halt` (stage approval reminder)               |
 | `judgment`, `failure`, `halt`, `step-transition`, *anything else* | unmapped → owner-only (no per-step entry to configure) |
+| `release-health-go`             | `release-health.success` (wave verdict GO)                           |
+| `release-health-hold`, `release-health-inconclusive` | `release-health.halt`                            |
+| `release-health-no-go`          | `release-health.failure`                                             |
+| `release-health-early-warning`  | `release-health-tripwire.failure` (Sev1 before the final verdict — on-call) |
+| `release-health-interim`        | unmapped → owner-only. With `releaseHealth.mode = shadow` **every** `release-health-*` key is owner-only |
 
 ### Default seed (`setup-service group 5b`)
 
@@ -494,6 +499,8 @@ Key columns in failure rows: `WorkLoadType`, `Environment`, `TestCaseName`, `Iss
 **Deploy-base releases** (`release.json → releaseMode == "deploy-base"`, e.g. BCM deploys `master`): no release branch exists. The release is ONE build of the deployment branch (Step 2c: newest deployable commit, CI build reused) and the previous release is the build the last production rollout deployed (`previousBuildId` / `previousCommit`, confirmed at setup). Because `ArtifactsBranch = master` alone would deploy whatever master's newest build is, **every canary, rollback and production run request MUST be pinned** with `resources.builds` from `Resolve-ReleaseBuild.ps1 -Action PinResources` (Step 5 Action 2). Step 4's range is `previousCommit..currentCommit`; Step 7 without revert bits rolls back to `previousBuildId`; Step 16 is skipped. Never use `previousBranch` in this mode.
 
 **Approval requests (only with `CONFIG[operational.approvalWatchEnabled]`; default = the original Teams post of approval links in Steps 5/7/10 and by the watcher):** every ZED-triggered deployment run waiting on the OneBranch Approval Service (or an ADO approval) is found by `Invoke-ApprovalWatch.ps1` (watcher side-channel, every 10 min) — record run ids in `triggeredPipelines.<N>` at every trigger. When the watcher invokes you with `approval <event> <id> for release <id>`, send `state.approvalRequests.<id>.lastMessage` verbatim by email (`SendEmailWithAttachments`, HTML) and Teams (`Send-TeamsMessage -Body`) to the recipients from `Resolve-NotificationRecipients -EventKey <lastMessage.eventKey>`, then EXIT — do not re-run the current step (see `step-behaviors.md → Approval requests`).
+
+**Release health (only with `CONFIG[releaseHealth.enabled]`):** after every deployment wave the watcher side-channel (`scripts/Health/Invoke-HealthSideChannel.ps1`, background run) compares the new build with the previous build on the same stamps and with control stamps, using the service-owned skill at `CONFIG[releaseHealth.skillPath]`, and queues a GO / HOLD / NO-GO verdict, early warning or interim mail. When the watcher invokes you with `release health notify <id> for release <id>`, do the RCA for the open findings (service `SKILL.md`, drill-downs, read-only KQL), apply it with `-Action Annotate` (escalate only, never lower a verdict), mail the rendered HTML to `Resolve-NotificationRecipients -EventKey <notification.eventKey>`, post Teams for HOLD/NO-GO/early warning, then EXIT — do not run a release step and do not call `-Action Mark`. Show the wave verdict at `approve-bvt`/`approve-rollback`/`approve-rollforward` and in EV2 promotion reminders (`acknowledge` mode blocks approval on an un-overridden HOLD/NO-GO). ZED never rolls back or promotes on its own because of a verdict. Owner commands `health status|run|report|accept|override|suppress|backtest|validate`. Read `.github/skills/zed-agent/reference/release-health.md` before acting on any of these.
 
 **Canary schedule guard:** canary pipelines with `scheduleGuard` in the catalog (BCM-EACAN: UI schedule trigger removed + `enableSchedule`, runs ZED did not queue cancelled) are paused by ZED once ZED's own Step 5 run of them succeeds and resumed on `approve-bvt` (Step 6) — via `Invoke-ScheduleGuard.ps1` only, never by editing the pipeline or cancelling runs any other way. ZED must never trigger a guarded pipeline while ZED has it disabled (Step 7 restores first and halts if it can't). When the watcher invokes you with `schedule guard <event> <key> [run <runId>] for release <id>`, send that email (owner-only; `schedule-guard-run-cancelled` also to the person who queued the run — per `step-behaviors.md → Canary schedule guard`) and EXIT.
 
@@ -838,7 +845,7 @@ Rules:
 # Command Behaviors
 
 The full behavior of every command — `help`, `setup-service`, `setup`, `status`,
-`run`, `modify`, `skip`, `approve-ri`, `private-stamp`, `approve-private-stamp`, `revert-bits`, `approve-revert`, `approvals`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
+`run`, `modify`, `skip`, `approve-ri`, `private-stamp`, `approve-private-stamp`, `revert-bits`, `approve-revert`, `approvals`, `health`, `approve-bvt`, `approve-rollback`, `approve-rollforward`,
 `approve-crb`, `ack`, `resume`, `stop`, `test`, `test-run`, `teardown`, `rebuild`,
 `new-stamp` — is specified in:
 

@@ -127,7 +127,9 @@ $validStepKeys = @(
     '9-post-rollback-signoff','10-roll-forward','11-post-rollforward-bvt',
     '12-post-rollforward-signoff','13-create-r2d','14-crb-review',
     '15-production-rollout','16-merge-back',
-    'approval-requests'   # pipeline approval requests (Invoke-ApprovalWatch.ps1), any step
+    'approval-requests',  # pipeline approval requests (Invoke-ApprovalWatch.ps1), any step
+    'release-health',          # release health verdicts (scripts/Health)
+    'release-health-tripwire'  # release health early warnings (Sev1 tripwires)
 )
 
 $groupsObj = $cfg.notifications.groups
@@ -266,6 +268,27 @@ if ($dsProp -and $dsProp.Value) {
         if ($p.Name -notmatch '^\d+$' -or [int]$p.Name -lt 1 -or [int]$p.Name -gt 16) { throw "defaultSkippedSteps key '$($p.Name)' must be a step number 1-16." }
         if ([int]$p.Name -in @(13, 14, 15)) { throw "defaultSkippedSteps cannot skip Step $($p.Name) — the R2D, SafeFly/CRB approval and production rollout always run." }
         if ([string]::IsNullOrWhiteSpace([string]$p.Value)) { throw "defaultSkippedSteps.$($p.Name) needs a reason (shown to the owner and in audit.jsonl)." }
+    }
+}
+
+# --- Optional releaseHealth (setup-service Group 11; service skill + scripts/Health) ---
+$rhProp = $cfg.PSObject.Properties['releaseHealth']
+if ($rhProp -and $rhProp.Value -and $rhProp.Value.PSObject.Properties['enabled'] -and $rhProp.Value.enabled -eq $true) {
+    $rh = $rhProp.Value
+    if ($rh.PSObject.Properties['mode'] -and $rh.mode -and @('shadow', 'advisory', 'acknowledge') -notcontains [string]$rh.mode) {
+        throw "releaseHealth.mode '$($rh.mode)' is not supported. Expected 'shadow', 'advisory' or 'acknowledge'."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$rh.skillPath)) { throw "Required config field is empty: 'releaseHealth.skillPath' (required when releaseHealth.enabled = true). Run 'setup-service group 11'." }
+    $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $configDir '..\..\..'))
+    $skillDir = Join-Path $repoRoot ([string]$rh.skillPath)
+    foreach ($req in @('SKILL.md', 'health-config.json')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $skillDir $req))) {
+            throw "releaseHealth.skillPath '$($rh.skillPath)' has no $req. Scaffold the service health skill with 'setup-service group 11'."
+        }
+    }
+    $onCall = $cfg.notifications.groups.PSObject.Properties['healthOnCall']
+    if (-not $onCall -or @($onCall.Value | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -eq 0) {
+        throw "notifications.groups.healthOnCall must list at least one address when releaseHealth.enabled = true (early warnings go there). Run 'setup-service group 11'."
     }
 }
 

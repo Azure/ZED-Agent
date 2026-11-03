@@ -1,0 +1,14 @@
+// Contract: Unit, Window, Operation, ErrorCode, Total, Failures [, TopSubscriptionFailures]
+// ErrorCode must be '' for successful operations. TopSubscriptionFailures = failures of the busiest subscription.
+// Pre-aggregate per minute before the window join; successes are not split by subscription.
+let W = {{WINDOWS}};
+TODO_WorkloadTable
+| where {{TIME_FILTER}}
+| where TODO_UnitColumn in ({{UNITS}})
+| extend Ok = TODO_SucceededColumn
+| extend ErrorCode = iff(Ok, '', tostring(TODO_ErrorCodeColumn)), Subscription = iff(Ok, '', tostring(TODO_SubscriptionColumn))
+| summarize Total = count(), Failures = countif(not(Ok)) by Unit = TODO_UnitColumn, TIMESTAMP = bin(TIMESTAMP, 1m), Operation = TODO_OperationColumn, ErrorCode, Subscription
+| join kind=inner hint.strategy=broadcast (W) on Unit
+| where TIMESTAMP between (WStart .. WEnd)
+| summarize Total = sum(Total), Failures = sum(Failures) by Unit, Window, Operation, ErrorCode, Subscription
+| summarize Total = sum(Total), Failures = sum(Failures), TopSubscriptionFailures = maxif(Failures, isnotempty(Subscription) and Subscription != '00000000-0000-0000-0000-000000000000') by Unit, Window, Operation, ErrorCode

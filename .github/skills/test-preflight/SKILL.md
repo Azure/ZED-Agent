@@ -96,6 +96,7 @@ listed):
 | Region cache / query file missing | Re-copy the canonical version from the skill directory |
 | Corrupt watcher lock / orphaned scheduled tasks | `Register-WatcherTask -Action cleanup` |
 | Empty `service-config.json` / `pipeline-catalog.json` fields | Defer — point owner at `setup-service group <N>` rather than fixing in preflight |
+| `Release health skill` fails (only when `releaseHealth.enabled`) | Defer — the service skill has TODOs or schema errors; point the owner at `setup-service group 11` (which also runs the live query dry run) |
 
 After **one** remediation pass, re-invoke `Test-PreFlight` ONCE.
 

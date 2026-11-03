@@ -192,6 +192,7 @@ Run these from Copilot Chat **in your service repo**, in this order the first ti
 | `private-stamp` · `approve-private-stamp` · `private-stamp restore` | Private stamp upgrade inputs, sign-off, and redeploy without the queue override (only with `privateStampUpgrade`) |
 | `revert-bits` · `approve-revert` | Revert bits selection and sign-off (only with `revertBits`) |
 | `approvals` | Pending pipeline approvals (only with `operational.approvalWatchEnabled`) |
+| `health status` · `health accept` · `health override` · `health backtest` … | Release health per deployment wave — GO / HOLD / NO-GO with RCA (only with `releaseHealth.enabled`) |
 | `rebuild` · `new-stamp` | Re-queue the build / onboard or reclassify a stamp |
 | `test` · `test-run` | Dry run, or a real run with steps skipped (pipelines cancelled at trigger) |
 | `stop` · `teardown` | Pause the release and stop the watcher / post-release cleanup |
@@ -255,6 +256,7 @@ unaffected. `setup-service` asks about each one; the schemas
 | `safefly.extendedRequest` | Original R2D builder (`New-SafeFlyRequest.Legacy.ps1`), V1 approval polling | Extended R2D: sectioned description (`descriptionSections`, `prUrlTemplate`, `payloadUrlTemplate`, …), `{titleThemes}`, `regionGroups`, `rollbackStrategy`, team-risk answers, tag GUIDs, content warnings; SafeFly V2 approval polling | `true` |
 | `safefly.r2dBuildSource: "productionRun"` | R2D `ev2.build` = official build number | Step 13 triggers the production pipeline first (parked on its approval gates, requires `approvalGate.verified`) and files the R2D with that run's build number; Step 15 reuses the run | `productionRun` |
 | `safefly.adoBuildLink` | No ADO build link | Adds the ADO build link answer to the R2D | set |
+| `releaseHealth` `{ enabled, mode, skillPath }` + `notifications.groups.healthOnCall` | No post-deployment analysis | After every deployment wave (canary + each EV2 stage) a background check compares the new build with the previous build on the same stamps and with control stamps (outcomes, latency, error logs, CPU/memory, upgrade health), the agent adds RCA, and a **GO / HOLD / NO-GO** mail goes out (early warnings to the on-call group). Service-specific tables/queries/thresholds live in a service-owned skill (`.github/skills/<service>-release-health/`) scaffolded from `templates/service-health-skill/` by `setup-service group 11`. Modes `shadow` (owner only) / `advisory` / `acknowledge`. Spec: `reference/release-health.md` | enabled, `advisory`, `bcm-release-health` |
 
 ### `pipeline-catalog.json`
 

@@ -1,0 +1,5 @@
+// Contract: Source, Latest, LagMinutes — one row per table the signals read.
+union
+  (TODO_OperationsTable | where TIMESTAMP > ago(2h) | summarize Latest = max(TIMESTAMP) | extend Source = 'TODO_OperationsTable'),
+  (TODO_WorkloadTable | where TIMESTAMP > ago(2h) | summarize Latest = max(TIMESTAMP) | extend Source = 'TODO_WorkloadTable')
+| extend LagMinutes = datetime_diff('minute', now(), Latest)

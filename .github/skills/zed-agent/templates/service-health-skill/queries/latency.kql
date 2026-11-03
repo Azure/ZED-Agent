@@ -1,0 +1,12 @@
+// Contract: Cohort, Window, Operation, N, P50, P95 — cohort-level percentiles of successful operations (ms).
+// t-digests per unit, operation and 5 minutes before the window join.
+let W = {{WINDOWS}};
+TODO_OperationsTable
+| where {{TIME_FILTER}}
+| where TODO_UnitColumn in ({{UNITS}}) and TODO_SucceededColumn
+| summarize N = count(), D = tdigest(TODO_DurationMsColumn) by Unit = TODO_UnitColumn, TIMESTAMP = bin(TIMESTAMP, 5m), Operation = TODO_OperationColumn
+| join kind=inner hint.strategy=broadcast (W) on Unit
+| where TIMESTAMP between (WStart .. WEnd)
+| summarize N = sum(N), D = merge_tdigest(D) by Cohort, Window, Operation
+| where N >= 100
+| project Cohort, Window, Operation, N, P50 = percentile_tdigest(D, 50), P95 = percentile_tdigest(D, 95)

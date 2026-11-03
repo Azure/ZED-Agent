@@ -43,6 +43,12 @@
       create-r2d                 -> (13, success)
       ev2-stage-progress         -> (15, success)
       ev2-promotion-reminder     -> (15, halt)
+      release-health-go          -> ('release-health', success)
+      release-health-hold / release-health-inconclusive -> ('release-health', halt)
+      release-health-no-go       -> ('release-health', failure)
+      release-health-early-warning -> ('release-health-tripwire', failure)
+                                    (releaseHealth.mode = shadow -> owner-only for all release-health-* keys;
+                                     release-health-interim is unmapped -> owner-only)
       anything else              -> unmapped -> owner-only
 
 .PARAMETER EventKey
@@ -121,6 +127,14 @@ $LegacyMap = @{
 
 function _Map-EventKey {
     param([string]$key)
+    # Release health (scripts/Health): verdicts -> 'release-health', early warnings -> 'release-health-tripwire'.
+    switch ($key) {
+        'release-health-go'            { return @{ StepKey = 'release-health'; Outcome = 'success' } }
+        'release-health-hold'          { return @{ StepKey = 'release-health'; Outcome = 'halt' } }
+        'release-health-inconclusive'  { return @{ StepKey = 'release-health'; Outcome = 'halt' } }
+        'release-health-no-go'         { return @{ StepKey = 'release-health'; Outcome = 'failure' } }
+        'release-health-early-warning' { return @{ StepKey = 'release-health-tripwire'; Outcome = 'failure' } }
+    }
     # Approval requests (Invoke-ApprovalWatch.ps1) have their own routing row, independent of the
     # step that triggered the run: notifications.routing['approval-requests'].
     if ($key -match '^approval-(needed|reminder|expiring)$') { return @{ StepKey = 'approval-requests'; Outcome = 'halt' } }
@@ -175,6 +189,23 @@ if ($testMode) {
 }
 
 _Require-Owner "owner is always included on every notification"
+
+# --- Release health in shadow mode: every health notification goes to the owner only ---
+if ($EventKey -like 'release-health-*') {
+    $rhMode = 'shadow'
+    if ($Config.PSObject.Properties['releaseHealth'] -and $Config.releaseHealth -and $Config.releaseHealth.PSObject.Properties['mode'] -and $Config.releaseHealth.mode) {
+        $rhMode = [string]$Config.releaseHealth.mode
+    }
+    if ($rhMode -eq 'shadow') {
+        return @{
+            EmailTo              = @($ownerEmail)
+            EmailCc              = @()
+            TeamsConversationIds = @()
+            TestMode             = $false
+            Broadcast            = $false
+        }
+    }
+}
 
 # --- Map EventKey to (stepKey, outcome). Unmapped -> owner-only fallback. ---
 $mapped = _Map-EventKey $EventKey

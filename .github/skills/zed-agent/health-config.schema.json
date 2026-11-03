@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "health-config.schema.json",
+  "title": "ZED release health check — per-service configuration",
+  "description": "Lives in the service's release-health skill (e.g. .github/skills/<service>-release-health/health-config.json). The ZED engine (scripts/Health/*) is service-agnostic: tables, columns, markers, error lists and thresholds all come from this file and the KQL files it references. Query output contracts and placeholders are documented in templates/service-health-skill/README.md.",
+  "type": "object",
+  "required": ["schemaVersion", "service", "dataSource", "scope", "cohortQuery", "exposureQuery", "timing", "comparison", "errorClassification", "signals"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "service": { "type": "string", "minLength": 1, "description": "Display name used in reports and emails." },
+    "description": { "type": "string" },
+    "dashboardUrl": { "type": "string", "description": "Optional existing health dashboard, linked from every report." },
+    "dataSource": {
+      "type": "object",
+      "required": ["cluster", "database"],
+      "additionalProperties": false,
+      "properties": {
+        "cluster": { "type": "string", "pattern": "^https://", "description": "Kusto cluster URI, e.g. https://mabprod1.kusto.windows.net" },
+        "database": { "type": "string", "minLength": 1 },
+        "queryTimeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 60, "default": 15 },
+        "maxRows": { "type": "integer", "minimum": 1000, "default": 500000 }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unitRegex": { "type": "string", "description": "Regex every deployment unit (stamp) must match, e.g. '-pod01-coord-01-sf$'. Sub-partitions or test units that should never be analysed are excluded by it." },
+        "unitPrefixRegex": { "type": "string", "default": "^([^-]+)", "description": "Regex with one capture group that yields the region/stamp prefix of a unit (used for EV2 stage labels)." },
+        "canaryUnits": { "type": "array", "items": { "type": "string" }, "description": "Units that form the canary wave." },
+        "officialVersionPattern": { "type": "string", "description": "Regex an official deployment version must match, e.g. '-(master|release[^-]*)$'." },
+        "excludeVersionPatterns": { "type": "array", "items": { "type": "string" }, "description": "Regexes for private/dev builds that are never treated as release or control, e.g. '-users?_'." },
+        "waveGapMinutes": { "type": "integer", "minimum": 10, "default": 180, "description": "A gap longer than this between unit switch times starts a new wave." },
+        "activeWithinMinutes": { "type": "integer", "minimum": 10, "default": 180, "description": "Control units must have reported within this many minutes." },
+        "stageLabels": { "type": "string", "enum": ["ev2", "waves"], "default": "ev2", "description": "ev2 = label waves with EV2 stage names from release state when available; waves = always 'Wave N'." }
+      }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How the deployed build appears in telemetry. Default: '{buildNumber}-{branch}' with non-alphanumerics in the branch replaced by '_' (e.g. 3.0.886.0-master).",
+      "properties": {
+        "format": { "type": "string", "default": "{buildNumber}-{branch}" },
+        "branchSanitizeRegex": { "type": "string", "default": "[^A-Za-z0-9]" },
+        "branchReplacement": { "type": "string", "default": "_" }
+      }
+    },
+    "cohortQuery": { "type": "string", "description": "KQL file (relative to the skill folder). Output: Unit, Version, FirstSeen, LastSeen, Ops." },
+    "exposureQuery": { "type": "string", "description": "KQL file. Output: Unit, Window, Version, Ops, Instances. Used for version purity, silent units and per-operation normalization." },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queryFile"],
+      "properties": {
+        "queryFile": { "type": "string", "description": "Output: Source, Latest, LagMinutes." },
+        "maxLagMinutes": { "type": "integer", "minimum": 1, "default": 30 }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "firstCheckAfterT0Minutes": { "type": "integer", "minimum": 0, "default": 45 },
+        "tripwireIntervalMinutes": { "type": "integer", "minimum": 5, "default": 30 },
+        "planIntervalMinutes": { "type": "integer", "minimum": 5, "default": 15, "description": "How often the watcher starts a background health run." },
+        "ingestionLagMinutes": { "type": "integer", "minimum": 0, "default": 20 },
+        "windowStartOffsetMinutes": { "type": "integer", "minimum": 0, "default": 15 },
+        "maxWindowHours": { "type": "number", "minimum": 1, "maximum": 72, "default": 24 },
+        "workloadCycleHours": { "type": "number", "minimum": 0.5, "default": 4, "description": "Period of the service's scheduled workload (e.g. backup cycles). Checkpoints run after each cycle." },
+        "minCyclesForVerdict": { "type": "integer", "minimum": 1, "default": 2 },
+        "minBakeHours": { "$ref": "#/$defs/perWave" },
+        "finalVerdictAfterHours": { "$ref": "#/$defs/perWave" },
+        "cohortLookbackDays": { "type": "integer", "minimum": 2, "maximum": 30, "default": 10 }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseWindow": { "type": "string", "enum": ["previousDay", "previousWeek"], "default": "previousDay", "description": "Primary baseline: the same units on the previous build. previousDay (adjacent day) is the most robust against weekly environmental changes." },
+        "confirmWindow": { "type": "string", "enum": ["previousDay", "previousWeek"], "default": "previousWeek" },
+        "investigateRelativeDelta": { "type": "number", "minimum": 0.01, "default": 0.10, "description": "A metric this much worse than the previous build (and not explained by the control) is investigated." },
+        "falseDiscoveryRate": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.2, "default": 0.01 },
+        "minExtraFailures": { "type": "number", "minimum": 0, "default": 20 },
+        "singleSubscriptionShare": { "type": "number", "minimum": 0.5, "maximum": 1, "default": 0.8, "description": "Findings where one subscription causes this share of failures become watch items (customer/dependency)." },
+        "controlEnabled": { "type": "boolean", "default": true },
+        "controlPurityMin": { "type": "number", "minimum": 0.5, "maximum": 1, "default": 0.99, "description": "A window is used only if at least this share of its operations ran the expected version." }
+      }
+    },
+    "errorClassification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["ado-git-xml", "local-xml", "none"] },
+            "organization": { "type": "string" },
+            "project": { "type": "string" },
+            "repository": { "type": "string" },
+            "path": { "type": "string" },
+            "branch": { "type": "string", "default": "develop" },
+            "localPath": { "type": "string", "description": "For local-xml: path relative to the repo root." },
+            "itemElement": { "type": "string", "default": "Error" },
+            "nameElement": { "type": "string", "default": "Name" },
+            "userErrorElement": { "type": "string", "default": "UserError" }
+          }
+        },
+        "userErrorRegex": { "type": "string", "description": "Fallback for codes missing from the source, e.g. '^UserError'." },
+        "nullCodes": { "type": "array", "items": { "type": "string" }, "default": ["null", "none", "success"] },
+        "overrides": { "type": "object", "additionalProperties": { "type": "string", "enum": ["user", "service", "unclassified"] } }
+      }
+    },
+    "signatureNormalization": {
+      "type": "array",
+      "description": "Ordered regex replacements that turn log messages into stable signatures (strip GUIDs, numbers, customer names, URIs). Must be valid in both .NET and RE2 (KQL).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pattern"],
+        "properties": { "pattern": { "type": "string" }, "replacement": { "type": "string", "default": "#" } }
+      }
+    },
+    "signals": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/signal" }
+    },
+    "rca": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "drilldowns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "queryFile", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "queryFile": { "type": "string" },
+              "description": { "type": "string" },
+              "params": { "type": "object" }
+            }
+          }
+        },
+        "maxRows": { "type": "integer", "minimum": 10, "default": 500 }
+      }
+    },
+    "suppressions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reason", "addedBy"],
+        "properties": {
+          "signalId": { "type": "string" },
+          "keyRegex": { "type": "string" },
+          "findingId": { "type": "string" },
+          "reason": { "type": "string" },
+          "expires": { "type": "string" },
+          "addedBy": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "perWave": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "canary": { "type": "number", "minimum": 0 }, "default": { "type": "number", "minimum": 0 } }
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "area", "kind", "queryFile"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "title": { "type": "string" },
+        "area": { "type": "string", "description": "Scorecard row, e.g. Backups, Restores, Errors, CPU." },
+        "kind": { "type": "string", "enum": ["outcomes", "latency", "signatures", "counters", "series", "lifecycle"] },
+        "enabled": { "type": "boolean", "default": true },
+        "queryFile": { "type": "string" },
+        "historyQueryFile": { "type": "string", "description": "signatures: Output Signature, Count — occurrences on other builds over the lookback." },
+        "startFailureQueryFile": { "type": "string", "description": "lifecycle: Output Unit, Role, Version, Count, First, Sample." },
+        "tiers": { "type": "array", "items": { "type": "string", "enum": ["tripwire", "checkpoint", "final"] }, "default": ["checkpoint", "final"] },
+        "windows": { "type": "array", "items": { "type": "string", "enum": ["current", "previousDay", "previousWeek"] } },
+        "includeControl": { "type": "boolean", "default": true },
+        "controlUnits": { "type": "integer", "minimum": 1, "description": "Use at most this many control units for this signal (the largest by volume in the current window); normalization uses the same subset. For expensive raw-log signals." },
+        "ignoreSignatureRegex": { "type": "string", "description": "signatures: log signatures matching this regex are ignored (e.g. lines that only record customer/user errors such as 'UserError')." },
+        "params": { "type": "object", "description": "Service-specific values exposed to the KQL as {{PARAM_<UPPER_SNAKE_NAME>}} literals (strings quoted, arrays as dynamic lists)." },
+        "counters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "rule"],
+            "properties": {
+              "name": { "type": "string" },
+              "label": { "type": "string" },
+              "rule": { "type": "string", "enum": ["p95-shift", "avg-shift", "floor"] },
+              "ceiling": { "type": "number" },
+              "floor": { "type": "number" },
+              "relativeDelta": { "type": "number" },
+              "minDelta": { "type": "number" }
+            }
+          }
+        },
+        "thresholds": {
+          "type": "object",
+          "description": "Optional per-signal overrides of the comparison defaults plus kind-specific limits.",
+          "properties": {
+            "relativeDelta": { "type": "number" },
+            "maxQ": { "type": "number" },
+            "minExtra": { "type": "number" },
+            "minSamples": { "type": "number" },
+            "maxVolumeDrop": { "type": "number" },
+            "newCodeMinCount": { "type": "number" },
+            "newCodeMinUnits": { "type": "integer" },
+            "minUnits": { "type": "integer" },
+            "newMinCount": { "type": "number" },
+            "lookbackDays": { "type": "integer" },
+            "percentile": { "type": "integer" },
+            "minDeltaMs": { "type": "number" },
+            "maxGrowthPctPerHour": { "type": "number" },
+            "minHours": { "type": "integer" },
+            "dedupeMinutes": { "type": "number" },
+            "loopRestarts": { "type": "integer" },
+            "loopWindowMinutes": { "type": "number" },
+            "sev1": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "ratio": { "type": "number" },
+                "absDelta": { "type": "number" },
+                "minExtra": { "type": "number" },
+                "maxQ": { "type": "number" }
+              }
+            }
+          }
+        },
+        "rcaHints": { "type": "string", "description": "What the agent should check first when this signal fires." }
+      }
+    }
+  }
+}

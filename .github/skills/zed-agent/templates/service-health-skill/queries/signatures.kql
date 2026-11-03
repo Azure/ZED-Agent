@@ -1,0 +1,12 @@
+// Contract: Cohort, Window, Signature, Count, Stamps, Instances [, TopSubscriptionCount]
+// Raw log rows: use the 1:1 window lookup (never join {{WINDOWS}} on raw rows — the 3x fan-out exceeds the memory budget).
+TODO_LogTable
+| where {{TIME_FILTER}}
+| where TODO_UnitColumn in ({{UNITS}}) and TODO_LevelColumn <= 1
+| project TIMESTAMP, Unit = TODO_UnitColumn, Instance = TODO_InstanceColumn, Message = substring(tostring(TODO_MessageColumn), 0, 400)
+| lookup kind=inner ({{WINDOWS_WIDE}}) on Unit
+| extend Window = {{WINDOW_CASE}}
+| where isnotempty(Window)
+| extend Signature = {{SIGNATURE_EXPR}}
+| summarize Count = count(), Stamps = dcount(Unit), Instances = dcount(strcat(Unit, '/', Instance)) by Cohort, Window, Signature
+| where Count >= 5

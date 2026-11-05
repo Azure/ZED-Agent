@@ -1,0 +1,10 @@
+// Contract: Unit, Window, Version, Ops, Instances — operation volume per window and build.
+// Pre-aggregate per minute BEFORE the window join (a raw join on a big table exceeds Kusto's memory budget).
+let W = {{WINDOWS}};
+TODO_OperationsTable
+| where {{TIME_FILTER}}
+| where TODO_UnitColumn in ({{UNITS}})
+| summarize Ops = count(), I = hll(TODO_InstanceColumn) by Unit = TODO_UnitColumn, Version = TODO_VersionColumn, TIMESTAMP = bin(TIMESTAMP, 1m)
+| join kind=inner hint.strategy=broadcast (W) on Unit
+| where TIMESTAMP between (WStart .. WEnd)
+| summarize Ops = sum(Ops), Instances = dcount_hll(hll_merge(I)) by Unit, Window, Version

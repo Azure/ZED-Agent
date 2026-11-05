@@ -33,6 +33,7 @@ Display the following reference. Do NOT add `/` prefix to any command — these 
 | `approve-revert` | Sign off the BVT on the revert build — Step 7 then rolls canary back with it |
 | `approvals` | Show deployment runs waiting for approval (Approval Service / ADO) with their links. Also `approvals resend <id>` (send the email + Teams message again) and `approvals check` (scan now instead of waiting for the watcher) |
 | `approve-bvt` | Approve BVT check results (unblocks step 6) |
+| `health status` | Release health per deployment wave (verdict, latest check, pending mails). Also `health run [wave]`, `health report [wave]`, `health accept <findingId> <reason>`, `health override <wave> GO\|HOLD\|NO-GO <reason>`, `health suppress …`, `health backtest <build> <asOf> [wave]`, `health validate` — only with `releaseHealth.enabled` |
 | `approve-rollback` | Approve post-rollback results (unblocks step 9) |
 | `approve-rollforward` | Approve post-roll-forward results (unblocks step 12) |
 | `approve-crb` | Approve CRB review (dual-gate with SafeFly approval — unblocks step 14) |
@@ -316,11 +317,16 @@ Spec: `step-behaviors.md → Approval requests`.
 - **`approvals check`** — run `-Action Sync` now and send every returned `NotifyEvents` entry exactly as the watcher would (email + Teams, see "Approval requests → Sending").
 - **`approvals resend <id>`** — send `state.approvalRequests.<id>.lastMessage` again (email + Teams); if the request is no longer pending, say so and do not send.
 
+## health — Release Health (post-deployment GO / HOLD / NO-GO)
+
+Only meaningful with `CONFIG[releaseHealth.enabled]`; otherwise reply that release health is not onboarded (`setup-service group 11`) and change nothing. Spec, agent contract and command table: `release-health.md`. All writes go through `scripts/Health/Invoke-HealthSideChannel.ps1` (`-Action Status | Start -Force | Accept | Override`) — never edit `state.releaseHealth` or report JSON by hand. `health accept` / `health override` need a reason and record the owner alias; tell the owner the effect (next check / every later check) and log the audit event.
+
 ## approve-bvt — Approve BVT Results
 
 When the release owner says `approve-bvt`:
 
 1. Verify step 6 (bvt-check) is in `waiting-approval`
+1a. **Release health** (`CONFIG[releaseHealth.enabled]`): show the canary wave's latest verdict (`Invoke-HealthSideChannel.ps1 -Action Status`). Mode `acknowledge` + HOLD/NO-GO without an override → refuse and point at `health override canary …` / `health accept …`; `advisory` → warn and continue. See `release-health.md → Gates`.
 2. Record approval: `state.json → approvals.bvt`
 3. Set step 6 → `completed`, advance to step 7
 4. **Canary schedule guard**: run `Invoke-ScheduleGuard.ps1 -Action Restore -ReleaseId <id> -Reason approve-bvt` and send an email per `NotifyEvents` entry (e.g. BCM-EACAN: schedule trigger re-added, `enableSchedule` → `true`). See `step-behaviors.md → Canary schedule guard`.

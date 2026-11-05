@@ -1,0 +1,6 @@
+// RCA drill-down (free-form output). The agent passes request ids in {{PARAM_REQUEST_IDS}}.
+TODO_LogTable
+| where {{TIME_FILTER}}
+| where TODO_RequestIdColumn in ({{PARAM_REQUEST_IDS}}) and TODO_LevelColumn <= 2
+| project TIMESTAMP, Unit = TODO_UnitColumn, TODO_RequestIdColumn, Level = TODO_LevelColumn, Message = substring(TODO_MessageColumn, 0, 1000)
+| take 500

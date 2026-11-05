@@ -1155,9 +1155,9 @@ During `poll-ev2-rollout`, the agent MUST track batch-level stage transitions an
 ```
 
 **On each poll cycle**, for each pipeline×cloud rollout:
-1. Read `result.batchStages[]` — find the highest completed stage and the next stage's status
-2. Compare against `ev2StageTracker[key].lastCompletedStage`
-3. **Stage completion detected** (new completed stage > last tracked):
+1. Read `result.stageTransition`, computed by `scripts/EV2/Resolve-Ev2StageTransition.ps1` from this pipeline×cloud's `batchStages[]`. Never infer the next stage from the full dashboard, another rollout, alphabetical sorting, or raw API array order. If `isVerified` is false (or the property is absent on an auth/error result), do not update the tracker or send stage/promotion emails; surface the diagnostic to the release owner. For a custom stage sequence, invoke the resolver with `-StageOrder` from the authoritative stage map; do not guess an order.
+2. Compare `completedStageName` against `ev2StageTracker[key].lastCompletedStage` using indices in `stageTransition.orderedStages`, not string comparison. If a previously tracked stage is absent from the current rollout, stop and surface the rollout/tracker mismatch rather than resetting it silently.
+3. **Stage completion detected** (non-null completed stage has advanced beyond last tracked):
    - Update `lastCompletedStage` and `lastNotifiedStage`
    - Set `waitingForPromotion = false`
    - **Send stage progress email** via `SendEmailWithAttachments` MCP tool:
@@ -1165,7 +1165,8 @@ During `poll-ev2-rollout`, the agent MUST track batch-level stage transitions an
      - **Subject**: `[ZED] EV2 Stage Complete — {{completedStageName}} ✅ | {{releaseId}}`
      - **Recipients**: resolve via `Resolve-NotificationRecipients -EventKey 'ev2-stage-progress'` (maps to `15-production-rollout.success`; default seed broadcasts to `permanent` + `cc` email groups; owner always included on To-line).
      - **Body**: Render template with `{{dashboardRows}}` = current full dashboard table rows as HTML `<tr>` elements
-4. **Waiting for manual promotion detected** (next stage has status `Waiting|NotStarted|Queued` AND all regions in current stage are completed AND `waitingForPromotion` was `false`):
+     - **Stage values**: Bind `{{completedStageName}}` and `{{nextStageName}}` directly from this rollout's verified `stageTransition`. When all stages are complete, `nextStageName` is `None - rollout stages complete`; do not wrap back to Low/Canary or borrow a pending stage from another pipeline/cloud.
+4. **Waiting for manual promotion detected** (`stageTransition.waitingForPromotion` is `true` AND tracked `waitingForPromotion` was `false`):
    - Set `waitingForPromotion = true`
    - **Send promotion reminder email** via `SendEmailWithAttachments` MCP tool:
      - **Template**: `templates/ev2-promotion-reminder-email.html`
@@ -1175,8 +1176,8 @@ During `poll-ev2-rollout`, the agent MUST track batch-level stage transitions an
 5. **Avoid duplicate emails**: Only send if `lastNotifiedStage` differs from current completed stage, or `waitingForPromotion` transitioned from `false` → `true`
 
 **SDP stage ordering** (for determining "next stage"):
-`Canary → Low → Medium → Heavy → Day1 → Day2 → Day3 → Day4 → Day5`
-Stages vary per SDP configuration — use `batchStages[]` order from the API response as the source of truth.
+`Canary → ManagedValidation → Low → Medium → Heavy → Day1 → Day2 → ... → Day10`
+Use only stages actually present in this rollout. The API response array is not a guaranteed execution sequence. Heavy is followed by Day1 only if Day1 exists and remains unfinished in this rollout; if Heavy is the final stage and all stages are terminal, report no next stage. Custom stage names/orders require an authoritative stage-map sequence passed to the resolver.
 
 **Templates**: `templates/ev2-stage-progress-email.html` (stage completion), `templates/ev2-promotion-reminder-email.html` (promotion reminder). Both include `{{dashboardRows}}` placeholder for an HTML table with the current dashboard. Render using `Expand-Template`.
 

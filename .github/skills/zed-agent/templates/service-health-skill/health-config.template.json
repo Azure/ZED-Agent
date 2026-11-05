@@ -1,0 +1,139 @@
+{
+  "$schema": "__SCHEMA_PATH__",
+  "schemaVersion": 1,
+  "service": "__SERVICE__",
+  "description": "Release health check configuration for __SERVICE__ (setup-service group 11). TODO values must be replaced; validate with scripts/Health/Test-ServiceHealthSkill.ps1.",
+  "dashboardUrl": "",
+  "dataSource": {
+    "cluster": "https://TODO.kusto.windows.net",
+    "database": "TODO",
+    "queryTimeoutMinutes": 15
+  },
+  "scope": {
+    "unitRegex": "TODO-unit-regex",
+    "unitPrefixRegex": "^([^-]+)",
+    "canaryUnits": [],
+    "officialVersionPattern": "-(master|main|release[^-]*)$",
+    "excludeVersionPatterns": ["-users?_", "-dev_", "-develop$"],
+    "waveGapMinutes": 180,
+    "stageLabels": "ev2"
+  },
+  "version": {
+    "format": "{buildNumber}-{branch}",
+    "branchSanitizeRegex": "[^A-Za-z0-9]",
+    "branchReplacement": "_"
+  },
+  "cohortQuery": "queries/cohort.kql",
+  "exposureQuery": "queries/exposure.kql",
+  "freshness": { "queryFile": "queries/freshness.kql", "maxLagMinutes": 30 },
+  "timing": {
+    "firstCheckAfterT0Minutes": 45,
+    "tripwireIntervalMinutes": 30,
+    "planIntervalMinutes": 15,
+    "ingestionLagMinutes": 20,
+    "windowStartOffsetMinutes": 15,
+    "maxWindowHours": 24,
+    "workloadCycleHours": 4,
+    "minCyclesForVerdict": 2,
+    "minBakeHours": { "canary": 12, "default": 8 },
+    "finalVerdictAfterHours": { "canary": 24, "default": 24 },
+    "cohortLookbackDays": 10
+  },
+  "comparison": {
+    "baseWindow": "previousDay",
+    "confirmWindow": "previousWeek",
+    "investigateRelativeDelta": 0.10,
+    "falseDiscoveryRate": 0.01,
+    "minExtraFailures": 20,
+    "singleSubscriptionShare": 0.8,
+    "controlEnabled": true,
+    "controlPurityMin": 0.99
+  },
+  "errorClassification": {
+    "source": { "type": "none" },
+    "userErrorRegex": "^UserError",
+    "nullCodes": ["null", "none", "success"],
+    "overrides": {}
+  },
+  "signatureNormalization": [
+    { "pattern": "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", "replacement": "<guid>" },
+    { "pattern": "https?://[^\\s'\"]+", "replacement": "<url>" },
+    { "pattern": "'[^']*'", "replacement": "'<v>'" },
+    { "pattern": "\"[^\"]*\"", "replacement": "\"<v>\"" },
+    { "pattern": "[0-9]+", "replacement": "#" }
+  ],
+  "signals": [
+    {
+      "id": "workload-outcomes",
+      "title": "TODO workload",
+      "area": "TODO",
+      "kind": "outcomes",
+      "queryFile": "queries/outcomes.kql",
+      "tiers": ["tripwire", "checkpoint", "final"],
+      "thresholds": { "minSamples": 200, "sev1": { "ratio": 2.0, "absDelta": 0.01, "maxQ": 0.001 } },
+      "rcaHints": "TODO: what to check first when this fires."
+    },
+    {
+      "id": "latency",
+      "title": "TODO operation latency",
+      "area": "Latency",
+      "kind": "latency",
+      "queryFile": "queries/latency.kql",
+      "thresholds": { "minSamples": 1000, "minDeltaMs": 50 }
+    },
+    {
+      "id": "error-signatures",
+      "title": "Error logs",
+      "area": "Errors",
+      "kind": "signatures",
+      "queryFile": "queries/signatures.kql",
+      "historyQueryFile": "queries/signature-history.kql",
+      "thresholds": { "minUnits": 2, "newMinCount": 20, "lookbackDays": 14, "sev1": { "ratio": 5.0, "minExtra": 500, "maxQ": 0.001 } }
+    },
+    {
+      "id": "machine-counters",
+      "title": "CPU and memory",
+      "area": "Machines",
+      "kind": "counters",
+      "queryFile": "queries/counters.kql",
+      "tiers": ["tripwire", "checkpoint", "final"],
+      "counters": [
+        { "name": "\\Processor(_Total)\\% Processor Time", "label": "CPU % (p95)", "rule": "p95-shift", "ceiling": 80, "minDelta": 5 },
+        { "name": "\\Memory\\Available MBytes", "label": "Available memory MB", "rule": "floor", "floor": 1024 }
+      ]
+    },
+    {
+      "id": "memory-growth",
+      "title": "Committed memory",
+      "area": "Machines",
+      "kind": "series",
+      "queryFile": "queries/counter-series.kql",
+      "params": { "counter": "\\Memory\\Committed Bytes" },
+      "thresholds": { "maxGrowthPctPerHour": 2, "minHours": 6 }
+    },
+    {
+      "id": "upgrade",
+      "title": "Service upgrade",
+      "area": "Upgrade",
+      "kind": "lifecycle",
+      "queryFile": "queries/lifecycle.kql",
+      "startFailureQueryFile": "queries/start-failures.kql",
+      "tiers": ["tripwire", "checkpoint", "final"],
+      "params": {
+        "initMarker": "TODO initialized marker",
+        "initOkMarker": "TODO success token",
+        "stopMarker": "TODO stop marker",
+        "stopRequestedMarker": "TODO requested-stop token",
+        "startFailurePrefixes": ["TODO role start failure prefix"]
+      },
+      "thresholds": { "dedupeMinutes": 5, "loopRestarts": 3, "loopWindowMinutes": 60 }
+    }
+  ],
+  "rca": {
+    "drilldowns": [
+      { "id": "errors-by-request", "queryFile": "queries/rca-errors-by-request.kql", "description": "Error-level logs for sampled failed request ids (pass {{PARAM_REQUEST_IDS}})." }
+    ],
+    "maxRows": 500
+  },
+  "suppressions": []
+}

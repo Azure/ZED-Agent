@@ -1,0 +1,9 @@
+// Contract: Unit, Role, Counter, Bucket, Avg — hourly averages in the current window (leak detection).
+let W = {{WINDOWS}} | where Window == 'current';
+TODO_CounterTable
+| where {{TIME_FILTER}}
+| where TODO_UnitColumn in ({{UNITS}}) and CounterName == {{PARAM_COUNTER}}
+| extend Unit = TODO_UnitColumn
+| join kind=inner hint.strategy=broadcast (W) on Unit
+| where TIMESTAMP between (WStart .. WEnd)
+| summarize Avg = avg(CounterValue) by Unit, Role = TODO_RoleColumn, Counter = CounterName, Bucket = bin(TIMESTAMP, 1h)

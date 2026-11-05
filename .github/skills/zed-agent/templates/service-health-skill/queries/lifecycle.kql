@@ -1,0 +1,14 @@
+// Contract: Unit, RoleInstance, Service, Event, Version, Timestamp [, Pid]
+// Event: init | init-failed | stop-requested | stop-unrequested, from T0 - 45m to AS_OF.
+let T = {{T0S}};
+TODO_LogTable
+| where TIMESTAMP between ({{MIN_TIME}} - 1h .. {{AS_OF}})
+| where TODO_UnitColumn in ({{RELEASE_UNITS}})
+| where Message has {{PARAM_INIT_MARKER}} or Message has {{PARAM_STOP_MARKER}}
+| extend Unit = TODO_UnitColumn
+| join kind=inner (T) on Unit
+| where TIMESTAMP >= T0 - 45m
+| extend Event = case(Message has {{PARAM_INIT_MARKER}} and Message has {{PARAM_INIT_OK_MARKER}}, 'init',
+                      Message has {{PARAM_INIT_MARKER}}, 'init-failed',
+                      Message has {{PARAM_STOP_REQUESTED_MARKER}}, 'stop-requested', 'stop-unrequested')
+| project Unit, RoleInstance = TODO_InstanceColumn, Service = TODO_ServiceColumn, Event, Version = TODO_VersionColumn, Timestamp = TIMESTAMP, Pid = TODO_PidColumn

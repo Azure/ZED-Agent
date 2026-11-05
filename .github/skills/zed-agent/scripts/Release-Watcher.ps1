@@ -106,6 +106,40 @@ function Invoke-ApprovalSideChannel {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Release health side-channel (opt-in: service-config releaseHealth.enabled):
+# every 60 s, (1) hand queued health notifications (early warning / checkpoint /
+# GO-HOLD-NO-GO verdict) to the agent — `release health notify <id> for release <id>` —
+# retrying a failed one up to 3 times, and (2) start a BACKGROUND health run when one
+# is due (Health/Invoke-HealthSideChannel.ps1 -Action Start). The run itself queries
+# Kusto for minutes, so it never blocks this loop. See reference/release-health.md.
+# ─────────────────────────────────────────────────────────────────────────────
+$script:lastHealthSync = [datetime]::MinValue
+$script:releaseHealthEnabled = $false
+try {
+    $svcCfgRh = (Get-Content (Join-Path (Get-Location) '.github/skills/zed-agent/service-config.json') -Raw | ConvertFrom-Json).releaseHealth
+    if ($svcCfgRh -and $svcCfgRh.enabled -eq $true) { $script:releaseHealthEnabled = $true }
+} catch { }
+function Invoke-ReleaseHealthSideChannel {
+    if (-not $script:releaseHealthEnabled) { return }
+    if (((Get-Date) - $script:lastHealthSync).TotalSeconds -lt 60) { return }
+    $script:lastHealthSync = Get-Date
+    $rhScript = Join-Path $PSScriptRoot 'Health/Invoke-HealthSideChannel.ps1'
+    if (-not (Test-Path $rhScript)) { return }
+    $auditFileRh = Join-Path (Get-Location) ".zed-agent/releases/$ReleaseId/audit.jsonl"
+    try {
+        foreach ($n in @(& $rhScript -Action Pending -ReleaseId $ReleaseId -RepoRoot (Get-Location).Path)) {
+            if (-not $n -or -not $n.id) { continue }
+            & copilot --agent=ZedAgent -p "release health notify $($n.id) for release $ReleaseId" --allow-all --autopilot --no-ask-user -s
+            $ok = ($LASTEXITCODE -eq 0)
+            if ($ok) { & $rhScript -Action Mark -ReleaseId $ReleaseId -RepoRoot (Get-Location).Path -NotificationId $n.id -Success } else { & $rhScript -Action Mark -ReleaseId $ReleaseId -RepoRoot (Get-Location).Path -NotificationId $n.id }
+        }
+        $null = & $rhScript -Action Start -ReleaseId $ReleaseId -RepoRoot (Get-Location).Path
+    } catch {
+        @{ ts = (Get-Date -Format 'o'); event = 'release-health-side-channel-error'; error = $_.Exception.Message } | ConvertTo-Json -Compress | Add-Content $auditFileRh -Encoding UTF8
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Canary schedule guard (e.g. BCM EA-CAN): pause the pipeline's own deployments
 # (UI schedule trigger and/or an on/off variable) once ZED's Step 5 run of it
 # succeeds, cancel runs ZED did not queue until Step 6 is signed off, then
@@ -372,6 +406,7 @@ while ($true) {
     Invoke-RevertBitsSideChannel
 
     Invoke-ApprovalSideChannel
+    Invoke-ReleaseHealthSideChannel
 
     if (-not $dir -or $dir.action -eq 'none') { Start-Sleep -Seconds 30; continue }
 
@@ -792,6 +827,7 @@ while ($true) {
         Invoke-ScheduleGuardSideChannel
         Invoke-RevertBitsSideChannel
         Invoke-ApprovalSideChannel
+        Invoke-ReleaseHealthSideChannel
         if (Test-Path $stateFile) {
             try {
                 $peek = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json

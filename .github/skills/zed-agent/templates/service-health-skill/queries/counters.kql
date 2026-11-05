@@ -1,0 +1,11 @@
+// Contract: Unit, Window, RoleInstance, Counter, Avg, P95, Min, Max — one row per machine and counter.
+// t-digests per machine and 5 minutes before the window join.
+let W = {{WINDOWS}};
+TODO_CounterTable
+| where {{TIME_FILTER}}
+| where TODO_UnitColumn in ({{UNITS}}) and CounterName in ({{COUNTER_NAMES}})
+| summarize S = sum(CounterValue), N = count(), D = tdigest(CounterValue), Min = min(CounterValue), Max = max(CounterValue) by Unit = TODO_UnitColumn, RoleInstance = TODO_InstanceColumn, CounterName, TIMESTAMP = bin(TIMESTAMP, 5m)
+| join kind=inner hint.strategy=broadcast (W) on Unit
+| where TIMESTAMP between (WStart .. WEnd)
+| summarize S = sum(S), N = sum(N), D = merge_tdigest(D), Min = min(Min), Max = max(Max) by Unit, Window, RoleInstance, Counter = CounterName
+| project Unit, Window, RoleInstance, Counter, Avg = S / N, P95 = percentile_tdigest(D, 95), Min, Max

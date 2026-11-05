@@ -1,0 +1,11 @@
+// Contract: Unit, Role, Version, Count, First, Sample — role start failures (role recycling) since T0.
+let T = {{T0S}};
+let Prefixes = {{PARAM_START_FAILURE_PREFIXES}};
+TODO_LogTable
+| where TIMESTAMP between ({{MIN_TIME}} - 1h .. {{AS_OF}})
+| where TODO_UnitColumn in ({{RELEASE_UNITS}})
+| where Message has_any (Prefixes)
+| extend Unit = TODO_UnitColumn
+| join kind=inner (T) on Unit
+| where TIMESTAMP >= T0 - 45m
+| summarize Count = count(), First = min(TIMESTAMP), Sample = take_any(substring(Message, 0, 300)) by Unit, Role = TODO_RoleColumn, Version = TODO_VersionColumn
